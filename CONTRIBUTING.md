@@ -37,22 +37,24 @@ Prototypes are different: capture them on a clearly named throwaway branch outsi
 
 ### Review ordering
 
-Use committed branch review with upstream `/code-review`:
+For product work, use this flow:
 
-1. Finish the implementation and commit it to the feature branch.
-2. Push the branch and open the pull request.
-3. Run `/code-review main` for separate Standards and Spec reviews.
-4. Fix findings, commit and push the fixes, then rerun review when material.
-5. Merge only after review and tests pass.
+1. Create a branch from `main` for the Issue.
+2. Implement and commit the work on that branch. A commit saves a version locally; it does not change `main`.
+3. Push the branch. This copies the branch and its commits to GitHub; it still does not change `main`.
+4. Open a pull request targeting `main`. The pull request is the proposal and review page for merging the branch into `main`.
+5. Run `/code-review main`. Its **Standards** review checks the code against repository conventions and code-smell guidance; its **Spec** review checks whether the change correctly fulfils the Issue or spec without missing requirements or adding unrelated scope.
+6. Fix any findings on the same branch, then commit and push those fixes. The pull request updates automatically. Rerun review after material fixes.
+7. Merge the pull request only after review and tests pass. This is the step that changes `main` and can close the linked Issue.
 
 ## AI attribution
 
 When an AI agent materially contributes, include its model-specific co-author and session trailers exactly once in local commits and in the final squash-commit message.
 
-Codex uses its current model display name, context window when known, and thread ID:
+Codex uses its current model display name and thread ID:
 
 ```text
-Co-authored-by: Codex <model> (<context> context) <noreply@openai.com>
+Co-authored-by: Codex <model> <noreply@openai.com>
 Codex-Session: codex://threads/<CODEX_THREAD_ID>
 ```
 
@@ -60,7 +62,7 @@ Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` tra
 
 ## Pull requests
 
-- Open a normal pull request after committing and pushing. Use a draft only if the repository's current GitHub plan supports private draft pull requests.
+- Open a regular pull request when the branch is ready for review. Use a draft only when you deliberately want early feedback on unfinished work and GitHub offers the option.
 - Keep the pull request focused on its ticket.
 - Include `Closes #<issue-number>` in the body and target `main` so GitHub closes the Issue on merge.
 - Explain the change and list verification performed.

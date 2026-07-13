@@ -16,10 +16,10 @@ Single-context. See `docs/agents/domain.md`.
 
 When materially involved, ensure the commit message includes each applicable agent's model-specific co-author and session trailers exactly once.
 
-For Codex, use the current model display name, context window when known, and `CODEX_THREAD_ID`:
+For Codex, use the current model display name and `CODEX_THREAD_ID`:
 
 ```text
-Co-authored-by: Codex <model> (<context> context) <noreply@openai.com>
+Co-authored-by: Codex <model> <noreply@openai.com>
 Codex-Session: codex://threads/<CODEX_THREAD_ID>
 ```
 
