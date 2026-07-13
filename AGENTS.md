@@ -20,3 +20,5 @@ When materially involved, ensure the commit message includes each applicable tra
 Co-authored-by: Codex <noreply@openai.com>
 Co-authored-by: Claude <noreply@anthropic.com>
 ```
+
+Follow `CONTRIBUTING.md` for branches, commits, and pull requests.
