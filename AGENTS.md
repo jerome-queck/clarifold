@@ -14,12 +14,16 @@ Single-context. See `docs/agents/domain.md`.
 
 ## Commit attribution
 
-When materially involved, ensure the commit message includes each applicable trailer exactly once:
+When materially involved, ensure the commit message includes each applicable agent's model-specific co-author and session trailers exactly once.
+
+For Codex, use the current model display name, context window when known, and `CODEX_THREAD_ID`:
 
 ```text
-Co-authored-by: Codex <noreply@openai.com>
-Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Codex <model> (<context> context) <noreply@openai.com>
+Codex-Session: codex://threads/<CODEX_THREAD_ID>
 ```
+
+For Claude, preserve Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers. Never invent a session identifier or duplicate an automatic trailer.
 
 Follow `CONTRIBUTING.md` for branches, commits, and pull requests.
 

@@ -47,14 +47,16 @@ Use committed branch review with upstream `/code-review`:
 
 ## AI attribution
 
-When an AI agent materially contributes, include its applicable trailer exactly once in local commits and in the final squash-commit message:
+When an AI agent materially contributes, include its model-specific co-author and session trailers exactly once in local commits and in the final squash-commit message.
+
+Codex uses its current model display name, context window when known, and thread ID:
 
 ```text
-Co-authored-by: Codex <noreply@openai.com>
-Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Codex <model> (<context> context) <noreply@openai.com>
+Codex-Session: codex://threads/<CODEX_THREAD_ID>
 ```
 
-Do not add attribution for an agent that did not materially contribute.
+Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers should be preserved. Do not invent session identifiers, duplicate automatic trailers, or attribute an agent that did not materially contribute.
 
 ## Pull requests
 
