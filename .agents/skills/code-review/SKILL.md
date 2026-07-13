@@ -30,12 +30,10 @@ Before going further, confirm the fixed point and merge base resolve. Continue w
 
 Look for the originating spec, in this order:
 
-1. The implementation ticket/spec already identified in the current conversation or passed as an issue number or URL — fetch it via `docs/agents/issue-tracker.md`.
-2. A leading issue number in the current branch name (for example, `feature/12-streaming-chat` → issue `#12`) — fetch it via the tracker workflow.
-3. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the tracker workflow.
-4. A spec path the user passed as an argument.
-5. A PRD/spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
-6. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
+1. The ticket/spec already identified in the current conversation or passed as an argument — fetch tracker references via `docs/agents/issue-tracker.md`.
+2. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the tracker workflow.
+3. A PRD/spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
+4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
 
 ### 3. Identify the standards sources
 
