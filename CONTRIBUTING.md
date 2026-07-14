@@ -54,7 +54,10 @@ Codex uses its current model display name and thread ID:
 ```text
 Co-authored-by: Codex <model> <noreply@openai.com>
 Codex-Session: codex://threads/<CODEX_THREAD_ID>
+Codex-Feedback-Session: <CODEX_THREAD_ID>
 ```
+
+`Codex-Feedback-Session` is the raw ID required by the OpenAI Build Week Devpost form's `/feedback` field. It must match the ID embedded in `Codex-Session`; include each trailer exactly once.
 
 Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers should be preserved. Do not invent session identifiers, duplicate automatic trailers, or attribute an agent that did not materially contribute.
 
