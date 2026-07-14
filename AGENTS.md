@@ -30,8 +30,10 @@ Codex-Feedback-Session: <CODEX_THREAD_ID>
 
 `Codex-Feedback-Session` is the raw thread ID required by the OpenAI Build Week Devpost form's `/feedback` field. It must exactly match the ID embedded in `Codex-Session`; include each trailer once in every Codex-attributed commit.
 
+See [CONTRIBUTING.md — AI attribution](CONTRIBUTING.md#ai-attribution) for the canonical repository-wide commit-attribution rules.
+
 For Claude, preserve Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers. Never invent a session identifier or duplicate an automatic trailer.
 
-Follow `CONTRIBUTING.md` for branches, commits, and pull requests.
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branches, commits, and pull requests.
 
 Automatically use only model-invocable skills when their trigger descriptions match. Never auto-invoke a skill marked `disable-model-invocation: true`; use it only when explicitly requested. When the user explicitly asks which flow fits, use `/ask-matt`.
