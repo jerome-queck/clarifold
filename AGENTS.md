@@ -1,9 +1,5 @@
 ## Agent skills
 
-## Hackathon reference
-
-For OpenAI Build Week requirements, tracks, deadlines, required deliverables, form fields, and judging, read [`docs/openai-build-week.md`](docs/openai-build-week.md) before planning or preparing a submission. Consult the live [Official Rules](https://openai.devpost.com/rules) for rules, eligibility, intellectual-property terms, and prizes.
-
 ### Issue tracker
 
 GitHub Issues. See `docs/agents/issue-tracker.md`.
@@ -15,6 +11,16 @@ Default five-label vocabulary. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Single-context. See `docs/agents/domain.md`.
+
+## Hackathon reference
+
+For OpenAI Build Week requirements, tracks, deadlines, required deliverables, form fields, and judging, read [`docs/openai-build-week.md`](docs/openai-build-week.md) before planning or preparing a submission. Consult the live [Official Rules](https://openai.devpost.com/rules) for rules, eligibility, intellectual-property terms, and prizes.
+
+## Engineering workflow
+
+For tracked product engineering work, read [`docs/agents/engineering-workflow.md`](docs/agents/engineering-workflow.md) before selecting a flow or changing code. It owns the repository-specific routing, issue-entry, review, and skill-maintenance rules.
+
+Automatically use only model-invocable skills when their trigger descriptions match. Never auto-invoke a skill marked `disable-model-invocation: true`; use it only when explicitly requested. When the user explicitly asks which engineering flow fits, use `/ask-matt`.
 
 ## Commit attribution
 
@@ -35,5 +41,3 @@ See [CONTRIBUTING.md — AI attribution](CONTRIBUTING.md#ai-attribution) for the
 For Claude, preserve Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers. Never invent a session identifier or duplicate an automatic trailer.
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branches, commits, and pull requests.
-
-Automatically use only model-invocable skills when their trigger descriptions match. Never auto-invoke a skill marked `disable-model-invocation: true`; use it only when explicitly requested. When the user explicitly asks which flow fits, use `/ask-matt`.
