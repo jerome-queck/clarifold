@@ -326,11 +326,11 @@ export class CodexAppServerRuntime implements ModelRuntime {
       await this.runTurn(
         [
           "Create one learner-facing Teaching Card, not a chat transcript.",
-          `Learning Goal: ${request.learningGoal}`,
-          `Scope: ${request.scope}`,
-          `Initial teaching direction: ${request.initialTeachingDirection}`,
+          teachingSessionContext(request),
           `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
           authorizedSourceContext(request),
+          questionContext(request),
+          questionRevision(request),
           teachingFocus(request),
           "Mathematics:",
           request.mathematics,
@@ -374,13 +374,15 @@ export class CodexAppServerRuntime implements ModelRuntime {
   ): Promise<string> {
     const accessPolicy = teachingRequest?.accessScope.policy ?? "focused";
     const anchoredFocus = Boolean(teachingRequest?.focus);
-    const fullAccessTools = accessPolicy === "full" && !anchoredFocus;
+    const contextualQuestion = Boolean(teachingRequest?.questionContext);
+    const boundedContext = anchoredFocus || contextualQuestion;
+    const fullAccessTools = accessPolicy === "full" && !boundedContext;
     const threadResponse = await this.client.request("thread/start", {
       cwd: this.cwd,
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
-      dynamicTools: teachingRequest && !anchoredFocus ? [SESSION_ACCESS_REQUEST_TOOL] : [],
+      dynamicTools: teachingRequest && !boundedContext ? [SESSION_ACCESS_REQUEST_TOOL] : [],
       config: {
         features: {
           apps: false,
@@ -395,6 +397,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
       },
       baseInstructions: anchoredFocus
         ? "You are the bounded teaching runtime for an anchored Teaching Card. Use only the supplied authorized source context so the Context Used Receipt remains complete. Do not request or inspect additional local material. Produce only learner-facing mathematical teaching output."
+        : contextualQuestion
+        ? "You are the bounded teaching runtime for a Question Card. Use only the learner-approved Ask Bar context and supplied authorized source context so the Context Used Receipt remains complete. Do not request or inspect additional local material. Revise one coherent Question Card rather than producing a chat transcript."
         : fullAccessTools
         ? "You are the bounded teaching runtime for Quick Study. Full Access permits read-only local inspection for this Learning Session. Never modify or delete source files. Produce only learner-facing mathematical teaching output."
         : "You are the bounded teaching runtime for Quick Study. Use only supplied authorized context. If broader local context is necessary, call request_session_access with the reason, exact scope, and intended action. Do not execute commands or modify files. Produce only learner-facing mathematical teaching output."
@@ -594,6 +598,39 @@ function authorizedSourceContext(request: TeachingRequest): string {
       mediaType: source.mediaType,
       content: source.content
     }))
+  ].join("\n");
+}
+
+function teachingSessionContext(request: TeachingRequest): string {
+  if (request.questionContext) {
+    return "Session teaching context is limited to the learner-approved Ask Bar context below.";
+  }
+  return [
+    `Learning Goal: ${request.learningGoal}`,
+    `Scope: ${request.scope}`,
+    `Initial teaching direction: ${request.initialTeachingDirection}`
+  ].join("\n");
+}
+
+function questionContext(request: TeachingRequest): string {
+  if (!request.questionContext) return "Ask Bar context: use the current Learning Session intake.";
+  return [
+    "Learner-approved Ask Bar context (the complete Context Used Receipt):",
+    ...request.questionContext.map((item) => JSON.stringify({
+      type: item.typeLabel,
+      identity: item.identity,
+      location: item.location,
+      preview: item.preview
+    }))
+  ].join("\n");
+}
+
+function questionRevision(request: TeachingRequest): string {
+  if (!request.questionRevision) return "Question Card revision: create the first coherent answer.";
+  return [
+    "Question Card revision: revise the existing structured card rather than appending a reply.",
+    `Previous question: ${request.questionRevision.previousQuestion}`,
+    `Previous answer: ${request.questionRevision.previousContent}`
   ].join("\n");
 }
 

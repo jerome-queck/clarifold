@@ -45,6 +45,7 @@ describe("anchored teaching workbench", () => {
     expect(screen.queryByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeNull();
 
     await user.click(marker);
+    expect(window.quickStudy.submit).toHaveBeenCalledWith({ type: "activateSourceAnchor", sourceAnchorId: "anchor-1" });
     expect(screen.getByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeTruthy();
     const close = screen.getByRole("button", { name: "Close Contextual Inspector" });
     expect(close).toBe(document.activeElement);
@@ -52,6 +53,10 @@ describe("anchored teaching workbench", () => {
 
     expect(screen.queryByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeNull();
     expect(marker).toBe(document.activeElement);
+
+    vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The Source Anchor is stale."));
+    await user.click(marker);
+    expect((await screen.findByRole("alert")).textContent).toContain("The Source Anchor is stale.");
   });
 });
 
@@ -96,6 +101,13 @@ function workbenchState(): LearningApplicationState {
       submittedPendingQuestions: [],
       currentTeachingInput: { kind: "sessionIntake", text: "Every compact subset is closed." },
       pendingQuestion: null,
+      askBarContext: {
+        items: [],
+        includedIds: [],
+        customized: false
+      },
+      questionCards: [],
+      activeQuestionCardId: null,
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,

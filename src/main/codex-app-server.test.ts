@@ -224,6 +224,44 @@ describe("Codex app-server contract", () => {
         config: { features: { shell_tool: false, unified_exec: false } }
       }
     });
+
+    await runtime.streamTeaching({
+      sessionId: "learning-session-full-question",
+      mathematics: "Where is monotonicity used?",
+      learningGoal: "Understand the selected claim",
+      scope: "Inspect one inference",
+      initialTeachingDirection: "Use the learner-approved context",
+      accessScope: {
+        policy: "full",
+        sourceIds: ["source-1"],
+        allowsBroadLocalRead: true,
+        allowsSourceModification: false
+      },
+      sourceContext: [{ sourceId: "source-1", name: "lemma.txt", mediaType: "text/plain", content: "bounded monotone sequence" }],
+      questionContext: [{
+        id: "source-anchor:anchor-1",
+        kind: "sourceAnchor",
+        typeLabel: "Source Anchor",
+        identity: "bounded monotone sequence",
+        location: "Text at characters 2–27",
+        preview: "bounded monotone sequence",
+        sourceId: "source-1",
+        sourceAnchorId: "anchor-1"
+      }],
+      onAccessRequest: async () => ({ status: "denied", policy: "full" }),
+      onDelta: () => undefined,
+      signal: new AbortController().signal
+    });
+    expect(transport.messages.filter((message) => message.method === "thread/start").at(-1)).toMatchObject({
+      params: {
+        dynamicTools: [],
+        config: { features: { shell_tool: false, unified_exec: false } }
+      }
+    });
+    const questionTurnStart = transport.messages.filter((message) => message.method === "turn/start").at(-1)!;
+    expect(JSON.stringify(questionTurnStart.params)).toContain("Learner-approved Ask Bar context");
+    expect(JSON.stringify(questionTurnStart.params)).toContain("Text at characters 2–27");
+    expect(JSON.stringify(questionTurnStart.params)).not.toContain("Learning Goal:");
   });
 
   it("interrupts active teaching and shuts down the stdio transport", async () => {

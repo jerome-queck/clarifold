@@ -254,9 +254,11 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByLabel("Pending Question text").fill("Why must a finite set of absolute values have a maximum?");
     const submitPending = page.getByRole("button", { name: "Submit Pending Question" });
     await submitPending.press("Enter");
-    const currentTeachingCard = page.getByRole("region", { name: "Current Teaching Card" });
-    await expect(currentTeachingCard.getByText("Complete", { exact: true })).toBeVisible({ timeout: 15_000 });
-    await expect(currentTeachingCard.getByText(
+    const questionCard = page.getByRole("article", {
+      name: "Question Card: Why must a finite set of absolute values have a maximum?"
+    });
+    await expect(questionCard.getByText("Current revision", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(questionCard.getByText(
       "Start from the key definition, then connect each inference to the stated goal.",
       { exact: true }
     )).toBeVisible();

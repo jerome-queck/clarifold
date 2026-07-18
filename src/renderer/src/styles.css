@@ -282,6 +282,19 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .ask-bar label { margin-top: 18px; }
 .ask-bar textarea { width: 100%; min-height: 92px; padding: 12px; resize: vertical; border: 1px solid #c8d0c8; border-radius: 10px; color: #17332e; background: #fbfaf6; line-height: 1.4; }
 .ask-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.context-chip-editor { margin: 18px 0; padding: 16px; border: 1px solid #d5d4ca; border-radius: 12px; background: #f7f8f3; }
+.context-chip-editor > p { margin: 0 0 10px; color: #647971; font-size: 12px; }
+.context-chip-list { display: flex; gap: 8px; margin: 0; padding: 0; flex-wrap: wrap; list-style: none; }
+.context-chip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 7px 7px 11px; border: 1px solid #bfd1c4; border-radius: 999px; color: #31534a; background: #edf4ec; font-size: 12px; }
+.context-chip button { padding: 4px 7px; border: 0; border-radius: 999px; color: #6f493b; background: #f5e8e1; font-size: 10px; font-weight: 750; }
+.context-overflow { margin-top: 9px; padding: 7px 10px; border: 1px solid #c9d8cd; border-radius: 999px; color: #31534a; background: transparent; font-size: 12px; font-weight: 750; }
+.context-add-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 9px; margin-top: 14px; }
+.context-add-controls label { grid-column: 1 / -1; margin: 0; }
+.question-card { margin-top: 20px; padding: 20px; border: 1px solid #b8cfbd; border-radius: 14px; background: #eef4ec; }
+.question-card.failed, .question-card.stopped { border-color: #dfbaa9; background: #f9eee8; }
+.question-card h3 { margin: 0; font-family: Georgia, serif; font-size: 22px; font-weight: 500; }
+.question-card > p { white-space: pre-wrap; line-height: 1.6; }
+.question-card-history { margin-top: 12px; color: #557069; }
 .access-policy { margin: 0 0 14px; padding: 18px; border: 1px solid #d5d4ca; border-radius: 12px; color: #506861; background: rgba(255,255,255,.55); }
 .access-policy h2 { margin: 3px 0 6px; font-size: 21px; }
 .access-policy p { margin: 4px 0; }
