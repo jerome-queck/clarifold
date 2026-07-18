@@ -148,7 +148,7 @@ export class LearningApplication {
       case "navigateToWorkspace": {
         const workspace = this.state.workspaces.find((candidate) => candidate.id === action.workspaceId);
         if (!workspace) throw new Error("Choose an existing Study Workspace.");
-        this.pauseActiveSessionForNavigation();
+        if (this.state.activeSessionId) this.pauseActiveSessionAndMakeResumable();
         const currentMission = this.state.missions.find(
           (mission) => mission.id === this.state.navigation.missionId && mission.workspaceId === workspace.id
         );
@@ -162,7 +162,7 @@ export class LearningApplication {
       }
       case "navigateToMission": {
         this.requireMission(action.workspaceId, action.missionId);
-        this.pauseActiveSessionForNavigation();
+        if (this.state.activeSessionId) this.pauseActiveSessionAndMakeResumable();
         this.state.navigation = { workspaceId: action.workspaceId, missionId: action.missionId };
         this.state.screen = "dashboard";
         break;
@@ -204,11 +204,7 @@ export class LearningApplication {
         break;
       }
       case "leaveSession": {
-        const session = this.requireActiveSession();
-        session.status = "paused";
-        session.activityOrder = this.nextActivityOrder();
-        this.state.activeSessionId = null;
-        this.state.resumeSessionId = session.id;
+        const session = this.pauseActiveSessionAndMakeResumable();
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "dashboard";
         break;
@@ -287,13 +283,13 @@ export class LearningApplication {
     this.requireSession(this.state.activeSessionId).status = "paused";
   }
 
-  private pauseActiveSessionForNavigation(): void {
-    if (!this.state.activeSessionId) return;
-    const session = this.requireSession(this.state.activeSessionId);
+  private pauseActiveSessionAndMakeResumable(): LearningSession {
+    const session = this.requireActiveSession();
     session.status = "paused";
     session.activityOrder = this.nextActivityOrder();
     this.state.resumeSessionId = session.id;
     this.state.activeSessionId = null;
+    return session;
   }
 
   private nextActivityOrder(): number {
