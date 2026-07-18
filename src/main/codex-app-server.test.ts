@@ -237,6 +237,54 @@ describe("Codex app-server contract", () => {
       "Codex returned a malformed Session Proposal. Retry"
     );
   });
+
+  it("fails active turns on timeout or transport loss instead of leaving a streaming hang", async () => {
+    const createHangingTransport = () => {
+      let created!: ScriptedTransport;
+      created = new ScriptedTransport((message) => {
+        if (!("id" in message)) return;
+        if (message.method === "initialize") {
+          created.respond(message.id, {
+            userAgent: "codex-cli/0.144.1",
+            codexHome: "/tmp/codex-home",
+            platformFamily: "unix",
+            platformOs: "macos"
+          });
+        }
+        if (message.method === "thread/start") created.respond(message.id, { thread: { id: "thread-hang" } });
+        if (message.method === "turn/start") created.respond(message.id, { turn: { id: "turn-hang" } });
+        if (message.method === "turn/interrupt") created.respond(message.id, {});
+      });
+      return created;
+    };
+
+    const timeoutTransport = createHangingTransport();
+    const timeoutRuntime = await CodexAppServerRuntime.connect(timeoutTransport, "/workspace", { turnTimeoutMs: 20 });
+    await expect(timeoutRuntime.proposeSession("Never completes")).rejects.toThrow("timed out");
+
+    const failedTransport = createHangingTransport();
+    const failedRuntime = await CodexAppServerRuntime.connect(failedTransport, "/workspace", { turnTimeoutMs: 1_000 });
+    const teaching = failedRuntime.streamTeaching({
+      sessionId: "transport-failure",
+      mathematics: "Explain this.",
+      learningGoal: "Understand this",
+      scope: "One claim",
+      initialTeachingDirection: "Start",
+      onDelta: () => undefined,
+      signal: new AbortController().signal
+    });
+    await failedTransport.waitForMessage("turn/start");
+    failedTransport.fail(new Error("stdio closed unexpectedly"));
+    await expect(teaching).rejects.toThrow("Codex runtime became unavailable");
+  });
+
+  it("rejects an incompatible initialize response before sending initialized", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") transport.respond(message.id, { userAgent: "unknown" });
+    });
+    await expect(CodexAppServerRuntime.connect(transport, "/workspace")).rejects.toThrow("incompatible initialize response");
+    expect(transport.messages.some((message) => message.method === "initialized")).toBe(false);
+  });
 });
 
 type ProtocolMessage = {
@@ -289,6 +337,10 @@ class ScriptedTransport implements AppServerTransport {
   close(): void {
     this.closed = true;
     this.closeListener?.();
+  }
+
+  fail(error: Error): void {
+    this.closeListener?.(error);
   }
 
   async waitForMessage(method: string): Promise<void> {

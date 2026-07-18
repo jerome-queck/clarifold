@@ -45,8 +45,9 @@ class CodexProcessTransport implements AppServerTransport {
     this.process.once("exit", (code, signal) => {
       this.closed = true;
       const detail = this.stderr.trim();
+      if (detail) console.error("Codex app-server diagnostics:", detail);
       this.closeListener?.(new Error(
-        `Codex app-server stopped${code === null ? ` with signal ${signal}` : ` with code ${code}`}.${detail ? ` ${detail}` : ""}`
+        `Codex app-server stopped${code === null ? ` with signal ${signal}` : ` with code ${code}`}.`
       ));
     });
   }
@@ -81,6 +82,8 @@ class AppServerClient {
     reject(error: Error): void;
   }>();
   private readonly notificationListeners = new Set<(message: ProtocolMessage) => void>();
+  private readonly failureListeners = new Set<(error: Error) => void>();
+  private failureError: Error | null = null;
 
   constructor(private readonly transport: AppServerTransport) {
     transport.onLine((line) => this.receive(line));
@@ -88,17 +91,28 @@ class AppServerClient {
   }
 
   async initialize(): Promise<void> {
-    await this.request("initialize", {
+    const response = await this.request("initialize", {
       clientInfo: { name: "quick_study", title: "Quick Study", version: "0.1.0" },
       capabilities: null
     });
+    if (!isInitializeResponse(response)) {
+      throw new Error("Codex app-server uses an incompatible initialize response.");
+    }
     this.notify("initialized", {});
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  request(method: string, params?: unknown, timeoutMs = 10_000): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Codex app-server timed out while handling ${method}.`));
+      }, timeoutMs);
+      timer.unref();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); }
+      });
       this.send({ id, method, params });
     });
   }
@@ -114,6 +128,12 @@ class AppServerClient {
   onNotification(listener: (message: ProtocolMessage) => void): () => void {
     this.notificationListeners.add(listener);
     return () => this.notificationListeners.delete(listener);
+  }
+
+  onFailure(listener: (error: Error) => void): () => void {
+    this.failureListeners.add(listener);
+    if (this.failureError) listener(this.failureError);
+    return () => this.failureListeners.delete(listener);
   }
 
   private send(message: ProtocolMessage): void {
@@ -143,8 +163,11 @@ class AppServerClient {
   }
 
   private rejectPending(error: Error): void {
+    if (this.failureError) return;
+    this.failureError = error;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
+    for (const listener of this.failureListeners) listener(error);
   }
 }
 
@@ -155,21 +178,35 @@ export class CodexAppServerRuntime implements ModelRuntime {
     onDelta?: (delta: string) => void;
     resolve(content: string): void;
     reject(error: Error): void;
+    timeout: ReturnType<typeof setTimeout>;
   }>();
   private readonly earlyTurnNotifications = new Map<string, ProtocolMessage[]>();
+  private runtimeFailure: Error | null = null;
   private readonly teachingStartSignals = new Map<string, {
     promise: Promise<void>;
     resolve(): void;
   }>();
 
-  private constructor(private readonly client: AppServerClient, private readonly cwd: string) {
+  private constructor(
+    private readonly client: AppServerClient,
+    private readonly cwd: string,
+    private readonly turnTimeoutMs: number
+  ) {
     client.onNotification((message) => this.receiveNotification(message));
+    client.onFailure((error) => {
+      this.runtimeFailure = error;
+      this.failActiveTurns(error);
+    });
   }
 
-  static async connect(transport: AppServerTransport, cwd: string): Promise<CodexAppServerRuntime> {
+  static async connect(
+    transport: AppServerTransport,
+    cwd: string,
+    options: { turnTimeoutMs?: number } = {}
+  ): Promise<CodexAppServerRuntime> {
     const client = new AppServerClient(transport);
     await client.initialize();
-    return new CodexAppServerRuntime(client, cwd);
+    return new CodexAppServerRuntime(client, cwd, options.turnTimeoutMs ?? 120_000);
   }
 
   static launch(cwd: string, command = process.env.QUICK_STUDY_CODEX_PATH ?? "codex"): Promise<CodexAppServerRuntime> {
@@ -280,6 +317,9 @@ export class CodexAppServerRuntime implements ModelRuntime {
       input: [{ type: "text", text: prompt, text_elements: [] }],
       ...(outputSchema ? { outputSchema } : {})
     }) as { turn: { id: string } };
+    if (this.runtimeFailure) {
+      throw new Error(`Codex runtime became unavailable. ${this.runtimeFailure.message}`);
+    }
 
     return new Promise<string>((resolve, reject) => {
       this.turns.set(turnResponse.turn.id, {
@@ -287,7 +327,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
         content: "",
         onDelta,
         resolve,
-        reject
+        reject,
+        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), this.turnTimeoutMs)
       });
       if (sessionId) this.activeTeachingTurns.set(sessionId, {
         threadId: threadResponse.thread.id,
@@ -325,6 +366,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
       return;
     }
     this.turns.delete(params.turn.id);
+    clearTimeout(turn.timeout);
     for (const [sessionId, active] of this.activeTeachingTurns) {
       if (active.turnId === params.turn.id) this.activeTeachingTurns.delete(sessionId);
     }
@@ -342,6 +384,45 @@ export class CodexAppServerRuntime implements ModelRuntime {
     buffered.push(message);
     this.earlyTurnNotifications.set(turnId, buffered.slice(-100));
   }
+
+  private expireTurn(turnId: string): void {
+    const turn = this.turns.get(turnId);
+    if (!turn) return;
+    this.turns.delete(turnId);
+    this.removeActiveTeachingTurn(turnId);
+    void this.client.request("turn/interrupt", { threadId: turn.threadId, turnId }).catch(() => undefined);
+    turn.reject(new Error("Codex teaching timed out. Retry when the runtime is available."));
+  }
+
+  private failActiveTurns(error: Error): void {
+    for (const [turnId, turn] of this.turns) {
+      clearTimeout(turn.timeout);
+      turn.reject(new Error(`Codex runtime became unavailable. ${error.message}`));
+      this.removeActiveTeachingTurn(turnId);
+    }
+    this.turns.clear();
+  }
+
+  private removeActiveTeachingTurn(turnId: string): void {
+    for (const [sessionId, active] of this.activeTeachingTurns) {
+      if (active.turnId === turnId) this.activeTeachingTurns.delete(sessionId);
+    }
+  }
+}
+
+function isInitializeResponse(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const response = value as Record<string, unknown>;
+  return typeof response.userAgent === "string"
+    && typeof response.codexHome === "string"
+    && typeof response.platformFamily === "string"
+    && typeof response.platformOs === "string";
+}
+
+function createUnrefTimer(callback: () => void, timeoutMs: number): ReturnType<typeof setTimeout> {
+  const timer = setTimeout(callback, timeoutMs);
+  timer.unref();
+  return timer;
 }
 
 const SESSION_PROPOSAL_SCHEMA = {

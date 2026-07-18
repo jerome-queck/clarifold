@@ -256,6 +256,34 @@ describe("Learning Application", () => {
     });
   });
 
+  it("tracks every teaching job and persists stopped retryable cards across shutdown and relaunch", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the proof",
+      scope: "Follow the main inference",
+      initialTeachingDirection: "Start from the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+
+    let state = await application.submit({ type: "submitSessionIntake", mathematics: "Explain proof one." });
+    const firstSessionId = state.activeSessionId!;
+    await application.submit({ type: "leaveSession" });
+    state = await application.submit({ type: "submitSessionIntake", mathematics: "Explain proof two." });
+    const secondSessionId = state.activeSessionId!;
+
+    await application.shutdown();
+    expect(runtime.canceledSessionIds).toEqual(expect.arrayContaining([firstSessionId, secondSessionId]));
+    expect(application.getState().sessions.map((session) => session.teachingCard.status)).toEqual(["stopped", "stopped"]);
+
+    const reloaded = await LearningApplication.launch(dataDirectory);
+    expect(reloaded.getState().authentication.status).toBe("signedOut");
+    expect(reloaded.getState().sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: firstSessionId, teachingCard: expect.objectContaining({ status: "stopped", retryable: true }) }),
+      expect.objectContaining({ id: secondSessionId, teachingCard: expect.objectContaining({ status: "stopped", retryable: true }) })
+    ]));
+  });
+
   it("starts Quick Study from typed mathematics with an editable goal and target", async () => {
     const { application } = await launch();
 
@@ -473,8 +501,8 @@ describe("Learning Application", () => {
 class DeterministicModelRuntime implements ModelRuntime {
   readonly teachingRequests: TeachingRequest[] = [];
   readonly canceledSessionIds: string[] = [];
-  private teachingCompletion: (() => void) | null = null;
-  private teachingFailure: ((error: Error) => void) | null = null;
+  private readonly teachingCompletions = new Map<string, () => void>();
+  private readonly teachingFailures = new Map<string, (error: Error) => void>();
   authentication: Awaited<ReturnType<ModelRuntime["getAuthentication"]>> = {
     status: "signedIn",
     method: "chatgpt",
@@ -510,8 +538,8 @@ class DeterministicModelRuntime implements ModelRuntime {
     this.teachingRequests.push(request);
     if (this.holdTeaching) {
       await new Promise<void>((resolve, reject) => {
-        this.teachingCompletion = resolve;
-        this.teachingFailure = reject;
+        this.teachingCompletions.set(request.sessionId, resolve);
+        this.teachingFailures.set(request.sessionId, reject);
       });
     }
   }
@@ -520,17 +548,17 @@ class DeterministicModelRuntime implements ModelRuntime {
     this.teachingRequests.at(-1)?.onDelta(delta);
   }
 
-  completeTeaching() {
-    this.teachingCompletion?.();
+  completeTeaching(sessionId = this.teachingRequests.at(-1)?.sessionId) {
+    if (sessionId) this.teachingCompletions.get(sessionId)?.();
   }
 
-  failTeaching(error: Error) {
-    this.teachingFailure?.(error);
+  failTeaching(error: Error, sessionId = this.teachingRequests.at(-1)?.sessionId) {
+    if (sessionId) this.teachingFailures.get(sessionId)?.(error);
   }
 
   async cancelTeaching(sessionId: string) {
     this.canceledSessionIds.push(sessionId);
-    this.completeTeaching();
+    this.completeTeaching(sessionId);
   }
 
   async shutdown() {}

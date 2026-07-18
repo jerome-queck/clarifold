@@ -122,8 +122,7 @@ export class LearningApplication {
   private readonly statePath: string;
   private readonly modelRuntime: ModelRuntime | null;
   private persistence = Promise.resolve();
-  private modelWork = Promise.resolve();
-  private activeModelWork: { sessionId: string; controller: AbortController } | null = null;
+  private readonly modelWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
 
   private constructor(dataDirectory: string, modelRuntime: ModelRuntime | null) {
@@ -137,6 +136,9 @@ export class LearningApplication {
       const persisted = migratePersistedState(JSON.parse(await readFile(application.statePath, "utf8")));
       for (const session of persisted.sessions) {
         if (session.status === "active") session.status = "paused";
+        if (session.teachingCard.status === "streaming") {
+          session.teachingCard = interruptedTeachingCard(session.teachingCard.content);
+        }
       }
       persisted.activeSessionId = null;
       persisted.resumeSessionId = mostRecentSessionId(persisted.sessions);
@@ -151,6 +153,8 @@ export class LearningApplication {
       } catch (error) {
         application.state.authentication = failedAuthentication(null, error);
       }
+    } else {
+      application.state.authentication = signedOutAuthentication();
     }
     return application;
   }
@@ -165,15 +169,22 @@ export class LearningApplication {
   }
 
   async waitForModelWork(): Promise<void> {
-    await this.modelWork;
+    await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
     await this.persistence;
   }
 
   async shutdown(): Promise<void> {
-    if (this.activeModelWork && this.modelRuntime) {
-      this.activeModelWork.controller.abort();
-      await this.modelRuntime.cancelTeaching(this.activeModelWork.sessionId).catch(() => undefined);
+    const activeWorks = [...this.modelWorks.entries()];
+    for (const [sessionId, work] of activeWorks) {
+      const session = this.requireSession(sessionId);
+      session.teachingCard = interruptedTeachingCard(session.teachingCard.content);
+      work.controller.abort();
     }
+    if (activeWorks.length > 0) {
+      this.emitState();
+      this.queuePersistence();
+    }
+    await Promise.all(activeWorks.map(([sessionId]) => this.modelRuntime?.cancelTeaching(sessionId).catch(() => undefined)));
     await this.waitForModelWork();
     await this.modelRuntime?.shutdown();
   }
@@ -322,16 +333,12 @@ export class LearningApplication {
       }
       case "cancelModelWork": {
         const session = this.requireActiveSession();
-        if (!this.modelRuntime || this.activeModelWork?.sessionId !== session.id) {
+        const work = this.modelWorks.get(session.id);
+        if (!this.modelRuntime || !work) {
           throw new Error("There is no active model work to stop.");
         }
-        session.teachingCard = {
-          ...session.teachingCard,
-          status: "stopped",
-          error: "Teaching stopped. You can retry without losing this Learning Session.",
-          retryable: true
-        };
-        this.activeModelWork.controller.abort();
+        session.teachingCard = interruptedTeachingCard(session.teachingCard.content);
+        work.controller.abort();
         await this.modelRuntime.cancelTeaching(session.id);
         break;
       }
@@ -438,11 +445,10 @@ export class LearningApplication {
   private beginTeaching(session: LearningSession): void {
     if (!this.modelRuntime) throw new Error("Connect a Model Runtime before starting model-backed teaching.");
     const controller = new AbortController();
-    this.activeModelWork = { sessionId: session.id, controller };
     session.proposal.status = "accepted";
     session.teachingCard = { status: "streaming", content: "", error: null, retryable: false };
     const runtime = this.modelRuntime;
-    this.modelWork = runtime.streamTeaching({
+    const promise = runtime.streamTeaching({
       sessionId: session.id,
       mathematics: session.mathematics,
       learningGoal: session.learningGoal,
@@ -469,10 +475,11 @@ export class LearningApplication {
         retryable: true
       };
     }).finally(() => {
-      if (this.activeModelWork?.sessionId === session.id) this.activeModelWork = null;
+      if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
       this.queuePersistence();
       this.emitState();
     });
+    this.modelWorks.set(session.id, { controller, promise });
   }
 
   private emitState(state = this.getState()): void {
@@ -603,6 +610,15 @@ function defaultAcceptedProposal(): LearningSession["proposal"] {
 
 function emptyTeachingCard(): LearningSession["teachingCard"] {
   return { status: "idle", content: "", error: null, retryable: false };
+}
+
+function interruptedTeachingCard(content: string): LearningSession["teachingCard"] {
+  return {
+    status: "stopped",
+    content,
+    error: "Teaching stopped. You can retry without losing this Learning Session.",
+    retryable: true
+  };
 }
 
 function emptyWorkspaceContext(): WorkspaceContext {

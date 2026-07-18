@@ -384,18 +384,18 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
   const [target, setTarget] = useState(session.sessionTarget);
   const [direction, setDirection] = useState(session.proposal.initialTeachingDirection);
 
+  const saveProposal = () => window.quickStudy.submit({
+    type: "reviseSessionProposal",
+    learningGoal: goal,
+    scope: target,
+    initialTeachingDirection: direction
+  });
   const leave = async () => {
-    await window.quickStudy.submit({ type: "editLearningGoal", value: goal });
-    await window.quickStudy.submit({ type: "editSessionTarget", value: target });
+    await saveProposal();
     onState(await window.quickStudy.submit({ type: "leaveSession" }));
   };
   const acceptProposal = async () => {
-    await window.quickStudy.submit({
-      type: "reviseSessionProposal",
-      learningGoal: goal,
-      scope: target,
-      initialTeachingDirection: direction
-    });
+    await saveProposal();
     onState(await window.quickStudy.submit({ type: "confirmSessionProposal" }));
   };
 
@@ -408,27 +408,24 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
           <aside className="session-panel">
             <p className="eyebrow">{workspace.name} · {mission.name}</p>
             <h1>Mathematical Workbench</h1>
+            <p className="proposal-label">Session Proposal</p>
             <label htmlFor="goal">Learning Goal</label>
-            <textarea id="goal" className="field" value={goal} onChange={(event) => {
-              const value = event.target.value;
-              setGoal(value);
-              void window.quickStudy.submit({ type: "editLearningGoal", value });
-            }} />
+            <textarea id="goal" className="field" value={goal} onChange={(event) => setGoal(event.target.value)} />
             <label htmlFor="target">Session Target</label>
-            <textarea id="target" className="field" value={target} onChange={(event) => {
-              const value = event.target.value;
-              setTarget(value);
-              void window.quickStudy.submit({ type: "editSessionTarget", value });
-            }} />
-            {session.proposal.status === "awaitingConfirmation" && (
+            <textarea id="target" className="field" value={target} onChange={(event) => setTarget(event.target.value)} />
+            <label htmlFor="direction">Initial teaching direction</label>
+            <textarea id="direction" className="field" value={direction} onChange={(event) => setDirection(event.target.value)} />
+            {session.proposal.status === "awaitingConfirmation" ? (
               <>
-                <label htmlFor="direction">Initial teaching direction</label>
-                <textarea id="direction" className="field" value={direction} onChange={(event) => setDirection(event.target.value)} />
                 <p className="confirmation-reason">{session.proposal.confirmationReason}</p>
                 <button className="primary proposal-action" disabled={!goal.trim() || !target.trim() || !direction.trim()} onClick={() => void acceptProposal()}>
                   Accept and start teaching
                 </button>
               </>
+            ) : (
+              <button className="secondary proposal-action" disabled={!goal.trim() || !target.trim() || !direction.trim()} onClick={() => void saveProposal().then(onState)}>
+                Save proposal changes
+              </button>
             )}
             <button className="secondary" onClick={() => void leave()}>Leave session</button>
           </aside>
@@ -457,7 +454,11 @@ function TeachingCard({ session, onState }: { session: LearningSession; onState:
         <div><p className="eyebrow">Teaching Card</p><h2 id="teaching-card-title">{session.learningGoal}</h2></div>
         <span className="saved">{teachingStatusLabel(card.status)}</span>
       </div>
-      {card.content ? <div className="teaching-content">{card.content}</div> : card.status === "streaming" ? <p className="subtle">Codex is preparing the first teaching move…</p> : null}
+      <div className="teaching-section">
+        <h3>Explanation</h3>
+        {card.content ? <div className="teaching-content">{card.content}</div> : card.status === "streaming" ? <p className="subtle">Codex is preparing the first teaching move…</p> : null}
+      </div>
+      <div className="teaching-section next-step"><span>Next step</span><strong>{session.returnContext.nextAction}</strong></div>
       {card.error && <p className="failure-message" role="alert">{card.error}</p>}
       <div className="teaching-actions">
         {card.status === "streaming" && <button className="secondary" onClick={() => void window.quickStudy.submit({ type: "cancelModelWork" }).then(onState)}>Stop teaching</button>}
