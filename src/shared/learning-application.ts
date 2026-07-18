@@ -46,24 +46,20 @@ export interface PendingQuestion {
 
 export type SourceAnchorPaletteAction = "explain" | "question" | "annotate" | "addToLearningTrail";
 
+export interface SourceTextLocation {
+  startOffset: number;
+  endOffset: number;
+  exactText: string;
+  prefix: string;
+  suffix: string;
+}
+
 export type SourceAnchorSelection =
-  | {
-      kind: "text";
-      startOffset: number;
-      endOffset: number;
-      exactText: string;
-      prefix: string;
-      suffix: string;
-    }
-  | {
+  | ({ kind: "text" } & SourceTextLocation)
+  | ({
       kind: "equation";
       equationIndex: number;
-      startOffset: number;
-      endOffset: number;
-      exactText: string;
-      prefix: string;
-      suffix: string;
-    }
+    } & SourceTextLocation)
   | {
       kind: "diagramRegion";
       bounds: { x: number; y: number; width: number; height: number };
@@ -1060,7 +1056,7 @@ export class LearningApplication {
     if (view.mediaType !== "text/plain") {
       throw new Error("Text and equation anchors require an accessible text Source Layer.");
     }
-    if (view.content.slice(selection.startOffset, selection.endOffset) !== selection.exactText) {
+    if (!matchesSourceTextLocation(view.content, selection)) {
       throw new Error("The selected source text no longer matches this Source Layer.");
     }
     return validated;
@@ -1683,25 +1679,34 @@ function validatedSourceAnchorSelection(value: unknown, source?: WorkspaceSource
   if (!Number.isInteger(startOffset) || !Number.isInteger(endOffset)
     || (startOffset as number) < 0 || (endOffset as number) <= (startOffset as number)
     || typeof value.exactText !== "string" || value.exactText.length !== (endOffset as number) - (startOffset as number)
-    || typeof value.prefix !== "string" || typeof value.suffix !== "string") {
+    || typeof value.prefix !== "string" || typeof value.suffix !== "string"
+    || value.prefix.length > 32 || value.suffix.length > 32) {
     throw new Error("Text and equation anchors require a precise non-empty source range.");
   }
-  if (source?.kind === "managedAsset"
-    && source.content.slice(startOffset as number, endOffset as number) !== value.exactText) {
-    throw new Error("The selected source text no longer matches this Source Layer.");
-  }
-  const location = {
+  const location: SourceTextLocation = {
     startOffset: startOffset as number,
     endOffset: endOffset as number,
     exactText: value.exactText,
     prefix: value.prefix,
     suffix: value.suffix
   };
+  if (source?.kind === "managedAsset" && !matchesSourceTextLocation(source.content, location)) {
+    throw new Error("The selected source text no longer matches this Source Layer.");
+  }
   if (value.kind === "text") return { kind: "text", ...location };
   if (!Number.isInteger(value.equationIndex) || (value.equationIndex as number) < 0) {
     throw new Error("An equation anchor requires its equation location.");
   }
   return { kind: "equation", equationIndex: value.equationIndex as number, ...location };
+}
+
+function matchesSourceTextLocation(
+  content: string,
+  selection: SourceTextLocation
+): boolean {
+  return content.slice(selection.startOffset, selection.endOffset) === selection.exactText
+    && content.slice(Math.max(0, selection.startOffset - selection.prefix.length), selection.startOffset) === selection.prefix
+    && content.slice(selection.endOffset, selection.endOffset + selection.suffix.length) === selection.suffix;
 }
 
 export function isSourceAnchorPaletteAction(value: unknown): value is SourceAnchorPaletteAction {
