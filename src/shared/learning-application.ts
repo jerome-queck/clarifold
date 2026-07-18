@@ -66,7 +66,7 @@ export interface LearningSession {
     error: string | null;
     retryable: boolean;
   };
-  agentWorkLog: Array<ModelRuntimeEvent & { sequence: number }>;
+  accessPolicy: "focused";
 }
 
 export interface LearningApplicationState {
@@ -133,6 +133,7 @@ export class LearningApplication {
   private persistence = Promise.resolve();
   private readonly modelWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
+  private agentWorkLogs: Record<string, Array<ModelRuntimeEvent & { sequence: number }>> = {};
 
   private constructor(dataDirectory: string, modelRuntime: ModelRuntime | null) {
     this.statePath = join(dataDirectory, "learning-application.json");
@@ -142,7 +143,10 @@ export class LearningApplication {
   static async launch(dataDirectory: string, modelRuntime: ModelRuntime | null = null): Promise<LearningApplication> {
     const application = new LearningApplication(dataDirectory, modelRuntime);
     try {
-      const persisted = migratePersistedState(JSON.parse(await readFile(application.statePath, "utf8")));
+      const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
+      const { agentWorkLogs, ...storedState } = stored;
+      const persisted = migratePersistedState(storedState);
+      application.agentWorkLogs = migrateAgentWorkLogs(agentWorkLogs);
       for (const session of persisted.sessions) {
         if (session.status === "active") session.status = "paused";
         if (session.teachingCard.status === "streaming") {
@@ -273,7 +277,7 @@ export class LearningApplication {
           },
           proposal: defaultAcceptedProposal(),
           teachingCard: emptyTeachingCard(),
-          agentWorkLog: []
+          accessPolicy: "focused"
         };
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -287,8 +291,11 @@ export class LearningApplication {
         if (!mathematics) throw new Error("Typed mathematics is required to start Quick Study.");
         if (!this.modelRuntime) throw new Error("Connect a Model Runtime before starting model-backed teaching.");
         let proposal: SessionProposal;
+        const pendingLog: Array<ModelRuntimeEvent & { sequence: number }> = [];
         try {
-          proposal = await this.modelRuntime.proposeSession(mathematics);
+          proposal = await this.modelRuntime.proposeSession(mathematics, (event) => {
+            pendingLog.push({ ...event, sequence: pendingLog.length + 1 });
+          });
           this.state.intakeError = null;
         } catch (error) {
           const message = usefulRuntimeError(error);
@@ -317,8 +324,9 @@ export class LearningApplication {
             confirmationReason: proposal.confirmationReason
           },
           teachingCard: emptyTeachingCard(),
-          agentWorkLog: []
+          accessPolicy: "focused"
         };
+        this.agentWorkLogs[session.id] = pendingLog;
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
         this.state.resumeSessionId = session.id;
@@ -457,7 +465,7 @@ export class LearningApplication {
     const directory = dirname(this.statePath);
     const temporaryPath = `${this.statePath}.temporary`;
     await mkdir(directory, { recursive: true });
-    await writeFile(temporaryPath, JSON.stringify(state, null, 2), "utf8");
+    await writeFile(temporaryPath, JSON.stringify({ ...state, agentWorkLogs: this.agentWorkLogs }, null, 2), "utf8");
     await rename(temporaryPath, this.statePath);
   }
 
@@ -481,7 +489,8 @@ export class LearningApplication {
         this.queuePersistence();
       },
       onRuntimeEvent: (event) => {
-        session.agentWorkLog.push({ ...event, sequence: session.agentWorkLog.length + 1 });
+        const log = this.agentWorkLogs[session.id] ??= [];
+        log.push({ ...event, sequence: log.length + 1 });
         this.queuePersistence();
       }
     }).then(() => {
@@ -542,7 +551,11 @@ export class LearningApplication {
   }
 
   private recordAuthenticationLoss(message: string): void {
-    if (!/authentication|sign in|credential/i.test(message)) return;
+    const runtimeLost = /runtime became unavailable|runtime is unavailable/i.test(message);
+    if (runtimeLost) {
+      this.state.runtimeAvailable = false;
+    }
+    if (!runtimeLost && !/authentication|sign in|credential/i.test(message)) return;
     this.state.authentication = {
       status: "failed",
       method: this.state.authentication.method,
@@ -645,7 +658,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       ...session,
       proposal: session.proposal ?? defaultAcceptedProposal(),
       teachingCard: session.teachingCard ?? emptyTeachingCard(),
-      agentWorkLog: session.agentWorkLog ?? []
+      accessPolicy: session.accessPolicy ?? "focused"
     }));
     return current;
   }
@@ -662,7 +675,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       activityOrder: 1,
       proposal: defaultAcceptedProposal(),
       teachingCard: emptyTeachingCard(),
-      agentWorkLog: []
+      accessPolicy: "focused"
     };
     migrated.sessions.push(session);
     migrated.resumeSessionId = session.id;
@@ -670,6 +683,12 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     migrated.activityOrder = 1;
   }
   return migrated;
+}
+
+function migrateAgentWorkLogs(value: unknown): Record<string, Array<ModelRuntimeEvent & { sequence: number }>> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, Array<ModelRuntimeEvent & { sequence: number }>>
+    : {};
 }
 
 function defaultAcceptedProposal(): LearningSession["proposal"] {

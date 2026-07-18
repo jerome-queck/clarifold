@@ -31,7 +31,7 @@ export interface TeachingRequest {
 }
 
 export interface ModelRuntimeEvent {
-  type: "threadStarted" | "turnStarted" | "outputDelta" | "turnCompleted" | "turnFailed";
+  type: "threadStarted" | "turnStarted" | "inputSubmitted" | "outputDelta" | "turnCompleted" | "turnFailed";
   threadId: string;
   turnId: string | null;
   detail: string;
@@ -41,7 +41,7 @@ export interface ModelRuntime {
   getAuthentication(): Promise<AuthenticationState>;
   startChatGptLogin(): Promise<ChatGptLogin>;
   loginWithApiKey(apiKey: string): Promise<void>;
-  proposeSession(mathematics: string): Promise<SessionProposal>;
+  proposeSession(mathematics: string, onRuntimeEvent?: (event: ModelRuntimeEvent) => void): Promise<SessionProposal>;
   streamTeaching(request: TeachingRequest): Promise<void>;
   cancelTeaching(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;

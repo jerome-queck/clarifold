@@ -121,12 +121,7 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .teaching-section .teaching-content { margin-top: 0; }
 .failure-message { margin: 14px 0 0; color: #8d3d2b; font-weight: 650; line-height: 1.45; }
 .teaching-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
-.agent-work-log { margin-top: 12px; padding: 13px 16px; border: 1px solid #d5d4ca; border-radius: 12px; color: #5c6f69; background: rgba(255,255,255,.55); font-size: 12px; }
-.agent-work-log summary { cursor: pointer; font-weight: 750; }
-.agent-work-log ol { margin: 12px 0 0; padding-left: 22px; }
-.agent-work-log li { margin: 8px 0; }
-.agent-work-log li span { display: block; margin: 2px 0; }
-.agent-work-log code { color: #81634f; font-size: 10px; }
+.access-policy { margin: 0 0 14px; padding: 11px 14px; border: 1px solid #d5d4ca; border-radius: 10px; color: #506861; background: rgba(255,255,255,.55); font-size: 12px; }
 .loading { display: grid; min-height: 100vh; place-items: center; color: #49665e; background: #f4efe5; }
 
 @media (max-width: 1000px) {

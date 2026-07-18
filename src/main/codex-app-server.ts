@@ -149,6 +149,10 @@ class AppServerClient {
       this.rejectPending(new Error("Codex app-server sent malformed JSON."));
       return;
     }
+    if (message.id !== undefined && message.method) {
+      this.denyServerRequest(message.id, message.method);
+      return;
+    }
     if (message.id === undefined) {
       for (const listener of this.notificationListeners) listener(message);
       return;
@@ -161,6 +165,19 @@ class AppServerClient {
       pending.reject(curatedProtocolError(message.error.message));
     } else {
       pending.resolve(message.result);
+    }
+  }
+
+  private denyServerRequest(id: ProtocolId, method: string): void {
+    const modernApproval = method === "item/commandExecution/requestApproval"
+      || method === "item/fileChange/requestApproval";
+    const legacyApproval = method === "execCommandApproval" || method === "applyPatchApproval";
+    if (modernApproval) {
+      this.send({ id, result: { decision: "decline" } });
+    } else if (legacyApproval) {
+      this.send({ id, result: { decision: "denied" } });
+    } else {
+      this.send({ id, error: { code: -32601, message: "Focused Access does not permit server-initiated requests." } });
     }
   }
 
@@ -246,7 +263,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     await this.client.request("account/login/start", { type: "apiKey", apiKey });
   }
 
-  async proposeSession(mathematics: string): Promise<SessionProposal> {
+  async proposeSession(mathematics: string, onRuntimeEvent?: (event: ModelRuntimeEvent) => void): Promise<SessionProposal> {
     const content = await this.runTurn(
       [
         "Interpret this mathematics intake for an adaptive learning session.",
@@ -255,7 +272,10 @@ export class CodexAppServerRuntime implements ModelRuntime {
         "Mathematics intake:",
         mathematics
       ].join("\n\n"),
-      SESSION_PROPOSAL_SCHEMA
+      SESSION_PROPOSAL_SCHEMA,
+      undefined,
+      undefined,
+      onRuntimeEvent
     );
     return parseSessionProposal(content);
   }
@@ -349,6 +369,12 @@ export class CodexAppServerRuntime implements ModelRuntime {
       turnId: turnResponse.turn.id,
       detail: "Codex teaching turn started."
     });
+    onRuntimeEvent?.({
+      type: "inputSubmitted",
+      threadId: threadResponse.thread.id,
+      turnId: turnResponse.turn.id,
+      detail: prompt
+    });
 
     return new Promise<string>((resolve, reject) => {
       this.turns.set(turnResponse.turn.id, {
@@ -388,7 +414,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
         type: "outputDelta",
         threadId: turn.threadId,
         turnId: params.turnId,
-        detail: `Received ${params.delta.length} learner-facing characters.`
+        detail: params.delta
       });
       return;
     }

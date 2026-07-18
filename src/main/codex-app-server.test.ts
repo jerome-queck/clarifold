@@ -302,6 +302,29 @@ describe("Codex app-server contract", () => {
     await expect(CodexAppServerRuntime.connect(transport, "/workspace")).rejects.toThrow("incompatible initialize response");
     expect(transport.messages.some((message) => message.method === "initialized")).toBe(false);
   });
+
+  it("denies app-server approval requests under Focused Access", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1",
+          codexHome: "/tmp/codex-home",
+          platformFamily: "unix",
+          platformOs: "macos"
+        });
+      }
+    });
+    await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    transport.request(900, "item/commandExecution/requestApproval", {});
+    transport.request(901, "item/fileChange/requestApproval", {});
+    transport.request(902, "execCommandApproval", {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(transport.messages).toContainEqual({ id: 900, result: { decision: "decline" } });
+    expect(transport.messages).toContainEqual({ id: 901, result: { decision: "decline" } });
+    expect(transport.messages).toContainEqual({ id: 902, result: { decision: "denied" } });
+  });
 });
 
 type ProtocolMessage = {
@@ -345,6 +368,10 @@ class ScriptedTransport implements AppServerTransport {
 
   notify(method: string, params: unknown): void {
     this.lineListener?.(JSON.stringify({ method, params }));
+  }
+
+  request(id: number, method: string, params: unknown): void {
+    this.lineListener?.(JSON.stringify({ id, method, params }));
   }
 
   reject(id: number | undefined, code: number, message: string): void {

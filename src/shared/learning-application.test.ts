@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -226,6 +226,48 @@ describe("Learning Application", () => {
     });
     runtime.completeTeaching();
     await application.waitForModelWork();
+  });
+
+  it("revokes the connected state when the running Codex transport is lost", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the claim",
+      scope: "One inference",
+      initialTeachingDirection: "Start from the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Explain this claim." });
+
+    runtime.failTeaching(new Error("Codex runtime became unavailable. Restart Codex and retry."));
+    await application.waitForModelWork();
+
+    expect(application.getState()).toMatchObject({
+      runtimeAvailable: false,
+      authentication: {
+        status: "failed",
+        error: "Codex runtime became unavailable. Restart Codex and retry."
+      }
+    });
+  });
+
+  it("persists execution events internally without adding them to learner-facing session state", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the claim",
+      scope: "One inference",
+      initialTeachingDirection: "Start from the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    });
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    const state = await application.submit({ type: "submitSessionIntake", mathematics: "Explain this claim." });
+    await application.waitForModelWork();
+
+    expect(state.sessions[0]).not.toHaveProperty("agentWorkLog");
+    const persisted = JSON.parse(await readFile(join(dataDirectory, "learning-application.json"), "utf8")) as {
+      agentWorkLogs: Record<string, unknown[]>;
+    };
+    expect(persisted.agentWorkLogs[state.sessions[0].id]).not.toHaveLength(0);
   });
 
   it("supports ChatGPT and API-key authentication without retaining credentials in application state", async () => {
@@ -589,8 +631,11 @@ class DeterministicModelRuntime implements ModelRuntime {
     this.receivedApiKeys.push(apiKey);
   }
 
-  async proposeSession(): Promise<SessionProposal> {
+  async proposeSession(mathematics: string, onRuntimeEvent?: TeachingRequest["onRuntimeEvent"]): Promise<SessionProposal> {
     if (this.proposalError) throw this.proposalError;
+    onRuntimeEvent?.({ type: "threadStarted", threadId: "proposal-thread", turnId: null, detail: "Thread started." });
+    onRuntimeEvent?.({ type: "inputSubmitted", threadId: "proposal-thread", turnId: "proposal-turn", detail: mathematics });
+    onRuntimeEvent?.({ type: "turnCompleted", threadId: "proposal-thread", turnId: "proposal-turn", detail: JSON.stringify(this.proposal) });
     return this.proposal;
   }
 

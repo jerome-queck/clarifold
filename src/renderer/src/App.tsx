@@ -292,7 +292,10 @@ function Intake({ state, onState }: { state: LearningApplicationState; onState: 
   const [mathematics, setMathematics] = useState("");
   const start = async (event: FormEvent) => {
     event.preventDefault();
-    onState(await window.quickStudy.submit({ type: "submitSessionIntake", mathematics }));
+    onState(await window.quickStudy.submit({
+      type: state.authentication.status === "signedIn" ? "submitSessionIntake" : "startQuickStudy",
+      mathematics
+    }));
   };
   return (
     <section className="intake-card" aria-labelledby="intake-title">
@@ -308,8 +311,8 @@ function Intake({ state, onState }: { state: LearningApplicationState; onState: 
           placeholder="What would you like to understand?"
         />
         <div className="intake-actions">
-          <span>{state.authentication.status === "signedIn" ? "No workspace setup required" : "Connect Codex above to begin"}</span>
-          <button className="primary" disabled={!mathematics.trim() || state.authentication.status !== "signedIn"}>Propose Learning Session</button>
+          <span>{state.authentication.status === "signedIn" ? "Focused Access · no workspace setup required" : "Local Working Mode · connect Codex for model teaching"}</span>
+          <button className="primary" disabled={!mathematics.trim()}>{state.authentication.status === "signedIn" ? "Propose Learning Session" : "Start local Learning Session"}</button>
         </div>
         {state.intakeError && <p className="failure-message" role="alert">{state.intakeError}</p>}
       </form>
@@ -454,8 +457,8 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
               <span className="saved">Saved locally</span>
             </div>
             <article>{session.mathematics}</article>
+            <p className="access-policy"><strong>Session Access Policy:</strong> Focused Access · only the mathematics pasted into this session</p>
             <TeachingCard session={session} onState={onState} />
-            <AgentWorkLog session={session} />
           </section>
         </div>
       </div>
@@ -490,22 +493,4 @@ function TeachingCard({ session, onState }: { session: LearningSession; onState:
 
 function teachingStatusLabel(status: LearningSession["teachingCard"]["status"]): string {
   return ({ idle: "Ready", streaming: "Streaming", completed: "Complete", stopped: "Stopped", failed: "Needs attention" })[status];
-}
-
-function AgentWorkLog({ session }: { session: LearningSession }) {
-  if (session.agentWorkLog.length === 0) return null;
-  return (
-    <details className="agent-work-log">
-      <summary>Agent Work Log · {session.agentWorkLog.length} events</summary>
-      <ol>
-        {session.agentWorkLog.map((event) => (
-          <li key={event.sequence}>
-            <strong>{event.type}</strong>
-            <span>{event.detail}</span>
-            {event.turnId && <code>{event.turnId}</code>}
-          </li>
-        ))}
-      </ol>
-    </details>
-  );
 }
