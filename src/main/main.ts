@@ -19,13 +19,28 @@ function isLearnerAction(value: unknown): value is LearnerAction {
   const action = value as Partial<LearnerAction>;
   switch (action.type) {
     case "leaveSession":
-    case "resumeSession":
       return true;
+    case "resumeSession":
+      return "sessionId" in action && typeof action.sessionId === "string";
     case "startQuickStudy":
       return "mathematics" in action && typeof action.mathematics === "string";
     case "editLearningGoal":
     case "editSessionTarget":
       return "value" in action && typeof action.value === "string";
+    case "createWorkspace":
+      return "name" in action && typeof action.name === "string";
+    case "renameWorkspace":
+      return "workspaceId" in action && typeof action.workspaceId === "string" && "name" in action && typeof action.name === "string";
+    case "createMission":
+      return "workspaceId" in action && typeof action.workspaceId === "string" && "name" in action && typeof action.name === "string";
+    case "navigateToWorkspace":
+      return "workspaceId" in action && typeof action.workspaceId === "string";
+    case "navigateToMission":
+      return "workspaceId" in action && typeof action.workspaceId === "string" && "missionId" in action && typeof action.missionId === "string";
+    case "fileSession":
+      return "sessionId" in action && typeof action.sessionId === "string"
+        && "workspaceId" in action && typeof action.workspaceId === "string"
+        && "missionId" in action && typeof action.missionId === "string";
     default:
       return false;
   }
