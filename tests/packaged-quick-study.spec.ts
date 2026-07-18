@@ -78,7 +78,17 @@ test("packaged Quick Study organizes durable work and resumes the latest session
 
     const linkPrimaryFolder = page.getByRole("button", { name: "Link Primary Folder" });
     await linkPrimaryFolder.press("Enter");
-    await expect(page.getByText("algebra-course", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open Linked Source algebra-course" })).toBeVisible();
+    await page.getByRole("button", { name: "Build Source Index for algebra-course" }).press("Enter");
+    await expect(page.getByText("Ready · 1 page", { exact: true })).toBeVisible();
+    await page.getByLabel("Search indexed source content").fill("orbits stabilizers");
+    await page.getByRole("button", { name: "Search sources" }).press("Enter");
+    await page.getByRole("button", { name: "Open source result algebra-course, Page 1" }).press("Enter");
+    await expect(page.getByLabel("Opened Source Index match")).toHaveText("Classify the orbits and stabilizers.");
+    await page.getByRole("button", { name: "Clear Source Index for algebra-course" }).press("Enter");
+    await expect(page.getByText("Search data unavailable · rebuild required", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Rebuild Source Index for algebra-course" }).press("Enter");
+    await expect(page.getByText("Ready · 1 page", { exact: true })).toBeVisible();
     const addAttachment = page.getByRole("button", { name: "Add External Attachment" });
     await addAttachment.press("Enter");
     const openAttachment = page.getByRole("button", { name: "Open Linked Source lecture-3.pdf" });

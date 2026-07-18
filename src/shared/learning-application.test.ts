@@ -7,6 +7,7 @@ import {
   type LinkedSource,
   type LocalSourceAccess,
   type SelectedLocalSource,
+  type SourceIndexExtraction,
   type SourceFingerprint
 } from "./learning-application";
 import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type TeachingRequest } from "./model-runtime";
@@ -345,6 +346,167 @@ describe("Learning Application", () => {
       link: { accessStatus: "unavailable", error: "The source is missing or access is no longer available." }
     });
 
+  });
+
+  it("indexes, searches, clears, and rebuilds source content without disturbing anchors or canonical records", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.contentBySourceName.set(
+      "compactness.txt",
+      "Every open cover has a finite subcover. Therefore $K$ is compact."
+    );
+    sourceAccess.indexBySourceName.set("compactness.txt", {
+      extractionMethod: "embeddedText",
+      pages: [{
+        pageNumber: 1,
+        width: 1000,
+        height: 1400,
+        thumbnailDataUrl: "data:image/png;base64,c21hbGwtdGh1bWJuYWls",
+        regions: [
+          {
+            kind: "text",
+            text: "Every open cover has a finite subcover.",
+            bounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+            sourceStartOffset: 0,
+            sourceEndOffset: 40
+          },
+          {
+            kind: "equation",
+            text: "$K$",
+            bounds: { x: 0.52, y: 0.16, width: 0.05, height: 0.04 },
+            sourceStartOffset: 51,
+            sourceEndOffset: 54
+          }
+        ]
+      }]
+    });
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const workspaceId = workspace.navigation.workspaceId;
+    const mission = await application.submit({ type: "createMission", workspaceId, name: "Compactness" });
+    const linked = await application.linkExternalAttachment(workspaceId, {
+      name: "compactness.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/compactness.txt",
+      canonicalPath: "/Users/learner/compactness.txt",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    const started = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Study compactness.",
+      location: { workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    await application.submit({
+      type: "createSourceAnchor",
+      sourceId: source.id,
+      selection: {
+        kind: "text",
+        startOffset: 0,
+        endOffset: 16,
+        exactText: "Every open cover",
+        prefix: "",
+        suffix: " has a finite subcover."
+      },
+      paletteAction: "explain"
+    });
+    const anchored = application.getState().sessions[0].sourceAnchors;
+
+    const indexed = await application.indexSource(source.id);
+    expect(indexed.sourceIndexes).toContainEqual(expect.objectContaining({
+      sourceId: source.id,
+      status: "ready",
+      extractionMethod: "embeddedText",
+      pageCount: 1,
+      equationCount: 1
+    }));
+    const [result] = await application.searchSourceIndex(workspaceId, "finite subcover");
+    expect(result).toMatchObject({
+      sourceId: source.id,
+      sourceName: "compactness.txt",
+      workspaceName: "Topology",
+      locationLabel: "Page 1",
+      preview: "Every open cover has a finite subcover.",
+      match: { pageNumber: 1, sourceStartOffset: 0, sourceEndOffset: 40 }
+    });
+    const opened = await application.openSourceSearchResult(result.id);
+    expect(opened).toMatchObject({
+      status: "available",
+      sourceId: source.id,
+      content: "Every open cover has a finite subcover. Therefore $K$ is compact.",
+      highlight: {
+        pageNumber: 1,
+        exactText: "Every open cover has a finite subcover.",
+        bounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 }
+      }
+    });
+
+    const cleared = await application.clearSourceIndex(source.id);
+    expect(cleared.sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "cleared" }));
+    await expect(application.searchSourceIndex(workspaceId, "finite subcover")).resolves.toEqual([]);
+    expect(cleared.sources).toEqual(indexed.sources);
+    expect(cleared.sessions[0].sourceAnchors).toEqual(anchored);
+
+    const relaunched = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(relaunched);
+    expect(relaunched.getState().sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "cleared" }));
+    const rebuilt = await relaunched.rebuildSourceIndex(source.id);
+    expect(rebuilt.sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "ready" }));
+    await expect(relaunched.searchSourceIndex(workspaceId, "finite subcover")).resolves.toHaveLength(1);
+    expect(relaunched.getState().sessions[0].sourceAnchors).toEqual(anchored);
+    expect(sourceAccess.indexedSourceIds).toEqual([source.id, source.id]);
+    expect(started.sessions[0].sourceAnchors).toEqual([]);
+  });
+
+  it("records OCR-backed index metadata while refusing to rebuild from an unavailable original", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.contentBySourceName.set("handwritten-proof.png", "data:image/png;base64,cHJvb2Y=");
+    sourceAccess.mediaTypeBySourceName.set("handwritten-proof.png", "image/png");
+    sourceAccess.indexBySourceName.set("handwritten-proof.png", {
+      extractionMethod: "ocr",
+      pages: [{
+        pageNumber: 1,
+        width: 800,
+        height: 600,
+        thumbnailDataUrl: "data:image/png;base64,c21hbGw=",
+        regions: [{
+          kind: "text",
+          text: "Assume the sequence is Cauchy",
+          bounds: { x: 0.08, y: 0.12, width: 0.7, height: 0.08 }
+        }]
+      }]
+    });
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Analysis" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "handwritten-proof.png",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/handwritten-proof.png",
+      canonicalPath: "/Users/learner/handwritten-proof.png",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+
+    const indexed = await application.indexSource(source.id);
+    expect(indexed.sourceIndexes).toContainEqual(expect.objectContaining({
+      sourceId: source.id,
+      status: "ready",
+      extractionMethod: "ocr"
+    }));
+    await expect(application.searchSourceIndex(workspace.navigation.workspaceId, "sequence Cauchy")).resolves.toHaveLength(1);
+
+    await application.clearSourceIndex(source.id);
+    sourceAccess.error = new Error("The source is missing or access is no longer available.");
+    const unavailable = await application.rebuildSourceIndex(source.id);
+    expect(unavailable.sourceIndexes).toContainEqual(expect.objectContaining({
+      sourceId: source.id,
+      status: "unavailable",
+      error: "The source is missing or access is no longer available."
+    }));
+    await expect(application.searchSourceIndex(workspace.navigation.workspaceId, "sequence Cauchy")).resolves.toEqual([]);
+    await expect(application.openSourceSearchResult("missing-result")).rejects.toThrow("Search this Source Index again");
   });
 
   it("refuses a legacy Primary Folder until its descendant fingerprint can be re-established", async () => {
@@ -1526,7 +1688,10 @@ describe("Learning Application", () => {
 
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
+  readonly indexedSourceIds: string[] = [];
   readonly contentBySourceName = new Map<string, string>();
+  readonly mediaTypeBySourceName = new Map<string, "text/plain" | "image/png">();
+  readonly indexBySourceName = new Map<string, SourceIndexExtraction>();
   error: Error | null = null;
   fingerprint: SourceFingerprint = { size: 64, modifiedAtMs: 1234 };
 
@@ -1538,8 +1703,16 @@ class DeterministicSourceAccess implements LocalSourceAccess {
       resourceType: source.resourceType,
       content: this.contentBySourceName.get(source.name) ?? "Every open cover has a finite subcover.",
       fingerprint: this.fingerprint,
-      mediaType: "text/plain" as const
+      mediaType: this.mediaTypeBySourceName.get(source.name) ?? "text/plain"
     };
+  }
+
+  async extractForIndex(source: LinkedSource): Promise<SourceIndexExtraction> {
+    this.indexedSourceIds.push(source.id);
+    if (this.error) throw this.error;
+    const extraction = this.indexBySourceName.get(source.name);
+    if (!extraction) throw new Error("This source does not have indexable content.");
+    return structuredClone(extraction);
   }
 }
 

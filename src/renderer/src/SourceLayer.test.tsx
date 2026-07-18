@@ -152,4 +152,18 @@ describe("Source Layer selection", () => {
     expect(screen.getByText(/Diagram region at 10% left, 20% top/)).toBeTruthy();
   });
 
+  it("highlights the exact indexed text range when a search result opens", () => {
+    render(<SourceLayer
+      sourceId="source-1"
+      content="A compact subset of a Hausdorff space is closed."
+      anchors={[]}
+      highlight={{ startOffset: 2, endOffset: 16, exactText: "compact subset" }}
+      onChooseAction={vi.fn()}
+    />);
+
+    const highlight = screen.getByText("compact subset");
+    expect(highlight.tagName).toBe("MARK");
+    expect(highlight.getAttribute("aria-label")).toBe("Opened Source Index match");
+  });
+
 });

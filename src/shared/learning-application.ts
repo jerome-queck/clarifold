@@ -105,6 +105,76 @@ export interface SessionSearchResult {
   missionName: string;
 }
 
+export interface SourceIndexBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SourceIndexRegion {
+  kind: "text" | "equation";
+  text: string;
+  bounds: SourceIndexBounds;
+  sourceStartOffset?: number;
+  sourceEndOffset?: number;
+}
+
+export interface SourceIndexPage {
+  pageNumber: number;
+  width: number;
+  height: number;
+  thumbnailDataUrl: string;
+  regions: SourceIndexRegion[];
+}
+
+export interface SourceIndexExtraction {
+  extractionMethod: "embeddedText" | "pdfText" | "ocr";
+  pages: SourceIndexPage[];
+}
+
+export interface SourceIndexSummary {
+  sourceId: string;
+  status: "ready" | "cleared" | "unavailable";
+  extractionMethod: SourceIndexExtraction["extractionMethod"] | null;
+  pageCount: number;
+  equationCount: number;
+  error: string | null;
+}
+
+export interface SourceSearchResult {
+  id: string;
+  sourceId: string;
+  sourceName: string;
+  workspaceName: string;
+  locationLabel: string;
+  preview: string;
+  thumbnailDataUrl: string;
+  match: {
+    pageNumber: number;
+    bounds: SourceIndexBounds;
+    sourceStartOffset?: number;
+    sourceEndOffset?: number;
+  };
+}
+
+export type OpenedSourceSearchResult = LinkedSourceView & {
+  highlight?: {
+    pageNumber: number;
+    exactText: string;
+    bounds: SourceIndexBounds;
+    sourceStartOffset?: number;
+    sourceEndOffset?: number;
+  };
+};
+
+interface SourceIndexDocument extends SourceIndexExtraction {
+  sourceId: string;
+  sourceName: string;
+  workspaceId: string;
+  fingerprint: SourceFingerprint;
+}
+
 export interface QuickStudyHome {
   workspace: {
     id: "quick-study-workspace";
@@ -186,6 +256,7 @@ export interface AvailableLinkedSourceView {
 
 export interface LocalSourceAccess {
   read(source: LinkedSource): Promise<AvailableLinkedSourceView>;
+  extractForIndex(source: LinkedSource): Promise<SourceIndexExtraction>;
 }
 
 export type LinkedSourceView =
@@ -244,6 +315,7 @@ export interface LearningApplicationState {
   missions: StudyMission[];
   sessions: LearningSession[];
   sources: WorkspaceSource[];
+  sourceIndexes: SourceIndexSummary[];
   activeSessionId: string | null;
   resumeSessionId: string | null;
   navigation: {
@@ -322,12 +394,16 @@ export type LearnerAction =
 export class LearningApplication {
   private state: LearningApplicationState = initialState();
   private readonly statePath: string;
+  private readonly sourceIndexPath: string;
   private modelRuntime: ModelRuntime | null;
   private persistence = Promise.resolve();
+  private sourceIndexWork = Promise.resolve();
   private readonly modelWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly accessDecisionWaiters = new Map<string, (decision: RuntimeAccessDecision) => void>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
   private agentWorkLogs: Record<string, Array<ModelRuntimeEvent & { sequence: number }>> = {};
+  private sourceIndexDocuments = new Map<string, SourceIndexDocument>();
+  private sourceSearchResults = new Map<string, SourceSearchResult>();
 
   private constructor(
     dataDirectory: string,
@@ -335,6 +411,7 @@ export class LearningApplication {
     private readonly sourceAccess: LocalSourceAccess | null
   ) {
     this.statePath = join(dataDirectory, "learning-application.json");
+    this.sourceIndexPath = join(dataDirectory, "source-index.json");
     this.modelRuntime = modelRuntime;
   }
 
@@ -366,6 +443,7 @@ export class LearningApplication {
     } catch (error) {
       if (!isMissingFile(error)) throw error;
     }
+    await application.loadSourceIndexCache();
     if (modelRuntime) {
       application.state.runtimeAvailable = true;
       try {
@@ -436,6 +514,141 @@ export class LearningApplication {
         missionName: mission.name
       }];
     });
+  }
+
+  searchSourceIndex(workspaceId: string, query: string): Promise<SourceSearchResult[]> {
+    return this.serializeSourceIndexOperation(() => this.searchSourceIndexNow(workspaceId, query));
+  }
+
+  private async searchSourceIndexNow(workspaceId: string, query: string): Promise<SourceSearchResult[]> {
+    this.requireWorkspace(workspaceId);
+    if (query.length > 500) throw new Error("Source Index search is limited to 500 characters.");
+    const terms = searchTerms(query);
+    if (terms.length === 0) return [];
+    this.sourceSearchResults.clear();
+    const workspace = this.requireWorkspace(workspaceId);
+    const results: SourceSearchResult[] = [];
+    for (const document of this.sourceIndexDocuments.values()) {
+      if (document.workspaceId !== workspaceId || this.sourceIndexStatus(document.sourceId)?.status !== "ready") continue;
+      const view = await this.openLinkedSource(document.sourceId);
+      if (view.status === "unavailable") {
+        await this.markSourceIndexUnavailable(document.sourceId, view.error);
+        continue;
+      }
+      for (const page of document.pages) {
+        for (const region of page.regions) {
+          const searchable = region.text.toLocaleLowerCase();
+          if (!terms.every((term) => searchable.includes(term))) continue;
+          const result: SourceSearchResult = {
+            id: crypto.randomUUID(),
+            sourceId: document.sourceId,
+            sourceName: document.sourceName,
+            workspaceName: workspace.name,
+            locationLabel: `Page ${page.pageNumber}`,
+            preview: searchPreview(region.text, terms),
+            thumbnailDataUrl: page.thumbnailDataUrl,
+            match: {
+              pageNumber: page.pageNumber,
+              bounds: region.bounds,
+              ...(region.sourceStartOffset === undefined ? {} : { sourceStartOffset: region.sourceStartOffset }),
+              ...(region.sourceEndOffset === undefined ? {} : { sourceEndOffset: region.sourceEndOffset })
+            }
+          };
+          results.push(result);
+          this.sourceSearchResults.set(result.id, result);
+        }
+      }
+    }
+    return results;
+  }
+
+  indexSource(sourceId: string): Promise<LearningApplicationState> {
+    return this.serializeSourceIndexOperation(() => this.indexSourceNow(sourceId));
+  }
+
+  private async indexSourceNow(sourceId: string): Promise<LearningApplicationState> {
+    const source = this.state.sources.find((candidate): candidate is LinkedSource =>
+      candidate.id === sourceId && candidate.kind === "linkedSource"
+    );
+    if (!source) throw new Error("Choose an indexable Linked Source.");
+    try {
+      const view = await this.openLinkedSource(sourceId);
+      if (view.status === "unavailable") return this.markSourceIndexUnavailable(sourceId, view.error);
+      const extraction = validatedSourceIndexExtraction(await this.sourceAccess!.extractForIndex(source));
+      const document: SourceIndexDocument = {
+        sourceId,
+        sourceName: source.name,
+        workspaceId: source.workspaceId,
+        fingerprint: source.link.fingerprint,
+        extractionMethod: extraction.extractionMethod,
+        pages: extraction.pages
+      };
+      this.sourceIndexDocuments.set(sourceId, document);
+      this.removeSourceSearchResults(sourceId);
+      this.upsertSourceIndexSummary({
+        sourceId,
+        status: "ready",
+        extractionMethod: extraction.extractionMethod,
+        pageCount: extraction.pages.length,
+        equationCount: extraction.pages.flatMap((page) => page.regions).filter((region) => region.kind === "equation").length,
+        error: null
+      });
+      await this.persistSourceIndexCache();
+      return this.publishAndPersist();
+    } catch (error) {
+      return this.markSourceIndexUnavailable(sourceId, usefulSourceError(error));
+    }
+  }
+
+  clearSourceIndex(sourceId: string): Promise<LearningApplicationState> {
+    return this.serializeSourceIndexOperation(() => this.clearSourceIndexNow(sourceId));
+  }
+
+  private async clearSourceIndexNow(sourceId: string): Promise<LearningApplicationState> {
+    if (!this.state.sources.some((source) => source.id === sourceId)) throw new Error("Choose an existing source.");
+    this.sourceIndexDocuments.delete(sourceId);
+    this.removeSourceSearchResults(sourceId);
+    this.upsertSourceIndexSummary({
+      sourceId,
+      status: "cleared",
+      extractionMethod: null,
+      pageCount: 0,
+      equationCount: 0,
+      error: null
+    });
+    await this.persistSourceIndexCache();
+    return this.publishAndPersist();
+  }
+
+  rebuildSourceIndex(sourceId: string): Promise<LearningApplicationState> {
+    return this.indexSource(sourceId);
+  }
+
+  openSourceSearchResult(resultId: string): Promise<OpenedSourceSearchResult> {
+    return this.serializeSourceIndexOperation(() => this.openSourceSearchResultNow(resultId));
+  }
+
+  private async openSourceSearchResultNow(resultId: string): Promise<OpenedSourceSearchResult> {
+    const result = this.sourceSearchResults.get(resultId);
+    if (!result || this.sourceIndexStatus(result.sourceId)?.status !== "ready") {
+      throw new Error("Search this Source Index again before opening the result.");
+    }
+    const view = await this.openLinkedSource(result.sourceId);
+    if (view.status === "unavailable") return view;
+    const document = this.sourceIndexDocuments.get(result.sourceId);
+    const page = document?.pages.find((candidate) => candidate.pageNumber === result.match.pageNumber);
+    const region = page?.regions.find((candidate) => sameIndexMatch(candidate, result.match));
+    if (!region) throw new Error("Search this Source Index again before opening the result.");
+    return {
+      ...view,
+      highlight: {
+        pageNumber: result.match.pageNumber,
+        exactText: region.text,
+        bounds: region.bounds,
+        ...(region.sourceStartOffset === undefined ? {} : { sourceStartOffset: region.sourceStartOffset }),
+        ...(region.sourceEndOffset === undefined ? {} : { sourceEndOffset: region.sourceEndOffset })
+      }
+    };
   }
 
   async restoreModelRuntime(modelRuntime: ModelRuntime): Promise<LearningApplicationState> {
@@ -977,6 +1190,80 @@ export class LearningApplication {
     await rename(temporaryPath, this.statePath);
   }
 
+  private async loadSourceIndexCache(): Promise<void> {
+    try {
+      const stored = JSON.parse(await readFile(this.sourceIndexPath, "utf8")) as unknown;
+      const documents = validatedSourceIndexDocuments(stored);
+      this.sourceIndexDocuments = new Map(documents.map((document) => [document.sourceId, document]));
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    const sourceIds = new Set(this.state.sources.map((source) => source.id));
+    this.state.sourceIndexes = this.state.sourceIndexes.filter((summary) => sourceIds.has(summary.sourceId));
+    for (const summary of this.state.sourceIndexes) {
+      if (summary.status === "ready" && !this.sourceIndexDocuments.has(summary.sourceId)) {
+        Object.assign(summary, { status: "cleared", extractionMethod: null, pageCount: 0, equationCount: 0, error: null });
+      }
+    }
+    for (const sourceId of this.sourceIndexDocuments.keys()) {
+      const source = this.state.sources.find((candidate) => candidate.id === sourceId);
+      const document = this.sourceIndexDocuments.get(sourceId);
+      if (!sourceIds.has(sourceId) || this.sourceIndexStatus(sourceId)?.status !== "ready"
+        || source?.kind !== "linkedSource" || !document || !sameFingerprint(source.link.fingerprint, document.fingerprint)) {
+        this.sourceIndexDocuments.delete(sourceId);
+        const summary = this.sourceIndexStatus(sourceId);
+        if (summary?.status === "ready") {
+          Object.assign(summary, { status: "cleared", extractionMethod: null, pageCount: 0, equationCount: 0, error: null });
+        }
+      }
+    }
+  }
+
+  private async persistSourceIndexCache(): Promise<void> {
+    const directory = dirname(this.sourceIndexPath);
+    const temporaryPath = `${this.sourceIndexPath}.temporary`;
+    await mkdir(directory, { recursive: true });
+    await writeFile(temporaryPath, JSON.stringify([...this.sourceIndexDocuments.values()], null, 2), "utf8");
+    await rename(temporaryPath, this.sourceIndexPath);
+  }
+
+  private sourceIndexStatus(sourceId: string): SourceIndexSummary | undefined {
+    return this.state.sourceIndexes.find((summary) => summary.sourceId === sourceId);
+  }
+
+  private upsertSourceIndexSummary(summary: SourceIndexSummary): void {
+    const index = this.state.sourceIndexes.findIndex((candidate) => candidate.sourceId === summary.sourceId);
+    if (index === -1) this.state.sourceIndexes.push(summary);
+    else this.state.sourceIndexes[index] = summary;
+  }
+
+  private removeSourceSearchResults(sourceId: string): void {
+    for (const [resultId, result] of this.sourceSearchResults) {
+      if (result.sourceId === sourceId) this.sourceSearchResults.delete(resultId);
+    }
+  }
+
+  private async markSourceIndexUnavailable(sourceId: string, error: string): Promise<LearningApplicationState> {
+    this.sourceIndexDocuments.delete(sourceId);
+    this.removeSourceSearchResults(sourceId);
+    this.upsertSourceIndexSummary({
+      sourceId,
+      status: "unavailable",
+      extractionMethod: null,
+      pageCount: 0,
+      equationCount: 0,
+      error
+    });
+    await this.persistSourceIndexCache();
+    return this.publishAndPersist();
+  }
+
+  private serializeSourceIndexOperation<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const result = this.sourceIndexWork.catch(() => undefined).then(operation);
+    this.sourceIndexWork = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   private async beginTeaching(
     session: LearningSession,
     mathematics = session.mathematics,
@@ -1419,6 +1706,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       }
     }));
     current.sources = migrateWorkspaceSources(current.sources);
+    current.sourceIndexes = migrateSourceIndexSummaries(stored.sourceIndexes);
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -1613,6 +1901,130 @@ function migrateWorkspaceSources(value: unknown): WorkspaceSource[] {
   });
 }
 
+function migrateSourceIndexSummaries(value: unknown): SourceIndexSummary[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Source Index status is invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.sourceId !== "string"
+      || !["ready", "cleared", "unavailable"].includes(String(candidate.status))
+      || !(candidate.extractionMethod === null || ["embeddedText", "pdfText", "ocr"].includes(String(candidate.extractionMethod)))
+      || !Number.isInteger(candidate.pageCount) || (candidate.pageCount as number) < 0
+      || !Number.isInteger(candidate.equationCount) || (candidate.equationCount as number) < 0
+      || !(candidate.error === null || typeof candidate.error === "string")) {
+      throw new Error("Stored Source Index status is invalid.");
+    }
+    return candidate as unknown as SourceIndexSummary;
+  });
+}
+
+function validatedSourceIndexDocuments(value: unknown): SourceIndexDocument[] {
+  if (!Array.isArray(value)) throw new Error("Stored Source Index cache is invalid.");
+  const documents = value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.sourceId !== "string" || typeof candidate.sourceName !== "string"
+      || typeof candidate.workspaceId !== "string" || !validFingerprint(candidate.fingerprint)) {
+      throw new Error("Stored Source Index cache is invalid.");
+    }
+    const extraction = validatedSourceIndexExtraction(candidate);
+    return {
+      sourceId: candidate.sourceId,
+      sourceName: candidate.sourceName,
+      workspaceId: candidate.workspaceId,
+      fingerprint: candidate.fingerprint,
+      ...extraction
+    };
+  });
+  if (new Set(documents.map((document) => document.sourceId)).size !== documents.length) {
+    throw new Error("Stored Source Index cache is invalid.");
+  }
+  return documents;
+}
+
+function validatedSourceIndexExtraction(value: unknown): SourceIndexExtraction {
+  if (!isRecord(value) || !["embeddedText", "pdfText", "ocr"].includes(String(value.extractionMethod))
+    || !Array.isArray(value.pages) || value.pages.length === 0 || value.pages.length > 10_000) {
+    throw new Error("Extracted Source Index content is invalid.");
+  }
+  const pageNumbers = new Set<number>();
+  const pages = value.pages.map((candidate) => {
+    if (!isRecord(candidate) || !Number.isInteger(candidate.pageNumber) || (candidate.pageNumber as number) < 1
+      || typeof candidate.width !== "number" || !Number.isFinite(candidate.width) || candidate.width <= 0
+      || typeof candidate.height !== "number" || !Number.isFinite(candidate.height) || candidate.height <= 0
+      || typeof candidate.thumbnailDataUrl !== "string"
+      || !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(candidate.thumbnailDataUrl)
+      || candidate.thumbnailDataUrl.length > 750_000 || !Array.isArray(candidate.regions)) {
+      throw new Error("Extracted Source Index page is invalid.");
+    }
+    const pageNumber = candidate.pageNumber as number;
+    if (pageNumbers.has(pageNumber)) throw new Error("Extracted Source Index page is invalid.");
+    pageNumbers.add(pageNumber);
+    const regions = candidate.regions.map((region) => validatedSourceIndexRegion(region));
+    return {
+      pageNumber,
+      width: candidate.width as number,
+      height: candidate.height as number,
+      thumbnailDataUrl: candidate.thumbnailDataUrl as string,
+      regions
+    };
+  });
+  return {
+    extractionMethod: value.extractionMethod as SourceIndexExtraction["extractionMethod"],
+    pages
+  };
+}
+
+function validatedSourceIndexRegion(value: unknown): SourceIndexRegion {
+  if (!isRecord(value) || (value.kind !== "text" && value.kind !== "equation")
+    || typeof value.text !== "string" || !value.text.trim() || value.text.length > 60_000
+    || !validSourceIndexBounds(value.bounds)) {
+    throw new Error("Extracted Source Index region is invalid.");
+  }
+  const hasStart = value.sourceStartOffset !== undefined;
+  const hasEnd = value.sourceEndOffset !== undefined;
+  if (hasStart !== hasEnd || (hasStart && (!Number.isInteger(value.sourceStartOffset)
+    || !Number.isInteger(value.sourceEndOffset) || (value.sourceStartOffset as number) < 0
+    || (value.sourceEndOffset as number) <= (value.sourceStartOffset as number)))) {
+    throw new Error("Extracted Source Index region is invalid.");
+  }
+  return {
+    kind: value.kind,
+    text: value.text,
+    bounds: value.bounds as unknown as SourceIndexBounds,
+    ...(hasStart ? {
+      sourceStartOffset: value.sourceStartOffset as number,
+      sourceEndOffset: value.sourceEndOffset as number
+    } : {})
+  };
+}
+
+function validSourceIndexBounds(value: unknown): value is SourceIndexBounds {
+  if (!isRecord(value)) return false;
+  const coordinates = [value.x, value.y, value.width, value.height];
+  return coordinates.every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))
+    && (value.x as number) >= 0 && (value.y as number) >= 0
+    && (value.width as number) > 0 && (value.height as number) > 0
+    && (value.x as number) + (value.width as number) <= 1
+    && (value.y as number) + (value.height as number) <= 1;
+}
+
+function searchTerms(query: string): string[] {
+  return query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function searchPreview(text: string, terms: string[]): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 180) return normalized;
+  const firstMatch = Math.max(0, ...terms.map((term) => normalized.toLocaleLowerCase().indexOf(term)));
+  const start = Math.max(0, firstMatch - 60);
+  const end = Math.min(normalized.length, start + 180);
+  return `${start > 0 ? "…" : ""}${normalized.slice(start, end)}${end < normalized.length ? "…" : ""}`;
+}
+
+function sameIndexMatch(region: SourceIndexRegion, match: SourceSearchResult["match"]): boolean {
+  return region.bounds.x === match.bounds.x && region.bounds.y === match.bounds.y
+    && region.bounds.width === match.bounds.width && region.bounds.height === match.bounds.height
+    && region.sourceStartOffset === match.sourceStartOffset && region.sourceEndOffset === match.sourceEndOffset;
+}
+
 function migrateSourceAnchors(value: unknown): SourceAnchor[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("Stored Source Anchors are invalid.");
@@ -1791,6 +2203,7 @@ function initialState(): LearningApplicationState {
     ],
     sessions: [],
     sources: [],
+    sourceIndexes: [],
     activeSessionId: null,
     resumeSessionId: null,
     navigation: {

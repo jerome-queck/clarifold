@@ -13,6 +13,7 @@ interface SourceLayerProps {
   content: string;
   mediaType?: "text/plain" | "image/png" | "image/jpeg";
   anchors: SourceAnchor[];
+  highlight?: { startOffset: number; endOffset: number; exactText: string };
   onChooseAction(selection: SourceAnchorSelection, action: SourceAnchorPaletteAction): void;
 }
 
@@ -40,7 +41,7 @@ interface PercentSourceRegionBounds {
   height: number;
 }
 
-export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, onChooseAction }: SourceLayerProps) {
+export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, highlight, onChooseAction }: SourceLayerProps) {
   const sourceRef = useRef<HTMLElement>(null);
   const originRef = useRef<HTMLElement | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -48,6 +49,9 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
   const [drawingRegion, setDrawingRegion] = useState(false);
   const [keyboardRegion, setKeyboardRegion] = useState<PercentSourceRegionBounds | null>(null);
   const segments = useMemo(() => mediaType === "text/plain" ? sourceSegments(content) : [], [content, mediaType]);
+  const validHighlight = highlight && content.slice(highlight.startOffset, highlight.endOffset) === highlight.exactText
+    ? highlight
+    : null;
 
   const openPalette = (nextSelection: SourceAnchorSelection, origin: HTMLElement) => {
     originRef.current = origin;
@@ -163,7 +167,13 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
         onPointerDown={beginDiagramRegion}
         onPointerUp={finishDiagramRegion}
       >
-        {mediaType === "text/plain" ? segments.map((segment) => segment.kind === "text" ? segment.text : (
+        {mediaType === "text/plain" ? validHighlight ? (
+          <>
+            {content.slice(0, validHighlight.startOffset)}
+            <mark aria-label="Opened Source Index match">{validHighlight.exactText}</mark>
+            {content.slice(validHighlight.endOffset)}
+          </>
+        ) : segments.map((segment) => segment.kind === "text" ? segment.text : (
           <button
             className="source-equation"
             key={`${segment.startOffset}-${segment.endOffset}`}
