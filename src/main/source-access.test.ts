@@ -143,6 +143,36 @@ describe("macOS source access", () => {
     expect(sourceDependencies.readFile).not.toHaveBeenCalledWith("/Users/learner/algebra-course/notes/diagram.bin");
   });
 
+  it("fingerprints Primary Folder content so same-size descendant edits are detected", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.stat.mockImplementation(async (path: string) => ({
+      size: path.endsWith("algebra-course") ? 64 : 8,
+      mtimeMs: 1234,
+      isFile: () => !path.endsWith("algebra-course"),
+      isDirectory: () => path.endsWith("algebra-course")
+    }));
+    sourceDependencies.readdir.mockResolvedValue(["lemma.txt"]);
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("Lemma A."));
+    const access = new MacOsSourceAccess(sourceDependencies);
+    const selected = await access.selectDirectPath("/Users/learner/algebra-course", "folder");
+
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("Lemma B."));
+    const changed = await access.read({
+      ...linkedFile(),
+      name: selected.name,
+      resourceType: "folder",
+      link: {
+        ...linkedFile().link,
+        lastKnownPath: selected.lastKnownPath,
+        canonicalPath: selected.canonicalPath,
+        fingerprint: selected.fingerprint
+      }
+    });
+
+    expect(changed.fingerprint).toMatchObject({ size: 64, modifiedAtMs: 1234 });
+    expect(changed.fingerprint.contentHash).not.toBe(selected.fingerprint.contentHash);
+  });
+
   it("stops security-scoped access when reading fails", async () => {
     const stopAccess = vi.fn();
     const access = new MacOsSourceAccess({
@@ -169,7 +199,7 @@ function dependencies() {
     stat: vi.fn().mockResolvedValue(fileStat()),
     realpath: vi.fn().mockImplementation(async (path) => path),
     readFile: vi.fn(),
-    readdir: vi.fn(),
+    readdir: vi.fn().mockResolvedValue([]),
     startAccessingSecurityScopedResource: vi.fn()
   };
 }

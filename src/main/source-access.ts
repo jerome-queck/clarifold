@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { basename, extname, join, relative, sep } from "node:path";
 import type {
   AvailableLinkedSourceView,
@@ -66,7 +67,7 @@ export class MacOsSourceAccess implements LocalSourceAccess {
         resourceType: source.resourceType,
         content,
         mediaType,
-        fingerprint: fingerprint(stat)
+        fingerprint: fingerprint(stat, source.resourceType === "folder" ? content : undefined)
       };
     } finally {
       stopAccess?.();
@@ -122,13 +123,17 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       accessGrant: bookmarkData
         ? { kind: "securityScopedBookmark", bookmarkData }
         : null,
-      fingerprint: fingerprint(stat)
+      fingerprint: fingerprint(stat, resourceType === "folder" ? await this.readSupportedFolder(path) : undefined)
     };
   }
 }
 
-function fingerprint(stat: FileStat): SourceFingerprint {
-  return { size: stat.size, modifiedAtMs: stat.mtimeMs };
+function fingerprint(stat: FileStat, content?: string): SourceFingerprint {
+  return {
+    size: stat.size,
+    modifiedAtMs: stat.mtimeMs,
+    ...(content === undefined ? {} : { contentHash: createHash("sha256").update(content).digest("hex") })
+  };
 }
 
 function sourceMediaType(name: string): AvailableLinkedSourceView["mediaType"] {

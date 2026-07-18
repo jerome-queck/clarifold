@@ -94,6 +94,7 @@ export interface WorkspaceContext {
 export interface SourceFingerprint {
   size: number;
   modifiedAtMs: number;
+  contentHash?: string;
 }
 
 export type LocalSourceAccessGrant = { kind: "securityScopedBookmark"; bookmarkData: string } | null;
@@ -810,10 +811,10 @@ export class LearningApplication {
           || accessPolicyRank(decidedPolicy) >= accessPolicyRank(request.requestedPolicy))) {
           throw new Error("A narrowed policy must be broader than the current policy and narrower than the request.");
         }
+        await this.changeSessionAccessPolicy(session, decidedPolicy, true);
         request.status = action.decision === "approve" ? "approved" : "narrowed";
         request.decidedPolicy = decidedPolicy;
         this.resolveAccessDecision(request.id, { status: request.status, policy: decidedPolicy });
-        await this.changeSessionAccessPolicy(session, decidedPolicy);
         break;
       }
       case "resumeSession": {
@@ -1031,24 +1032,28 @@ export class LearningApplication {
     }
   }
 
-  private async changeSessionAccessPolicy(session: LearningSession, policy: SessionAccessPolicy): Promise<void> {
+  private async changeSessionAccessPolicy(
+    session: LearningSession,
+    policy: SessionAccessPolicy,
+    preservePendingAccessRequest = false
+  ): Promise<void> {
     if (policy === session.accessPolicy) return;
     const input = session.currentTeachingInput;
     const submission = input.kind === "pendingQuestion"
       ? session.submittedPendingQuestions.find((candidate) => candidate.id === input.submissionId) ?? null
       : null;
     const restartTeaching = this.modelWorks.has(session.id);
-    if (restartTeaching && !await this.stopModelWork(session)) {
+    if (restartTeaching && !await this.stopModelWork(session, !preservePendingAccessRequest)) {
       throw new Error(`Codex did not confirm interruption. ${sessionAccessPolicyLabel(session.accessPolicy)} remains active.`);
     }
     session.accessPolicy = policy;
     if (restartTeaching) await this.beginTeaching(session, input.text, submission);
   }
 
-  private async stopModelWork(session: LearningSession): Promise<boolean> {
+  private async stopModelWork(session: LearningSession, denyPendingRequests = true): Promise<boolean> {
     const work = this.modelWorks.get(session.id);
     if (!this.modelRuntime || !work) throw new Error("There is no active model work to stop.");
-    this.denyPendingAccessRequests(session);
+    if (denyPendingRequests) this.denyPendingAccessRequests(session);
     replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content));
     work.controller.abort();
     try {
@@ -1271,7 +1276,8 @@ function usefulSourceError(error: unknown): string {
 }
 
 function sameFingerprint(left: SourceFingerprint, right: SourceFingerprint): boolean {
-  return left.size === right.size && left.modifiedAtMs === right.modifiedAtMs;
+  return left.size === right.size && left.modifiedAtMs === right.modifiedAtMs
+    && (left.contentHash === undefined || left.contentHash === right.contentHash);
 }
 
 function pathIsInside(path: string, folderPath: string): boolean {
@@ -1494,7 +1500,9 @@ function validAccessGrant(value: unknown): value is LocalSourceAccessGrant {
 
 function validFingerprint(value: unknown): value is SourceFingerprint {
   return isRecord(value) && typeof value.size === "number" && Number.isFinite(value.size) && value.size >= 0
-    && typeof value.modifiedAtMs === "number" && Number.isFinite(value.modifiedAtMs) && value.modifiedAtMs >= 0;
+    && typeof value.modifiedAtMs === "number" && Number.isFinite(value.modifiedAtMs) && value.modifiedAtMs >= 0
+    && (value.contentHash === undefined
+      || (typeof value.contentHash === "string" && /^[a-f0-9]{64}$/.test(value.contentHash)));
 }
 
 function initialState(): LearningApplicationState {

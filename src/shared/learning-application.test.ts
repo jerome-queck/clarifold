@@ -1131,6 +1131,47 @@ describe("Learning Application", () => {
     await application.waitForModelWork();
   });
 
+  it("keeps an Access Request pending when policy rebinding cannot be confirmed", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the proof",
+      scope: "Use the current source",
+      initialTeachingDirection: "Inspect the hypotheses",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const state = await application.submit({ type: "submitSessionIntake", mathematics: "Explain this theorem." });
+    const decision = runtime.requestAccess({
+      requestedPolicy: "full",
+      reason: "The proof depends on a local reference.",
+      exactScope: "/Users/learner/reference.pdf",
+      intendedAction: "Read the supporting lemma."
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = application.getState().sessions[0].accessRequests.at(-1)!;
+    runtime.cancelError = new Error("interrupt request timed out");
+
+    await expect(application.submit({
+      type: "decideAccessRequest", requestId: request.id, decision: "approve"
+    })).rejects.toThrow("Focused Access remains active");
+    expect(application.getState().sessions[0]).toMatchObject({
+      accessPolicy: "focused",
+      accessRequests: [{ status: "pending", decidedPolicy: null }]
+    });
+    await expect(Promise.race([decision, Promise.resolve("still-pending")])).resolves.toBe("still-pending");
+
+    runtime.cancelError = null;
+    const approved = await application.submit({
+      type: "decideAccessRequest", requestId: request.id, decision: "approve"
+    });
+    await expect(decision).resolves.toEqual({ status: "approved", policy: "full" });
+    expect(approved.sessions[0]).toMatchObject({
+      accessPolicy: "full",
+      accessRequests: [{ status: "approved", decidedPolicy: "full" }]
+    });
+    runtime.completeTeaching(state.sessions[0].id);
+  });
+
   it("files Quick Study work intact and orders the Resume Card by the most recently touched session", async () => {
     const { application, dataDirectory } = await launch();
 
