@@ -583,6 +583,34 @@ describe("Learning Application", () => {
     expect(continuedAgain.sessions.find((session) => session.id === firstContinuationId)?.status).toBe("paused");
   });
 
+  it("does not let failed runtime cancellation block learner-controlled Session Consolidation", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the finite-subcover step",
+      initialTeachingDirection: "Start from pointwise separation",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    runtime.cancelError = new Error("Runtime cancellation transport failed.");
+    const { application } = await launchWithRuntime(runtime);
+    const started = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Show that every compact subset of a Hausdorff space is closed."
+    });
+    const sessionId = started.activeSessionId!;
+    try {
+      const state = await application.submit({ type: "beginSessionConsolidation" });
+      expect(state.sessions[0]).toMatchObject({
+        teachingCard: { status: "stopped" },
+        consolidationDraft: expect.objectContaining({ targetDisposition: null })
+      });
+    } finally {
+      runtime.cancelError = null;
+      runtime.completeTeaching(sessionId);
+      await application.waitForModelWork();
+    }
+  });
+
   it("keeps included Learning Artifacts revisable after consolidation", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness",

@@ -359,8 +359,10 @@ describe("anchored teaching workbench", () => {
       artifactId: "artifact-1",
       content: "A learner revision retained after consolidation."
     });
+    vi.mocked(api.submit).mockRejectedValueOnce(new Error("Codex did not confirm interruption."));
     await user.click(screen.getByRole("button", { name: "Continue this work" }));
     expect(api.submit).toHaveBeenCalledWith({ type: "continueSession", sessionId: "session-1" });
+    expect(await screen.findByText("Codex did not confirm interruption.")).toBeTruthy();
   });
 
   it("shows the prior outcome as linked context without copying its Session Record into a Continuation Session", async () => {

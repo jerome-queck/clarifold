@@ -1379,9 +1379,7 @@ export class LearningApplication {
       }
       case "beginSessionConsolidation": {
         const session = this.requireActiveSession();
-        if (this.modelWorks.has(session.id) && !await this.stopModelWork(session)) {
-          throw new Error("Codex did not confirm interruption. Session Consolidation has not started.");
-        }
+        this.stopModelWorkForSessionLifecycle(session);
         session.consolidationDraft ??= suggestedSessionConsolidation(session);
         break;
       }
@@ -1404,9 +1402,7 @@ export class LearningApplication {
       }
       case "consolidateSession": {
         const session = this.requireActiveSession();
-        if (this.modelWorks.has(session.id) && !await this.stopModelWork(session)) {
-          throw new Error("Codex did not confirm interruption. The Learning Session remains unconsolidated.");
-        }
+        this.stopModelWorkForSessionLifecycle(session);
         const draft = session.consolidationDraft;
         if (!draft) throw new Error("Review the Session Consolidation before creating its outcome.");
         const targetDisposition = requireTargetDisposition(draft.targetDisposition);
@@ -1437,7 +1433,7 @@ export class LearningApplication {
           }
           this.pauseActiveSession();
         }
-        const session: LearningSession = {
+        const session = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: historical.workspaceId,
           missionId: historical.missionId,
@@ -1457,32 +1453,10 @@ export class LearningApplication {
             status: "accepted",
             confirmationReason: null
           },
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: historical.consolidatedOutcome.nextStep },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
           accessPolicy: historical.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          ...emptySessionLifecycle(),
-          continuationOf: { sessionId: historical.id, outcomeId: historical.consolidatedOutcome.id },
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
-          prerequisiteBranch: null
-        };
+          continuationOf: { sessionId: historical.id, outcomeId: historical.consolidatedOutcome.id }
+        });
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
         this.state.resumeSessionId = session.id;
@@ -1529,7 +1503,7 @@ export class LearningApplication {
         this.pauseActiveSession();
         const location = this.resolveIntakeLocation(action.location);
         const managedAsset = this.createManagedTextAsset(location.workspaceId, mathematics);
-        const session: LearningSession = {
+        const session = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: location.workspaceId,
           missionId: location.missionId,
@@ -1544,31 +1518,8 @@ export class LearningApplication {
             nextAction: "Continue working through the key idea"
           },
           proposal: defaultAcceptedProposal(),
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
-          currentTeachingInput: { kind: "sessionIntake", text: mathematics },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
-          accessPolicy: location.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          ...emptySessionLifecycle(),
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
-          prerequisiteBranch: null
-        };
+          accessPolicy: location.accessPolicy
+        });
         refreshAskBarContext(this.state, session);
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -1631,7 +1582,7 @@ export class LearningApplication {
           this.state.screen = "workbench";
           break;
         }
-        const session: LearningSession = {
+        const session = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: location.workspaceId,
           missionId: location.missionId,
@@ -1651,31 +1602,8 @@ export class LearningApplication {
             status: proposal.requiresConfirmation ? "awaitingConfirmation" : "accepted",
             confirmationReason: proposal.confirmationReason
           },
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
-          currentTeachingInput: { kind: "sessionIntake", text: mathematics },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
-          accessPolicy: location.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          ...emptySessionLifecycle(),
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
-          prerequisiteBranch: null
-        };
+          accessPolicy: location.accessPolicy
+        });
         refreshAskBarContext(this.state, session);
         this.agentWorkLogs[session.id] = pendingLog;
         delete this.agentWorkLogs[proposalAttemptId];
@@ -2028,7 +1956,7 @@ export class LearningApplication {
         }
         if (this.modelWorks.has(origin.id)) throw new Error("Stop current teaching before opening a Prerequisite Branch.");
         const anchor = requireSourceAnchor(origin, proposal.sourceAnchorId);
-        const branch: LearningSession = {
+        const branch = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: origin.workspaceId,
           missionId: origin.missionId,
@@ -2048,29 +1976,8 @@ export class LearningApplication {
             status: "accepted",
             confirmationReason: null
           },
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: proposal.prerequisite },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
           accessPolicy: origin.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          ...emptySessionLifecycle(),
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
           prerequisiteBranch: {
             prerequisite: proposal.prerequisite,
             returnPoint: {
@@ -2081,7 +1988,7 @@ export class LearningApplication {
               label: sourceAnchorLocation(anchor)
             }
           }
-        };
+        });
         origin.status = "paused";
         proposal.status = "accepted";
         proposal.branchSessionId = branch.id;
@@ -2686,6 +2593,16 @@ export class LearningApplication {
     }
   }
 
+  private stopModelWorkForSessionLifecycle(session: LearningSession): void {
+    const work = this.modelWorks.get(session.id);
+    if (!this.modelRuntime || !work) return;
+    this.denyPendingAccessRequests(session);
+    work.stop();
+    work.controller.abort();
+    if (this.modelWorks.get(session.id) === work) this.modelWorks.delete(session.id);
+    void this.modelRuntime.cancelTeaching(session.id).catch(() => undefined);
+  }
+
   private reviseProposal(
     session: LearningSession,
     revision: { learningGoal: string; scope: string; initialTeachingDirection: string }
@@ -2836,7 +2753,7 @@ export class LearningApplication {
         boundary: requiredName(stage.boundary, "Learning Slice boundary"),
         immediatePrerequisites: stage.immediatePrerequisites.map((item) => requiredName(item, "Immediate prerequisite"))
       };
-      return {
+      return createLearningSession({
         id: sessionIds[index],
         workspaceId: location.workspaceId,
         missionId: location.missionId,
@@ -2856,31 +2773,11 @@ export class LearningApplication {
           status: "awaitingConfirmation",
           confirmationReason: "Confirm this Learning Slice before detailed teaching begins."
         },
-        teachingCard: emptyTeachingCard(),
-        teachingCardHistory: [],
-        submittedPendingQuestions: [],
-        currentTeachingInput: { kind: "sessionIntake", text: mathematics },
-        pendingQuestion: null,
-        askBarContext: emptyAskBarContext(),
-        questionCards: [],
-        activeQuestionCardId: null,
         accessPolicy: location.accessPolicy,
-        accessRequests: [],
-        pendingFullAccessConfirmation: false,
         sourceAnchors: [anchors[index]],
-        sourceAnchorRequests: [],
         activeSourceAnchorId: anchors[index].id,
-        anchoredTeachingCards: [],
-        activeTeachingCardId: null,
-        learningArtifacts: [],
-        trailDraft: emptyTrailDraft(),
-        ...emptySessionLifecycle(),
-        learningSlice,
-        conceptPeeks: [],
-        pendingConceptPeek: null,
-        prerequisiteBranchProposals: [],
-        prerequisiteBranch: null
-      };
+        learningSlice
+      });
     });
     for (const session of sessions) refreshAskBarContext(this.state, session);
     this.state.argumentRoadmaps.push(roadmap);
@@ -3664,7 +3561,7 @@ function refreshAskBarContext(state: LearningApplicationState, session: Learning
       items.push({
         id: `continuation-evidence:${item.id}`,
         kind: "sessionContext",
-        typeLabel: "Understanding Evidence",
+        typeLabel: "Trail Evidence",
         identity: item.content,
         location: "Prior Consolidated Session Outcome",
         preview: item.content,
@@ -3798,6 +3695,44 @@ function sourceAnchorLocation(anchor: SourceAnchor): string {
 
 function emptyTrailDraft(): TrailDraft {
   return { items: [] };
+}
+
+type NewLearningSession = Pick<LearningSession,
+  | "id" | "workspaceId" | "missionId" | "mathematics" | "sourceIds" | "learningGoal" | "sessionTarget"
+  | "status" | "activityOrder" | "returnContext" | "proposal" | "accessPolicy"
+> & Partial<Pick<LearningSession,
+  | "currentTeachingInput" | "sourceAnchors" | "activeSourceAnchorId" | "learningSlice" | "prerequisiteBranch"
+  | "continuationOf"
+>>;
+
+function createLearningSession(details: NewLearningSession): LearningSession {
+  return {
+    ...details,
+    teachingCard: emptyTeachingCard(),
+    teachingCardHistory: [],
+    submittedPendingQuestions: [],
+    currentTeachingInput: details.currentTeachingInput ?? { kind: "sessionIntake", text: details.mathematics },
+    pendingQuestion: null,
+    askBarContext: emptyAskBarContext(),
+    questionCards: [],
+    activeQuestionCardId: null,
+    accessRequests: [],
+    pendingFullAccessConfirmation: false,
+    sourceAnchors: details.sourceAnchors ?? [],
+    sourceAnchorRequests: [],
+    activeSourceAnchorId: details.activeSourceAnchorId ?? null,
+    anchoredTeachingCards: [],
+    activeTeachingCardId: null,
+    learningArtifacts: [],
+    trailDraft: emptyTrailDraft(),
+    ...emptySessionLifecycle(),
+    continuationOf: details.continuationOf ?? null,
+    learningSlice: details.learningSlice ?? null,
+    conceptPeeks: [],
+    pendingConceptPeek: null,
+    prerequisiteBranchProposals: [],
+    prerequisiteBranch: details.prerequisiteBranch ?? null
+  };
 }
 
 function emptySessionLifecycle(): Pick<LearningSession, "consolidationDraft" | "consolidatedOutcome" | "continuationOf"> {

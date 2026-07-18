@@ -778,7 +778,9 @@ function MissionHistory({ workspace, mission, state, onState }: {
                 {session.status === "consolidated" ? (
                   <button className="primary" onClick={() => void window.quickStudy.submit({
                     type: "continueSession", sessionId: session.id
-                  }).then(onState)}>Continue this work</button>
+                  }).then(onState).catch((cause: unknown) => setModelWorkError(
+                    cause instanceof Error ? cause.message : "The Continuation Session could not be started."
+                  ))}>Continue this work</button>
                 ) : <button className="text-button" aria-label={`Resume Learning Session ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
                     type: "resumeSession", sessionId: session.id
                   }).then(onState)}>Resume</button>}
@@ -1004,7 +1006,7 @@ function ContinuationContext({ state, session }: { state: LearningApplicationSta
       {outcome.unresolvedQuestions.length > 0 && <p><strong>Unresolved:</strong> {outcome.unresolvedQuestions.join("; ")}</p>}
       <p><strong>Next step:</strong> {outcome.nextStep}</p>
       {historical.prerequisiteBranch && <p><strong>Return Point:</strong> {historical.prerequisiteBranch.returnPoint.label}</p>}
-      {evidence.length > 0 && <p><strong>Understanding Evidence:</strong> {evidence.map((item) => item.content).join("; ")}</p>}
+      {evidence.length > 0 && <p><strong>Trail evidence:</strong> {evidence.map((item) => item.content).join("; ")}</p>}
       {artifacts.length > 0 && <p><strong>Included Learning Artifacts:</strong> {artifacts.map((artifact) => artifact.title).join("; ")}</p>}
       <small>The prior Session Record remains a separate stable historical record.</small>
     </section>
