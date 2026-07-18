@@ -331,6 +331,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
           `Initial teaching direction: ${request.initialTeachingDirection}`,
           `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
           authorizedSourceContext(request),
+          teachingFocus(request),
           "Mathematics:",
           request.mathematics,
           "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
@@ -591,6 +592,25 @@ function authorizedSourceContext(request: TeachingRequest): string {
       content: source.content
     }))
   ].join("\n");
+}
+
+function teachingFocus(request: TeachingRequest): string {
+  if (!request.focus) return "Teaching focus: the current Learning Session intake.";
+  return [
+    "Teaching focus: produce a Teaching Card visibly associated with this exact Source Anchor.",
+    `Source Anchor: ${JSON.stringify({
+      sourceAnchorId: request.focus.sourceAnchorId,
+      sourceId: request.focus.sourceId,
+      selection: request.focus.selection
+    })}`,
+    `Learner instruction: ${request.focus.instruction}`,
+    request.focus.previousContent === null
+      ? "This is the first explanation route for the anchor."
+      : `Revise or branch from this current route without producing a chronological message feed:\n${request.focus.previousContent}`,
+    request.focus.variantName === null
+      ? "Return one coherent current route."
+      : `Return a genuinely different route retained as the named Teaching Variant: ${request.focus.variantName}.`
+  ].join("\n\n");
 }
 
 function parseAccessRequestToolCall(params: unknown): {

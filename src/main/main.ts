@@ -76,6 +76,18 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "sourceId" in action && typeof action.sourceId === "string"
         && "selection" in action && isSourceAnchorSelection(action.selection)
         && "paletteAction" in action && isSourceAnchorPaletteAction(action.paletteAction);
+    case "reviseTeachingCard":
+      return "cardId" in action && typeof action.cardId === "string"
+        && "instruction" in action && typeof action.instruction === "string";
+    case "restoreTeachingCardRevision":
+      return "cardId" in action && typeof action.cardId === "string"
+        && "revisionId" in action && typeof action.revisionId === "string";
+    case "createTeachingVariant":
+      return "cardId" in action && typeof action.cardId === "string"
+        && "name" in action && typeof action.name === "string"
+        && "instruction" in action && typeof action.instruction === "string";
+    case "pinTeachingCardArtifact":
+      return "cardId" in action && typeof action.cardId === "string";
     case "loginWithApiKey":
       return "apiKey" in action && typeof action.apiKey === "string";
     case "reviseSessionProposal":

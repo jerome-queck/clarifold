@@ -15,6 +15,7 @@ interface SourceLayerProps {
   anchors: SourceAnchor[];
   highlight?: { startOffset: number; endOffset: number; exactText: string };
   onChooseAction(selection: SourceAnchorSelection, action: SourceAnchorPaletteAction): void;
+  onActivateAnchor?(sourceAnchorId: string): void;
 }
 
 interface EquationSegment {
@@ -41,7 +42,7 @@ interface PercentSourceRegionBounds {
   height: number;
 }
 
-export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, highlight, onChooseAction }: SourceLayerProps) {
+export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, highlight, onChooseAction, onActivateAnchor }: SourceLayerProps) {
   const sourceRef = useRef<HTMLElement>(null);
   const originRef = useRef<HTMLElement | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -201,7 +202,12 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
             {anchors.length} saved {anchors.length === 1 ? "Source Anchor" : "Source Anchors"}
           </p>
           <ul>
-            {anchors.map((anchor) => <li key={anchor.id}>{sourceAnchorLabel(anchor)}</li>)}
+            {anchors.map((anchor) => {
+              const label = sourceAnchorLabel(anchor);
+              return <li key={anchor.id}>{onActivateAnchor ? (
+                <button className="anchor-marker" aria-label={`Open Anchor Marker for ${label}`} onClick={() => onActivateAnchor(anchor.id)}>{label}</button>
+              ) : label}</li>;
+            })}
           </ul>
         </section>
       )}

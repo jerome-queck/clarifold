@@ -121,6 +121,34 @@ describe("Source Layer selection", () => {
     }, "annotate");
   });
 
+  it("activates a durable Anchor Marker from the keyboard", async () => {
+    const user = userEvent.setup();
+    const onActivateAnchor = vi.fn();
+    render(<SourceLayer
+      sourceId="source-1"
+      content="Every compact subset is closed."
+      anchors={[{
+        id: "anchor-1",
+        sourceId: "source-1",
+        selection: {
+          kind: "text",
+          startOffset: 6,
+          endOffset: 20,
+          exactText: "compact subset",
+          prefix: "Every ",
+          suffix: " is closed."
+        }
+      }]}
+      onChooseAction={() => undefined}
+      onActivateAnchor={onActivateAnchor}
+    />);
+
+    const marker = screen.getByRole("button", { name: "Open Anchor Marker for Text Source Anchor: compact subset (characters 6–20)" });
+    marker.focus();
+    await user.keyboard("{Enter}");
+    expect(onActivateAnchor).toHaveBeenCalledWith("anchor-1");
+  });
+
   it("closes the Selection Palette with Escape and restores focus to the selected source control", async () => {
     const user = userEvent.setup();
     render(<SourceLayer sourceId="source-1" content="Use $a=b$." anchors={[]} onChooseAction={vi.fn()} />);

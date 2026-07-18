@@ -13,6 +13,7 @@ import type {
 } from "../../shared/learning-application";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
+import { ContextualInspector } from "./ContextualInspector";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -759,6 +760,14 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
   const [goal, setGoal] = useState(session.learningGoal);
   const [target, setTarget] = useState(session.sessionTarget);
   const [direction, setDirection] = useState(session.proposal.initialTeachingDirection);
+  const [inspectorCardId, setInspectorCardId] = useState<string | null>(session.activeTeachingCardId);
+  useEffect(() => {
+    if (session.activeTeachingCardId) setInspectorCardId(session.activeTeachingCardId);
+  }, [session.activeTeachingCardId]);
+  const inspectorCard = session.anchoredTeachingCards.find((card) => card.id === inspectorCardId) ?? null;
+  const inspectorArtifact = inspectorCard?.artifactId
+    ? session.learningArtifacts.find((artifact) => artifact.id === inspectorCard.artifactId) ?? null
+    : null;
 
   const saveProposal = (applyToTeaching = false) => window.quickStudy.submit({
       type: applyToTeaching ? "applySessionProposalRevision" : "reviseSessionProposal",
@@ -818,23 +827,45 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
               <div><p className="eyebrow">Source Layer</p><h2>Session source</h2></div>
               <span className="saved">Saved locally</span>
             </div>
-            <WorkbenchSourceLayer state={state} session={session} onState={onState} />
+            <WorkbenchSourceLayer state={state} session={session} onState={onState}
+              onActivateAnchor={(sourceAnchorId) => {
+                const card = session.anchoredTeachingCards.find((candidate) => candidate.sourceAnchorId === sourceAnchorId);
+                setInspectorCardId(card?.id ?? null);
+              }} />
             <SessionAccessPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
             <TeachingCard session={session} modelAvailable={state.modelAccess.status === "available"} onState={onState} />
             <AskBar session={session} modelAvailable={state.modelAccess.status === "available"} onState={onState} />
           </section>
+          {inspectorCard && <ContextualInspector
+            card={inspectorCard}
+            artifact={inspectorArtifact}
+            onClose={() => setInspectorCardId(null)}
+            onRevise={async (instruction) => onState(await window.quickStudy.submit({
+              type: "reviseTeachingCard", cardId: inspectorCard.id, instruction
+            }))}
+            onRestore={async (revisionId) => onState(await window.quickStudy.submit({
+              type: "restoreTeachingCardRevision", cardId: inspectorCard.id, revisionId
+            }))}
+            onCreateVariant={async (name, instruction) => onState(await window.quickStudy.submit({
+              type: "createTeachingVariant", cardId: inspectorCard.id, name, instruction
+            }))}
+            onPin={async () => onState(await window.quickStudy.submit({
+              type: "pinTeachingCardArtifact", cardId: inspectorCard.id
+            }))}
+          />}
         </div>
       </div>
     </main>
   );
 }
 
-function WorkbenchSourceLayer({ state, session, onState }: {
+function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor }: {
   state: LearningApplicationState;
   session: LearningSession;
   onState: StateHandler;
+  onActivateAnchor(sourceAnchorId: string): void;
 }) {
   const selectableSources = state.sources.filter((source) => source.workspaceId === session.workspaceId
     && (session.sourceIds.includes(source.id) || (source.kind === "linkedSource" && source.resourceType === "file")));
@@ -876,6 +907,7 @@ function WorkbenchSourceLayer({ state, session, onState }: {
           content={content}
           mediaType={mediaType}
           anchors={session.sourceAnchors.filter((anchor) => anchor.sourceId === source.id)}
+          onActivateAnchor={onActivateAnchor}
           onChooseAction={(selection, paletteAction) => {
             void window.quickStudy.submit({
               type: "createSourceAnchor",
