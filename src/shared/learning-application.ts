@@ -11,7 +11,7 @@ import {
   type TeachingSourceContext,
   type SessionProposal
 } from "./model-runtime";
-import { type SessionAccessPolicy } from "./session-access";
+import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-access";
 export type { SessionAccessPolicy } from "./session-access";
 
 const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
@@ -1038,7 +1038,9 @@ export class LearningApplication {
       ? session.submittedPendingQuestions.find((candidate) => candidate.id === input.submissionId) ?? null
       : null;
     const restartTeaching = this.modelWorks.has(session.id);
-    if (restartTeaching) await this.stopModelWork(session);
+    if (restartTeaching && !await this.stopModelWork(session)) {
+      throw new Error(`Codex did not confirm interruption. ${sessionAccessPolicyLabel(session.accessPolicy)} remains active.`);
+    }
     session.accessPolicy = policy;
     if (restartTeaching) await this.beginTeaching(session, input.text, submission);
   }

@@ -113,6 +113,36 @@ describe("macOS source access", () => {
     expect(view.content).toBe("data:application/pdf;base64,JVBERi0xLjcK");
   });
 
+  it("reads supported files beneath a Primary Folder without following paths outside it", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.stat.mockImplementation(async (path: string) => ({
+      size: path.endsWith("algebra-course") || path.endsWith("notes") ? 64 : 35,
+      mtimeMs: 1234,
+      isFile: () => !path.endsWith("algebra-course") && !path.endsWith("notes"),
+      isDirectory: () => path.endsWith("algebra-course") || path.endsWith("notes")
+    }));
+    sourceDependencies.readdir.mockImplementation(async (path: string) => path.endsWith("notes")
+      ? ["orbits.txt", "diagram.bin"]
+      : ["notes", "escaped.txt"]);
+    sourceDependencies.realpath.mockImplementation(async (path: string) => path.endsWith("escaped.txt")
+      ? "/Users/learner/private/escaped.txt"
+      : path);
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("Classify the orbits and stabilizers."));
+
+    const view = await new MacOsSourceAccess(sourceDependencies).read({
+      ...linkedFile(),
+      name: "algebra-course",
+      resourceType: "folder",
+      link: { ...linkedFile().link, lastKnownPath: "/Users/learner/algebra-course" }
+    });
+
+    expect(view.mediaType).toBe("text/plain");
+    expect(view.content).toContain("--- notes/orbits.txt ---");
+    expect(view.content).toContain("Classify the orbits and stabilizers.");
+    expect(sourceDependencies.readFile).not.toHaveBeenCalledWith("/Users/learner/private/escaped.txt");
+    expect(sourceDependencies.readFile).not.toHaveBeenCalledWith("/Users/learner/algebra-course/notes/diagram.bin");
+  });
+
   it("stops security-scoped access when reading fails", async () => {
     const stopAccess = vi.fn();
     const access = new MacOsSourceAccess({

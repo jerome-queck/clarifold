@@ -97,6 +97,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     const workspacePrompt = JSON.parse(await readFile(join(dataDirectory, "fake-codex-last-teaching-input.json"), "utf8")).prompt;
     expect(workspacePrompt).toContain("lecture-3.pdf");
     expect(workspacePrompt).toContain("problem-set.txt");
+    expect(workspacePrompt).toContain("Classify the orbits and stabilizers.");
     expect(workspacePrompt).not.toContain("PRIVATE_UNRELATED_DEVICE_CONTENT");
     await accessRequest.getByRole("button", { name: "Deny Access Request" }).press("Enter");
     await expect(page.getByRole("region", { name: "Workspace Access" })).toBeVisible();
@@ -120,6 +121,19 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByRole("button", { name: "Leave session" }).click();
     await page.getByRole("button", { name: "Open Study Workspace Quick Study" }).click();
     await expect(page.getByText("Focused Access · no workspace setup required", { exact: true })).toBeVisible();
+
+    await page.getByLabel("Typed mathematics").fill("TRIGGER_ACCESS_REQUEST: Explain why a finite group action has finite orbits.");
+    await page.getByRole("button", { name: "Propose Learning Session" }).click();
+    await expect(page.getByRole("region", { name: "Request Full Access" })).toBeVisible();
+    await page.getByRole("button", { name: "Narrow to Workspace Access" }).press("Enter");
+    await expect(page.getByRole("region", { name: "Workspace Access" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Current Teaching Card" })).toContainText(
+      "Access narrowed. The Learning Session now uses Workspace Access."
+    );
+    await page.getByRole("button", { name: "Leave session" }).click();
+    await page.getByLabel("Destination Study Mission").selectOption({ label: "Abstract Algebra — Group actions" });
+    await page.getByRole("button", { name: "File Quick Study session" }).click();
+    await page.getByRole("button", { name: "Open Study Workspace Quick Study" }).click();
 
     await page.getByLabel("Typed mathematics").fill("Show that every convergent sequence is bounded.");
     await page.getByRole("button", { name: "Propose Learning Session" }).click();
@@ -162,6 +176,13 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     page = await launch();
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open Study Workspace Abstract Algebra" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Study Workspace Quick Study" }).click();
+    await page.getByLabel("Typed mathematics").fill("Prove that a finite union of finite sets is finite.");
+    await page.getByRole("button", { name: "Propose Learning Session" }).click();
+    await expect(page.getByRole("region", { name: "Focused Access" })).toBeVisible();
+    await page.getByRole("button", { name: "Leave session" }).click();
+    await page.getByLabel("Destination Study Mission").selectOption({ label: "Abstract Algebra — Finite group structure" });
+    await page.getByRole("button", { name: "File Quick Study session" }).click();
     await page.getByRole("button", { name: "Open Study Workspace Abstract Algebra" }).click();
     const reopenedPrimaryFolder = page.getByRole("button", { name: "Open Linked Source algebra-course" });
     await reopenedPrimaryFolder.press("Enter");
@@ -172,8 +193,10 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     expect(await readFile(attachmentPath, "utf8")).toBe(attachmentContent);
     expect(await readFile(join(primaryFolderPath, "problem-set.txt"), "utf8")).toBe("Classify the orbits and stabilizers.");
     await expect(page.getByText("Bound the sequence using its finite prefix and tail")).toBeVisible();
-    const resumeControl = page.getByRole("button", { name: "Resume Learning Session", exact: true });
-    await resumeControl.press("Enter");
+    await page.getByRole("button", { name: "Open Study Mission Finite group structure" }).click();
+    await page.getByRole("button", {
+      name: "Resume grouped Learning Session Understand where convergence controls the tail"
+    }).press("Enter");
 
     await expect(page.getByRole("heading", { name: "Mathematical Workbench" })).toBeVisible();
     await expect(page.getByLabel("Learning Goal")).toHaveValue("Understand where convergence controls the tail");

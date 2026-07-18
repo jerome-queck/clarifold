@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import type {
   LearningApplicationState,
   LearningSession,
+  LearnerAction,
   LinkedSource,
   LinkedSourceView,
   SessionSearchResult,
@@ -683,18 +684,27 @@ function SessionAccessPanel({ state, session, onState }: {
   session: LearningSession;
   onState: StateHandler;
 }) {
+  const [accessError, setAccessError] = useState<string | null>(null);
   const pendingRequest = session.accessRequests.find((request) => request.status === "pending") ?? null;
+  const submitAccessAction = async (action: LearnerAction) => {
+    setAccessError(null);
+    try {
+      onState(await window.quickStudy.submit(action));
+    } catch (error) {
+      setAccessError(error instanceof Error ? error.message : "Could not update the Session Access Policy.");
+    }
+  };
   const choosePolicy = (policy: LearningSession["accessPolicy"]) => {
-    void window.quickStudy.submit({ type: "selectSessionAccessPolicy", policy }).then(onState);
+    void submitAccessAction({ type: "selectSessionAccessPolicy", policy });
   };
   const decide = (decision: "approve" | "deny" | "narrow") => {
     if (!pendingRequest) return;
-    void window.quickStudy.submit({
+    void submitAccessAction({
       type: "decideAccessRequest",
       requestId: pendingRequest.id,
       decision,
       ...(decision === "narrow" ? { narrowedPolicy: "workspace" as const } : {})
-    }).then(onState);
+    });
   };
   return (
     <section className="access-policy" aria-labelledby="session-access-title">
@@ -725,10 +735,10 @@ function SessionAccessPanel({ state, session, onState }: {
         <input
           type="checkbox"
           checked={state.accessConfirmationPreference.confirmFullAccess}
-          onChange={(event) => void window.quickStudy.submit({
+          onChange={(event) => void submitAccessAction({
             type: "setFullAccessConfirmation",
             enabled: event.target.checked
-          }).then(onState)}
+          })}
         />
         Confirm before Full Access
       </label>
@@ -739,12 +749,12 @@ function SessionAccessPanel({ state, session, onState }: {
           <h3 id="full-access-confirmation-title">Full Access confirmation</h3>
           <p>Allow broader read-only local-file and agent-tool access for this Learning Session only?</p>
           <div className="teaching-actions">
-            <button className="primary" onClick={() => void window.quickStudy.submit({
+            <button className="primary" onClick={() => void submitAccessAction({
               type: "decideFullAccessConfirmation", decision: "confirm"
-            }).then(onState)}>Confirm Full Access</button>
-            <button className="secondary" onClick={() => void window.quickStudy.submit({
+            })}>Confirm Full Access</button>
+            <button className="secondary" onClick={() => void submitAccessAction({
               type: "decideFullAccessConfirmation", decision: "cancel"
-            }).then(onState)}>Cancel Full Access</button>
+            })}>Cancel Full Access</button>
           </div>
         </section>
       )}
@@ -766,6 +776,7 @@ function SessionAccessPanel({ state, session, onState }: {
           </div>
         </section>
       )}
+      {accessError && <p className="failure-message" role="alert">{accessError}</p>}
     </section>
   );
 }

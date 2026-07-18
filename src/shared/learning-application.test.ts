@@ -1107,6 +1107,30 @@ describe("Learning Application", () => {
     runtime.completeTeaching(state.sessions[0].id);
   });
 
+  it("keeps the current policy when Codex cannot confirm interruption", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the proof",
+      scope: "Use the current source",
+      initialTeachingDirection: "Inspect the hypotheses",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    let state = await application.submit({ type: "submitSessionIntake", mathematics: "Explain this theorem." });
+    state = await application.submit({ type: "setFullAccessConfirmation", enabled: false });
+    runtime.cancelError = new Error("interrupt request timed out");
+
+    await expect(application.submit({ type: "selectSessionAccessPolicy", policy: "full" })).rejects.toThrow(
+      "Codex did not confirm interruption. Focused Access remains active."
+    );
+    expect(application.getState().sessions[0].accessPolicy).toBe("focused");
+    expect(runtime.teachingRequests).toHaveLength(1);
+
+    runtime.cancelError = null;
+    runtime.completeTeaching(state.sessions[0].id);
+    await application.waitForModelWork();
+  });
+
   it("files Quick Study work intact and orders the Resume Card by the most recently touched session", async () => {
     const { application, dataDirectory } = await launch();
 
