@@ -1,6 +1,8 @@
 # Quick Study
 
-Quick Study is a local-first macOS mathematical learning workbench. The current walking skeleton starts a durable Learning Session directly from typed mathematics, keeps its Learning Goal and Session Target editable, and resumes the same work after quit and relaunch without requiring workspace setup.
+Quick Study is a local-first macOS mathematical learning workbench. It starts durable Learning Sessions directly from typed mathematics without requiring setup, organizes them under Study Workspaces and Study Missions, and restores the latest resumable work after quit and relaunch.
+
+The built-in Quick Study workspace remains the immediate home for loose work. A learner can later file a Quick Study session into a named Study Workspace and Study Mission without replacing the session or losing its Learning Goal, Session Target, or return context.
 
 ## Requirements
 
@@ -42,7 +44,7 @@ There is no hosted preview or deployment for this local-first desktop slice. The
 
 ## Architecture
 
-- `src/shared/learning-application.ts` is the public Learning Application boundary and owns learner actions plus durable state transitions.
+- `src/shared/learning-application.ts` is the public Learning Application boundary and owns Study Workspace, Study Mission, Learning Session, filing, navigation, and durable state transitions.
 - `src/main/` owns filesystem persistence and exposes only typed learning actions through a sandboxed preload bridge.
 - `src/renderer/` is the React Mathematical Workbench.
-- `tests/packaged-quick-study.spec.ts` launches the packaged application and verifies the critical relaunch journey through the visible UI.
+- `tests/packaged-quick-study.spec.ts` launches the packaged application and verifies workspace and mission creation, identity-preserving filing, keyboard-operable hierarchy navigation, quit and relaunch, and resume through the visible UI.
