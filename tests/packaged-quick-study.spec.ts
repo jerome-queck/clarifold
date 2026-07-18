@@ -22,6 +22,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   const primaryFolderPath = join(sourceDirectory, "algebra-course");
   const attachmentPath = join(sourceDirectory, "lecture-3.pdf");
   const unrelatedPath = join(sourceDirectory, "private-unrelated.txt");
+  const artifactExportPath = join(sourceDirectory, "reformulated-proof.md");
   await mkdir(primaryFolderPath);
   execFileSync("/usr/bin/xcrun", ["swift", join(process.cwd(), "tests/fixtures/create-scanned-pdf.swift"), attachmentPath], {
     timeout: 30_000
@@ -41,7 +42,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
         QUICK_STUDY_DATA_DIR: dataDirectory,
         QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs"),
         QUICK_STUDY_TEST_PRIMARY_FOLDER: primaryFolderPath,
-        QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath
+        QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath,
+        QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH: artifactExportPath
       },
       stdio: "pipe"
     });
@@ -262,6 +264,34 @@ test("packaged Quick Study organizes durable work and resumes the latest session
       "Start from the key definition, then connect each inference to the stated goal.",
       { exact: true }
     )).toBeVisible();
+
+    await page.getByRole("button", { name: "Leave session" }).click();
+    await page.getByRole("button", { name: "Open Study Workspace Quick Study" }).click();
+    await page.getByLabel("Typed mathematics").fill("Adapt the source proof around $a=b$ without changing the supplied source.");
+    await page.getByRole("button", { name: "Propose Learning Session" }).click();
+    const equation = page.getByRole("button", { name: "Select equation 1: $a=b$" });
+    await equation.press("Enter");
+    await page.getByRole("button", { name: "Explain or unpack selected equation" }).press("Enter");
+    const inspector = page.getByRole("complementary", { name: /Contextual Inspector/ });
+    await expect(inspector.getByRole("region", { name: "Current anchored Teaching Card" })).toContainText(
+      "Start from the key definition, then connect each inference to the stated goal.",
+      { timeout: 15_000 }
+    );
+    await inspector.getByRole("button", { name: "Save as Reformulated Proof" }).press("Enter");
+    const reformulatedProof = page.getByRole("article", { name: /Reformulated Proof/ });
+    await expect(reformulatedProof).toContainText("1 retained Source Anchor");
+    await reformulatedProof.getByRole("button", { name: /Export Reformulated Proof/ }).press("Enter");
+    await expect(reformulatedProof.getByRole("status")).toContainText(`Artifact Export saved to ${artifactExportPath}`);
+    const exportedArtifact = await readFile(artifactExportPath, "utf8");
+    expect(exportedArtifact).toContain("# Reformulated Proof");
+    expect(exportedArtifact).toContain("`$a=b$`");
+    expect(exportedArtifact).toContain("Start from the key definition, then connect each inference to the stated goal.");
+    await expect(reformulatedProof.getByLabel("Learning Artifact content for Explain $a=b$")).toHaveValue(
+      "Start from the key definition, then connect each inference to the stated goal."
+    );
+    await expect(page.getByRole("article", { name: "Read-only Source Layer" })).toContainText(
+      "Adapt the source proof around $a=b$ without changing the supplied source."
+    );
   } finally {
     await quit();
     await rm(dataDirectory, { recursive: true, force: true });

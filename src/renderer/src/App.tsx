@@ -1004,8 +1004,8 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             onRetry={async (variantId) => onState(await window.quickStudy.submit({
               type: "retryAnchoredTeachingCard", cardId: inspectorCard.id, ...(variantId ? { variantId } : {})
             }))}
-            onPin={async () => onState(await window.quickStudy.submit({
-              type: "pinTeachingCardArtifact", cardId: inspectorCard.id
+            onPin={async (artifactKind) => onState(await window.quickStudy.submit({
+              type: "pinTeachingCardArtifact", cardId: inspectorCard.id, artifactKind
             }))}
           />}
         </div>
@@ -1495,6 +1495,10 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
   statusLabel?: string;
 }) {
   const [content, setContent] = useState(artifact.currentRevision.content);
+  const [portabilityStatus, setPortabilityStatus] = useState<string | null>(null);
+  const [portabilityError, setPortabilityError] = useState<string | null>(null);
+  const artifactLabel = artifact.kind === "reformulatedProof" ? "Reformulated Proof" : "Learning Artifact";
+  const originatingSessionId = sessionId ?? artifact.originatingSessionId;
   useEffect(() => setContent(artifact.currentRevision.content), [artifact.currentRevision.id, artifact.currentRevision.content]);
   const save = async () => onState(await window.quickStudy.submit({
     type: "editLearningArtifact",
@@ -1502,10 +1506,24 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
     artifactId: artifact.id,
     content
   }));
+  const exportArtifact = async () => {
+    setPortabilityError(null);
+    const result = await window.quickStudy.exportLearningArtifact(originatingSessionId, artifact.id);
+    if (result.status === "exported") setPortabilityStatus(`Artifact Export saved to ${result.path}`);
+  };
+  const shareArtifact = async () => {
+    setPortabilityError(null);
+    await window.quickStudy.shareLearningArtifact(originatingSessionId, artifact.id);
+    setPortabilityStatus("Artifact Export handed to macOS sharing.");
+  };
+  const runPortableAction = (action: () => Promise<void>) => void action().catch((cause: unknown) => {
+    setPortabilityError(cause instanceof Error ? cause.message : "The Learning Artifact could not be handed off.");
+  });
   return (
-    <article id={`learning-artifact-${artifact.id}`} className="learning-artifact" aria-label={`Pinned Learning Artifact ${artifact.title}`}>
+    <article id={`learning-artifact-${artifact.id}`} className="learning-artifact"
+      aria-label={`${artifact.kind === "learningArtifact" ? "Pinned Learning Artifact" : artifactLabel} ${artifact.title}`}>
       <div className="card-heading">
-        <div><p className="eyebrow">Learning Artifact</p><h2>{artifact.title}</h2></div>
+        <div><p className="eyebrow">{artifactLabel}</p><h2>{artifact.title}</h2></div>
         <span className="saved">{statusLabel}</span>
       </div>
       <label htmlFor={`artifact-content-${artifact.id}`}>Learning Artifact content for {artifact.title}</label>
@@ -1514,17 +1532,27 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
       <button className="secondary" aria-label={`Save Learning Artifact revision for ${artifact.title}`}
         disabled={!content.trim() || content === artifact.currentRevision.content}
         onClick={() => void save()}>Save Learning Artifact revision</button>
+      <div className="artifact-portability-actions">
+        <button className="secondary" aria-label={`Export ${artifactLabel} ${artifact.title}`}
+          onClick={() => runPortableAction(exportArtifact)}>Export portable copy</button>
+        <button className="secondary" aria-label={`Share ${artifactLabel} ${artifact.title}`}
+          onClick={() => runPortableAction(shareArtifact)}>Share export</button>
+      </div>
       <dl className="artifact-evidence">
         <div><dt>Claim Origin</dt><dd>{artifact.currentRevision.claimOrigin === "learner"
           ? "Learner"
           : artifact.currentRevision.claimOrigin === "mixed" ? "Mixed learner and model" : "Model-generated"}</dd></div>
         <div><dt>Verification Level</dt><dd>Not independently checked</dd></div>
-        <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor</dd></div>
+        <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor{artifact.sourceAnchorIds.length === 1 ? "" : "s"}</dd></div>
+        <div><dt>Revision provenance</dt><dd>{artifactRevisionProvenance(artifact.currentRevision)}</dd></div>
       </dl>
+      {portabilityStatus && <p className="saved" role="status">{portabilityStatus}</p>}
+      {portabilityError && <p className="failure-message" role="alert">{portabilityError}</p>}
       {artifact.revisions.length > 0 && <details className="artifact-history">
         <summary>Learning Artifact revision history</summary>
         <ol>{artifact.revisions.map((revision, index) => <li key={revision.id}>
           <p>Revision {index + 1}: {revision.content}</p>
+          <p className="subtle">{artifactRevisionProvenance(revision)}</p>
           <button className="text-button" aria-label={`Restore ${artifact.title} revision ${index + 1}`}
             onClick={() => void window.quickStudy.submit({
               type: "restoreLearningArtifactRevision",
@@ -1536,6 +1564,18 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
       </details>}
     </article>
   );
+}
+
+function artifactRevisionProvenance(revision: LearningArtifact["currentRevision"]): string {
+  const action = revision.provenance.action === "promoted"
+    ? "Promoted"
+    : revision.provenance.action === "edited" ? "Edited" : "Restored";
+  const created = revision.provenance.createdAt
+    ? new Date(revision.provenance.createdAt).toLocaleDateString("en-GB", {
+        day: "numeric", month: "short", year: "numeric", timeZone: "UTC"
+      })
+    : "Date unavailable";
+  return `${action} · ${created}`;
 }
 
 function SessionAccessPanel({ state, session, onState }: {

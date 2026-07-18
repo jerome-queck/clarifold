@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   LearnerAction,
   AgentWorkLogEvidence,
+  ArtifactExportResult,
+  ArtifactShareResult,
   LearningApplicationState,
   LinkedSourceView,
   OpenedSourceSearchResult,
@@ -27,6 +29,10 @@ contextBridge.exposeInMainWorld("quickStudy", {
     ipcRenderer.invoke("source:indexSearch", workspaceId, query),
   openSourceSearchResult: (resultId: string): Promise<OpenedSourceSearchResult> =>
     ipcRenderer.invoke("source:indexOpenResult", resultId),
+  exportLearningArtifact: (sessionId: string, artifactId: string): Promise<ArtifactExportResult> =>
+    ipcRenderer.invoke("artifact:export", sessionId, artifactId),
+  shareLearningArtifact: (sessionId: string, artifactId: string): Promise<ArtifactShareResult> =>
+    ipcRenderer.invoke("artifact:share", sessionId, artifactId),
   onStateChanged: (listener: (state: LearningApplicationState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: LearningApplicationState) => listener(state);
     ipcRenderer.on("learning:stateChanged", handler);

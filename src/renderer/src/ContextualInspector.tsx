@@ -10,7 +10,7 @@ interface ContextualInspectorProps {
   onRestore(revisionId: string): Promise<void>;
   onCreateVariant(name: string, instruction: string): Promise<void>;
   onRetry(variantId?: string): Promise<void>;
-  onPin(): Promise<void>;
+  onPin(kind: LearningArtifact["kind"]): Promise<void>;
 }
 
 export function ContextualInspector({
@@ -67,10 +67,10 @@ export function ContextualInspector({
       setBusy(false);
     }
   };
-  const pin = async () => {
+  const pin = async (kind: LearningArtifact["kind"]) => {
     setBusy(true);
     try {
-      await onPin();
+      await onPin(kind);
     } finally {
       setBusy(false);
     }
@@ -150,8 +150,12 @@ export function ContextualInspector({
       {artifact ? (
         <p className="saved" role="status">Pinned Learning Artifact retains this Source Anchor.</p>
       ) : (
-        <button className="secondary" disabled={busy || card.currentRevision.status !== "completed" || !card.currentRevision.content.trim()}
-          onClick={() => void pin()}>Pin as Learning Artifact</button>
+        <div className="artifact-promotion-actions">
+          <button className="secondary" disabled={busy || card.currentRevision.status !== "completed" || !card.currentRevision.content.trim()}
+            onClick={() => void pin("learningArtifact")}>Pin as Learning Artifact</button>
+          <button className="secondary" disabled={busy || card.currentRevision.status !== "completed" || !card.currentRevision.content.trim()}
+            onClick={() => void pin("reformulatedProof")}>Save as Reformulated Proof</button>
+        </div>
       )}
     </aside>
   );

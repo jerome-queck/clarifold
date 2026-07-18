@@ -14,6 +14,7 @@ import {
 import { CodexAppServerRuntime } from "./codex-app-server";
 import type { ModelRuntime } from "../shared/model-runtime";
 import { MacOsSourceAccess } from "./source-access";
+import { MacOsArtifactSharing } from "./artifact-sharing";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
@@ -92,7 +93,9 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "cardId" in action && typeof action.cardId === "string"
         && (!("variantId" in action) || action.variantId === undefined || typeof action.variantId === "string");
     case "pinTeachingCardArtifact":
-      return "cardId" in action && typeof action.cardId === "string";
+      return "cardId" in action && typeof action.cardId === "string"
+        && (!("artifactKind" in action) || action.artifactKind === undefined
+          || action.artifactKind === "learningArtifact" || action.artifactKind === "reformulatedProof");
     case "editLearningArtifact":
       return "artifactId" in action && typeof action.artifactId === "string"
         && "content" in action && typeof action.content === "string";
@@ -202,6 +205,35 @@ function registerLearningApplicationHandlers(): void {
     if (typeof query !== "string") throw new Error("Invalid search query.");
     return learningApplication.searchSessions(query);
   });
+  ipcMain.handle("artifact:export", async (event, sessionId: unknown, artifactId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sessionId !== "string" || typeof artifactId !== "string") {
+      throw new Error("Invalid Learning Artifact export request.");
+    }
+    const portableCopy = learningApplication.createArtifactPortableCopy(sessionId, artifactId);
+    const fixturePath = process.env.QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH;
+    let destinationPath = fixturePath;
+    if (!destinationPath) {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: "Export Learning Artifact",
+        defaultPath: portableCopy.suggestedFilename,
+        filters: [{ name: "Markdown", extensions: ["md"] }]
+      };
+      const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { status: "canceled" } as const;
+      destinationPath = result.filePath;
+    }
+    await learningApplication.exportLearningArtifact(sessionId, artifactId, destinationPath);
+    return { status: "exported", path: destinationPath } as const;
+  });
+  ipcMain.handle("artifact:share", async (event, sessionId: unknown, artifactId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sessionId !== "string" || typeof artifactId !== "string") {
+      throw new Error("Invalid Learning Artifact share request.");
+    }
+    return learningApplication.shareLearningArtifact(sessionId, artifactId);
+  });
   ipcMain.handle("source:linkPrimaryFolder", async (event, workspaceId: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (typeof workspaceId !== "string") throw new Error("Invalid Study Workspace.");
@@ -292,7 +324,12 @@ void app.whenReady().then(async () => {
   } catch (error) {
     console.error("Codex app-server is unavailable:", error);
   }
-  learningApplication = await LearningApplication.launch(dataDirectory, modelRuntime, sourceAccess);
+  learningApplication = await LearningApplication.launch(
+    dataDirectory,
+    modelRuntime,
+    sourceAccess,
+    new MacOsArtifactSharing(app.getPath("temp"))
+  );
   registerLearningApplicationHandlers();
   createWindow();
 

@@ -1,6 +1,8 @@
 import type {
   LearnerAction,
   AgentWorkLogEvidence,
+  ArtifactExportResult,
+  ArtifactShareResult,
   LearningApplicationState,
   LinkedSourceView,
   OpenedSourceSearchResult,
@@ -23,6 +25,8 @@ declare global {
       rebuildSourceIndex(sourceId: string): Promise<LearningApplicationState>;
       searchSourceIndex(workspaceId: string, query: string): Promise<SourceSearchResult[]>;
       openSourceSearchResult(resultId: string): Promise<OpenedSourceSearchResult>;
+      exportLearningArtifact(sessionId: string, artifactId: string): Promise<ArtifactExportResult>;
+      shareLearningArtifact(sessionId: string, artifactId: string): Promise<ArtifactShareResult>;
       onStateChanged(listener: (state: LearningApplicationState) => void): () => void;
       openExternal(url: string): Promise<void>;
     };

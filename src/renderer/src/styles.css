@@ -328,6 +328,7 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .trail-add textarea { min-height: 64px; }
 .trail-add .primary { grid-column: 3; grid-row: 2; }
 .artifact-content { width: 100%; min-height: 150px; padding: 14px; resize: vertical; border: 1px solid #b8cfbd; border-radius: 10px; color: #1c332f; background: #fff; white-space: pre-wrap; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; }
+.artifact-promotion-actions, .artifact-portability-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
 .artifact-evidence { display: grid; gap: 6px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid #d4dfd3; }
 .artifact-evidence div { display: grid; grid-template-columns: 140px 1fr; gap: 12px; }
 .artifact-evidence dt { font-weight: 750; }
