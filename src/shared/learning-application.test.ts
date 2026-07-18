@@ -199,6 +199,71 @@ describe("Learning Application", () => {
     expect(relaunched.getState().sessions[0].activeSourceAnchorId).toBe(anchored.sessions[0].activeSourceAnchorId);
   });
 
+  it("lets the learner curate required Trail Items and restores the Trail Draft after resuming", async () => {
+    const { application, dataDirectory } = await launch();
+    let state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Let $f(x)=x^2$. The derivative is $2x$."
+    });
+    const sessionId = state.sessions[0].id;
+    const sourceId = state.sessions[0].sourceIds[0];
+
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "equation",
+        equationIndex: 0,
+        startOffset: 4,
+        endOffset: 14,
+        exactText: "$f(x)=x^2$",
+        prefix: "Let ",
+        suffix: ". The derivative"
+      },
+      paletteAction: "addToLearningTrail"
+    });
+    const anchoredItem = state.sessions[0].trailDraft.items[0];
+    expect(anchoredItem).toMatchObject({
+      kind: "concept",
+      content: "$f(x)=x^2$",
+      required: true,
+      origin: "learner",
+      links: { sourceAnchorIds: [state.sessions[0].sourceAnchors[0].id] }
+    });
+
+    state = await application.submit({
+      type: "addTrailItem",
+      kind: "nextStep",
+      content: "Differentiate the polynomial term by term."
+    });
+    const nextStep = state.sessions[0].trailDraft.items[1];
+    state = await application.submit({
+      type: "editTrailItem",
+      trailItemId: nextStep.id,
+      content: "Differentiate using the power rule."
+    });
+    state = await application.submit({ type: "setTrailItemRequired", trailItemId: nextStep.id, required: true });
+    state = await application.submit({ type: "moveTrailItem", trailItemId: nextStep.id, direction: "up" });
+    expect(state.sessions[0].trailDraft.items.map((item) => item.content)).toEqual([
+      "Differentiate using the power rule.",
+      "$f(x)=x^2$"
+    ]);
+
+    await expect(application.submit({ type: "removeTrailItem", trailItemId: nextStep.id }))
+      .rejects.toThrow("Remove the Required Trail Item marker before deleting this item");
+    await application.submit({ type: "setTrailItemRequired", trailItemId: nextStep.id, required: false });
+    state = await application.submit({ type: "removeTrailItem", trailItemId: nextStep.id });
+    expect(state.sessions[0].trailDraft.items).toHaveLength(1);
+
+    await application.submit({ type: "leaveSession" });
+    state = await application.submit({ type: "resumeSession", sessionId });
+    expect(state.sessions[0].trailDraft.items).toEqual([anchoredItem]);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].trailDraft.items).toEqual([anchoredItem]);
+  });
+
   it("anchors exact Linked Source text only after the learner attaches it to the active session", async () => {
     const sourceAccess = new DeterministicSourceAccess();
     const { application } = await launchWithSourceAccess(sourceAccess);
@@ -303,6 +368,78 @@ describe("Learning Application", () => {
     const relaunched = await LearningApplication.launch(dataDirectory);
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].anchoredTeachingCards[0].sourceAnchorId).toBe(anchor.id);
+  });
+
+  it("automatically curates linked suggestions without revising a Required Trail Item", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the selected claim",
+      initialTeachingDirection: "Start from the open-cover definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "explain"
+    });
+    const session = state.sessions[0];
+    const cardId = session.anchoredTeachingCards[0].id;
+    const anchorId = session.sourceAnchors[0].id;
+    runtime.emitTeaching("Use compactness to obtain a finite subcover.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    state = application.getState();
+    let suggestion = state.sessions[0].trailDraft.items.find((item) => item.curationKey === `teaching-card:${cardId}`)!;
+    expect(suggestion).toMatchObject({
+      kind: "reasoningStep",
+      content: "Use compactness to obtain a finite subcover.",
+      required: false,
+      origin: "teachingAgent",
+      links: { sourceAnchorIds: [anchorId], teachingCardIds: [cardId] }
+    });
+
+    await application.submit({ type: "reviseTeachingCard", cardId, instruction: "Make the separation step explicit." });
+    runtime.emitTeaching("Choose one separating neighbourhood for each point, then take a finite subcover.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = application.getState();
+    suggestion = state.sessions[0].trailDraft.items.find((item) => item.curationKey === `teaching-card:${cardId}`)!;
+    expect(suggestion.content).toContain("separating neighbourhood");
+
+    await application.submit({ type: "setTrailItemRequired", trailItemId: suggestion.id, required: true });
+    await application.submit({ type: "reviseTeachingCard", cardId, instruction: "Try another wording." });
+    runtime.emitTeaching("This later automatic wording must not replace the required item.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = application.getState();
+    expect(state.sessions[0].trailDraft.items.find((item) => item.id === suggestion.id)?.content)
+      .toContain("separating neighbourhood");
+
+    state = await application.submit({ type: "pinTeachingCardArtifact", cardId });
+    const artifact = state.sessions[0].learningArtifacts[0];
+    expect(state.sessions[0].trailDraft.items).toContainEqual(expect.objectContaining({
+      kind: "learningArtifact",
+      content: artifact.title,
+      links: expect.objectContaining({
+        sourceAnchorIds: [anchorId],
+        teachingCardIds: [cardId],
+        learningArtifactIds: [artifact.id]
+      })
+    }));
   });
 
   it("opens an anchored question in the Contextual Inspector path without dispatching until the learner words it", async () => {

@@ -183,6 +183,29 @@ export interface LearningArtifactRevision {
   verificationCurrency: "current";
 }
 
+export type TrailItemKind = "concept" | "reasoningStep" | "learningArtifact" | "evidence" | "unresolvedQuestion" | "nextStep";
+
+export interface TrailItemLinks {
+  sourceAnchorIds: string[];
+  teachingCardIds: string[];
+  learningArtifactIds: string[];
+  understandingEvidenceIds: string[];
+}
+
+export interface TrailItem {
+  id: string;
+  kind: TrailItemKind;
+  content: string;
+  required: boolean;
+  origin: "learner" | "teachingAgent";
+  links: TrailItemLinks;
+  curationKey: string | null;
+}
+
+export interface TrailDraft {
+  items: TrailItem[];
+}
+
 export interface AgentWorkLogEvidence {
   sequence: number;
   type: ModelRuntimeEvent["type"];
@@ -479,6 +502,7 @@ export interface LearningSession {
   anchoredTeachingCards: AnchoredTeachingCard[];
   activeTeachingCardId: string | null;
   learningArtifacts: LearningArtifact[];
+  trailDraft: TrailDraft;
   learningSlice: LearningSlice | null;
   conceptPeeks: ConceptPeek[];
   pendingConceptPeek: { sourceAnchorId: string; prerequisite: string } | null;
@@ -550,6 +574,11 @@ export type LearnerAction =
   | { type: "pinTeachingCardArtifact"; cardId: string }
   | { type: "editLearningArtifact"; artifactId: string; content: string }
   | { type: "restoreLearningArtifactRevision"; artifactId: string; revisionId: string }
+  | { type: "addTrailItem"; kind: TrailItemKind; content: string }
+  | { type: "editTrailItem"; trailItemId: string; content: string }
+  | { type: "removeTrailItem"; trailItemId: string }
+  | { type: "moveTrailItem"; trailItemId: string; direction: "up" | "down" }
+  | { type: "setTrailItemRequired"; trailItemId: string; required: boolean }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
@@ -1089,6 +1118,20 @@ export class LearningApplication {
           action: action.paletteAction
         });
         session.activeSourceAnchorId = anchor.id;
+        if (action.paletteAction === "addToLearningTrail") {
+          session.trailDraft.items.push({
+            id: crypto.randomUUID(),
+            kind: "concept",
+            content: sourceAnchorMathematics(anchor),
+            required: true,
+            origin: "learner",
+            links: {
+              ...emptyTrailItemLinks(),
+              sourceAnchorIds: [anchor.id]
+            },
+            curationKey: null
+          });
+        }
         refreshAskBarContext(this.state, session, true);
         if (action.paletteAction === "explain" || action.paletteAction === "question") {
           const isExplanation = action.paletteAction === "explain";
@@ -1213,6 +1256,13 @@ export class LearningApplication {
           session.learningArtifacts.push(artifact);
           card.artifactId = artifact.id;
         }
+        const artifact = requireLearningArtifact(session, card.artifactId!);
+        upsertSuggestedTrailItem(session, `learning-artifact:${artifact.id}`, "learningArtifact", artifact.title, {
+          sourceAnchorIds: [card.sourceAnchorId],
+          teachingCardIds: [card.id],
+          learningArtifactIds: [artifact.id],
+          understandingEvidenceIds: []
+        });
         session.activeTeachingCardId = card.id;
         session.activeSourceAnchorId = card.sourceAnchorId;
         break;
@@ -1239,6 +1289,51 @@ export class LearningApplication {
         if (revisionIndex < 0) throw new Error("Choose an earlier Learning Artifact revision to restore.");
         const [restored] = artifact.revisions.splice(revisionIndex, 1, structuredClone(artifact.currentRevision));
         artifact.currentRevision = restored;
+        break;
+      }
+      case "addTrailItem": {
+        const session = this.requireActiveSession();
+        if (!isTrailItemKind(action.kind)) throw new Error("Choose a valid Trail Item type.");
+        session.trailDraft.items.push({
+          id: crypto.randomUUID(),
+          kind: action.kind,
+          content: requiredText(action.content, "Trail Item"),
+          required: false,
+          origin: "learner",
+          links: activeTrailItemLinks(session),
+          curationKey: null
+        });
+        break;
+      }
+      case "editTrailItem": {
+        const session = this.requireActiveSession();
+        requireTrailItem(session, action.trailItemId).content = requiredText(action.content, "Trail Item");
+        break;
+      }
+      case "removeTrailItem": {
+        const session = this.requireActiveSession();
+        const index = session.trailDraft.items.findIndex((item) => item.id === action.trailItemId);
+        if (index < 0) throw new Error("Choose a Trail Item in the active Learning Session.");
+        if (session.trailDraft.items[index].required) {
+          throw new Error("Remove the Required Trail Item marker before deleting this item.");
+        }
+        session.trailDraft.items.splice(index, 1);
+        break;
+      }
+      case "moveTrailItem": {
+        const session = this.requireActiveSession();
+        const index = session.trailDraft.items.findIndex((item) => item.id === action.trailItemId);
+        if (index < 0) throw new Error("Choose a Trail Item in the active Learning Session.");
+        const destination = action.direction === "up" ? index - 1 : action.direction === "down" ? index + 1 : -1;
+        if (destination >= 0 && destination < session.trailDraft.items.length) {
+          const [item] = session.trailDraft.items.splice(index, 1);
+          session.trailDraft.items.splice(destination, 0, item);
+        }
+        break;
+      }
+      case "setTrailItemRequired": {
+        const session = this.requireActiveSession();
+        requireTrailItem(session, action.trailItemId).required = action.required;
         break;
       }
       case "addSourceToSession": {
@@ -1311,6 +1406,7 @@ export class LearningApplication {
           anchoredTeachingCards: [],
           activeTeachingCardId: null,
           learningArtifacts: [],
+          trailDraft: emptyTrailDraft(),
           learningSlice: null,
           conceptPeeks: [],
           pendingConceptPeek: null,
@@ -1416,6 +1512,7 @@ export class LearningApplication {
           anchoredTeachingCards: [],
           activeTeachingCardId: null,
           learningArtifacts: [],
+          trailDraft: emptyTrailDraft(),
           learningSlice: null,
           conceptPeeks: [],
           pendingConceptPeek: null,
@@ -1808,6 +1905,7 @@ export class LearningApplication {
           anchoredTeachingCards: [],
           activeTeachingCardId: null,
           learningArtifacts: [],
+          trailDraft: emptyTrailDraft(),
           learningSlice: null,
           conceptPeeks: [],
           pendingConceptPeek: null,
@@ -2008,6 +2106,20 @@ export class LearningApplication {
       complete: () => {
         session.teachingCard.status = "completed";
         session.returnContext.nextAction = "Review the Teaching Card and continue from the point that needs work";
+        upsertSuggestedTrailItem(
+          session,
+          "session-teaching",
+          "reasoningStep",
+          session.teachingCard.content,
+          emptyTrailItemLinks()
+        );
+        upsertSuggestedTrailItem(
+          session,
+          "session-next-step",
+          "nextStep",
+          session.returnContext.nextAction,
+          emptyTrailItemLinks()
+        );
       },
       fail: (error) => replaceTeachingCard(session, {
         ...session.teachingCard,
@@ -2064,7 +2176,25 @@ export class LearningApplication {
       },
       isStreaming: () => revision.status === "streaming",
       append: (delta) => { revision.content += delta; },
-      complete: () => { revision.status = "completed"; },
+      complete: () => {
+        revision.status = "completed";
+        const card = session.anchoredTeachingCards.find((candidate) => candidate.currentRevision.id === revision.id
+          || candidate.variants.some((variant) => variant.revision.id === revision.id));
+        if (card) {
+          upsertSuggestedTrailItem(session, `source-anchor:${anchor.id}`, "concept", sourceAnchorMathematics(anchor), {
+            sourceAnchorIds: [anchor.id],
+            teachingCardIds: [card.id],
+            learningArtifactIds: card.artifactId ? [card.artifactId] : [],
+            understandingEvidenceIds: []
+          });
+          upsertSuggestedTrailItem(session, `teaching-card:${card.id}`, "reasoningStep", revision.content, {
+            sourceAnchorIds: [anchor.id],
+            teachingCardIds: [card.id],
+            learningArtifactIds: card.artifactId ? [card.artifactId] : [],
+            understandingEvidenceIds: []
+          });
+        }
+      },
       fail: (error) => Object.assign(revision, { status: "failed", error: usefulRuntimeError(error), retryable: true }),
       stop: () => interruptCardRevision(revision),
       markUnconfirmed: () => {
@@ -2138,7 +2268,15 @@ export class LearningApplication {
       },
       isStreaming: () => revision.status === "streaming",
       append: (delta) => { revision.content += delta; },
-      complete: () => { revision.status = "completed"; },
+      complete: () => {
+        revision.status = "completed";
+        upsertSuggestedTrailItem(session, `question-card:${card.id}`, "unresolvedQuestion", card.question, {
+          sourceAnchorIds: context.flatMap((item) => item.sourceAnchorId ? [item.sourceAnchorId] : []),
+          teachingCardIds: [],
+          learningArtifactIds: [],
+          understandingEvidenceIds: []
+        });
+      },
       fail: (error) => Object.assign(revision, { status: "failed", error: usefulRuntimeError(error), retryable: true }),
       stop: () => interruptCardRevision(revision),
       markUnconfirmed: () => {
@@ -2564,6 +2702,7 @@ export class LearningApplication {
         anchoredTeachingCards: [],
         activeTeachingCardId: null,
         learningArtifacts: [],
+        trailDraft: emptyTrailDraft(),
         learningSlice,
         conceptPeeks: [],
         pendingConceptPeek: null,
@@ -2887,6 +3026,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       anchoredTeachingCards: migrateAnchoredTeachingCards(session.anchoredTeachingCards),
       activeTeachingCardId: typeof session.activeTeachingCardId === "string" ? session.activeTeachingCardId : null,
       learningArtifacts: migrateLearningArtifacts(session.learningArtifacts),
+      trailDraft: migrateTrailDraft(session.trailDraft),
       learningSlice: migrateLearningSlice(session.learningSlice),
       conceptPeeks: migrateConceptPeeks(session.conceptPeeks),
       pendingConceptPeek: migratePendingConceptPeek(session.pendingConceptPeek),
@@ -2933,6 +3073,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       anchoredTeachingCards: [],
       activeTeachingCardId: null,
       learningArtifacts: [],
+      trailDraft: emptyTrailDraft(),
       learningSlice: null,
       conceptPeeks: [],
       pendingConceptPeek: null,
@@ -3390,6 +3531,61 @@ function sourceAnchorLocation(anchor: SourceAnchor): string {
   return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} at characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`;
 }
 
+function emptyTrailDraft(): TrailDraft {
+  return { items: [] };
+}
+
+function emptyTrailItemLinks(): TrailItemLinks {
+  return {
+    sourceAnchorIds: [],
+    teachingCardIds: [],
+    learningArtifactIds: [],
+    understandingEvidenceIds: []
+  };
+}
+
+function activeTrailItemLinks(session: LearningSession): TrailItemLinks {
+  const teachingCard = session.anchoredTeachingCards.find((card) => card.id === session.activeTeachingCardId) ?? null;
+  return {
+    sourceAnchorIds: session.activeSourceAnchorId ? [session.activeSourceAnchorId] : [],
+    teachingCardIds: teachingCard ? [teachingCard.id] : [],
+    learningArtifactIds: teachingCard?.artifactId ? [teachingCard.artifactId] : [],
+    understandingEvidenceIds: []
+  };
+}
+
+function upsertSuggestedTrailItem(
+  session: LearningSession,
+  curationKey: string,
+  kind: TrailItemKind,
+  content: string,
+  links: TrailItemLinks
+): void {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) return;
+  const existing = session.trailDraft.items.find((item) => item.curationKey === curationKey);
+  if (existing?.required) return;
+  if (existing) {
+    Object.assign(existing, { kind, content: normalizedContent, links });
+    return;
+  }
+  session.trailDraft.items.push({
+    id: crypto.randomUUID(),
+    kind,
+    content: normalizedContent,
+    required: false,
+    origin: "teachingAgent",
+    links,
+    curationKey
+  });
+}
+
+function requireTrailItem(session: LearningSession, trailItemId: string): TrailItem {
+  const item = session.trailDraft.items.find((candidate) => candidate.id === trailItemId);
+  if (!item) throw new Error("Choose a Trail Item in the active Learning Session.");
+  return item;
+}
+
 function requireAnchoredTeachingCard(session: LearningSession, cardId: string): AnchoredTeachingCard {
   const card = session.anchoredTeachingCards.find((candidate) => candidate.id === cardId);
   if (!card) throw new Error("Choose an anchored Teaching Card in the active Learning Session.");
@@ -3719,6 +3915,37 @@ function migrateLearningArtifacts(value: unknown): LearningArtifact[] {
   });
 }
 
+function migrateTrailDraft(value: unknown): TrailDraft {
+  if (value === undefined) return emptyTrailDraft();
+  if (!isRecord(value) || !Array.isArray(value.items)) throw new Error("Stored Trail Draft is invalid.");
+  return {
+    items: value.items.map((candidate) => {
+      if (!isRecord(candidate) || typeof candidate.id !== "string" || !isTrailItemKind(candidate.kind)
+        || typeof candidate.content !== "string" || !candidate.content.trim() || typeof candidate.required !== "boolean"
+        || !["learner", "teachingAgent"].includes(String(candidate.origin))
+        || !(candidate.curationKey === null || typeof candidate.curationKey === "string")
+        || !validTrailItemLinks(candidate.links)) {
+        throw new Error("Stored Trail Item is invalid.");
+      }
+      return candidate as unknown as TrailItem;
+    })
+  };
+}
+
+function validTrailItemLinks(value: unknown): value is TrailItemLinks {
+  return isRecord(value) && [
+    value.sourceAnchorIds,
+    value.teachingCardIds,
+    value.learningArtifactIds,
+    value.understandingEvidenceIds
+  ].every((identifiers) => Array.isArray(identifiers) && identifiers.every((identifier) => typeof identifier === "string"));
+}
+
+function isTrailItemKind(value: unknown): value is TrailItemKind {
+  return ["concept", "reasoningStep", "learningArtifact", "evidence", "unresolvedQuestion", "nextStep"]
+    .includes(String(value));
+}
+
 function validTeachingCardRevision(value: unknown): value is TeachingCardRevision {
   return isRecord(value) && typeof value.id === "string" && typeof value.instruction === "string"
     && ["idle", "streaming", "completed", "stopped", "failed"].includes(String(value.status))
@@ -3792,11 +4019,18 @@ function validateSessionSourceAnchorReferences(state: LearningApplicationState, 
     && artifact.sourceAnchorIds.every((sourceAnchorId) => anchorsById.has(sourceAnchorId))
     && new Set([artifact.currentRevision.id, ...artifact.revisions.map((revision) => revision.id)]).size === artifact.revisions.length + 1);
   const activeCardIsValid = session.activeTeachingCardId === null || cardsById.has(session.activeTeachingCardId);
+  const trailItemIds = new Set(session.trailDraft.items.map((item) => item.id));
+  const trailCurationKeys = session.trailDraft.items.flatMap((item) => item.curationKey ? [item.curationKey] : []);
+  const trailItemsAreValid = trailItemIds.size === session.trailDraft.items.length
+    && new Set(trailCurationKeys).size === trailCurationKeys.length
+    && session.trailDraft.items.every((item) => item.links.sourceAnchorIds.every((id) => anchorsById.has(id))
+      && item.links.teachingCardIds.every((id) => cardsById.has(id))
+      && item.links.learningArtifactIds.every((id) => artifactsById.has(id)));
   const identifiersAreUnique = anchorsById.size === session.sourceAnchors.length
     && cardsById.size === session.anchoredTeachingCards.length
     && artifactsById.size === session.learningArtifacts.length
     && new Set(session.sourceAnchorRequests.map((request) => request.id)).size === session.sourceAnchorRequests.length;
-  if (!requestsAreValid || !anchorsAreValid || !activeAnchorIsValid || !cardsAreValid || !artifactsAreValid
+  if (!requestsAreValid || !anchorsAreValid || !activeAnchorIsValid || !cardsAreValid || !artifactsAreValid || !trailItemsAreValid
     || !activeCardIsValid || !identifiersAreUnique) {
     throw new Error("Stored Source Anchor references are invalid.");
   }

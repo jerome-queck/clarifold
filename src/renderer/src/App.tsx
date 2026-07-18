@@ -17,6 +17,7 @@ import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
 import { ContextualInspector } from "./ContextualInspector";
 import { AskBar } from "./AskBar";
+import { TrailDraft } from "./TrailDraft";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -899,6 +900,9 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
               }} />
             {workbenchError && <p className="failure-message" role="alert">{workbenchError}</p>}
             {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} onState={onState} key={artifact.id} />)}
+            <TrailDraft session={session} onAction={async (action) => {
+              onState(await window.quickStudy.submit(action));
+            }} />
             <SessionAccessPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />

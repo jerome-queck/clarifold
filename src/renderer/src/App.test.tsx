@@ -371,6 +371,7 @@ function workbenchState(): LearningApplicationState {
         sourceAnchorIds: ["anchor-1"],
         pinned: true
       }],
+      trailDraft: { items: [] },
       learningSlice: null
     }],
     sources: [{
