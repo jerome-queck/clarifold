@@ -1725,25 +1725,7 @@ export class LearningApplication {
       }
       case "openConceptPeek": {
         const session = this.requireActiveSession();
-        const anchor = requireSourceAnchor(session, action.sourceAnchorId);
-        const prerequisite = requiredName(action.prerequisite, "Concept Peek prerequisite");
-        const existing = session.conceptPeeks.find(
-          (peek) => peek.sourceAnchorId === anchor.id && peek.prerequisite === prerequisite
-        );
-        if (existing) {
-          existing.status = "open";
-        } else {
-          session.conceptPeeks.push({
-            id: crypto.randomUUID(),
-            sourceAnchorId: anchor.id,
-            prerequisite,
-            content: `Keep ${prerequisite} in view at ${sourceAnchorLocation(anchor)} while continuing this Learning Session.`,
-            status: "open"
-          });
-        }
-        session.activeSourceAnchorId = anchor.id;
-        session.activityOrder = this.nextActivityOrder();
-        this.state.resumeSessionId = session.id;
+        await this.openConceptPeek(session, action.sourceAnchorId, action.prerequisite);
         break;
       }
       case "closeConceptPeek": {
@@ -1779,21 +1761,8 @@ export class LearningApplication {
           break;
         }
         if (action.decision === "keepInline") {
+          await this.openConceptPeek(origin, proposal.sourceAnchorId, proposal.prerequisite);
           proposal.status = "overridden";
-          const existing = origin.conceptPeeks.find(
-            (peek) => peek.sourceAnchorId === proposal.sourceAnchorId && peek.prerequisite === proposal.prerequisite
-          );
-          if (existing) existing.status = "open";
-          else {
-            const anchor = requireSourceAnchor(origin, proposal.sourceAnchorId);
-            origin.conceptPeeks.push({
-              id: crypto.randomUUID(),
-              sourceAnchorId: anchor.id,
-              prerequisite: proposal.prerequisite,
-              content: `Keep ${proposal.prerequisite} in view at ${sourceAnchorLocation(anchor)} while continuing this Learning Session.`,
-              status: "open"
-            });
-          }
           break;
         }
         if (this.modelWorks.has(origin.id)) throw new Error("Stop current teaching before opening a Prerequisite Branch.");
@@ -2674,6 +2643,41 @@ export class LearningApplication {
     const workspace = this.requireNamedWorkspace(location.workspaceId);
     const mission = this.requireMission(workspace.id, location.missionId);
     return { workspaceId: workspace.id, missionId: mission.id, accessPolicy: "workspace" };
+  }
+
+  private async openConceptPeek(session: LearningSession, sourceAnchorId: string, prerequisiteValue: string): Promise<void> {
+    const anchor = requireSourceAnchor(session, sourceAnchorId);
+    const prerequisite = requiredName(prerequisiteValue, "Concept Peek prerequisite");
+    const existing = session.conceptPeeks.find(
+      (peek) => peek.sourceAnchorId === anchor.id && peek.prerequisite === prerequisite
+    );
+    if (existing) {
+      existing.status = "open";
+    } else {
+      this.requireModelAccess();
+      const log = this.agentWorkLogs[session.id] ?? [];
+      this.agentWorkLogs[session.id] = log;
+      const content = requiredText(await this.modelRuntime!.createConceptPeek({
+        sessionId: session.id,
+        prerequisite,
+        mathematics: session.mathematics,
+        learningGoal: session.learningGoal,
+        sourceAnchorId: anchor.id,
+        sourceId: anchor.sourceId,
+        selection: anchor.selection,
+        onRuntimeEvent: (event) => log.push({ ...event, sequence: log.length + 1 })
+      }), "Concept Peek explanation");
+      session.conceptPeeks.push({
+        id: crypto.randomUUID(),
+        sourceAnchorId: anchor.id,
+        prerequisite,
+        content,
+        status: "open"
+      });
+    }
+    session.activeSourceAnchorId = anchor.id;
+    session.activityOrder = this.nextActivityOrder();
+    this.state.resumeSessionId = session.id;
   }
 
   private linkedSessionsForFiling(start: LearningSession): LearningSession[] {

@@ -1,6 +1,7 @@
 import { ModelAccessError, type
   AuthenticationState,
   ChatGptLogin,
+  ConceptPeekRequest,
   ModelRuntime,
   ModelRuntimeEvent,
   SessionProposal,
@@ -313,6 +314,29 @@ export class CodexAppServerRuntime implements ModelRuntime {
       return parseSessionProposal(content);
     } catch (error) {
       onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+      throw error;
+    }
+  }
+
+  async createConceptPeek(request: ConceptPeekRequest): Promise<string> {
+    try {
+      return await this.runTurn(
+        [
+          "Write one compact Concept Peek explaining the named prerequisite at the supplied Source Anchor.",
+          "Use two to four learner-facing sentences. State the relevant definition, lemma, or technique and connect it directly to the anchored mathematics. Do not branch into a full lesson, claim verification, or mention internal tools.",
+          `Learning Goal: ${request.learningGoal}`,
+          `Prerequisite: ${request.prerequisite}`,
+          `Source Anchor: ${JSON.stringify(request.selection)}`,
+          "Session mathematics:",
+          request.mathematics
+        ].join("\n\n"),
+        undefined,
+        undefined,
+        undefined,
+        request.onRuntimeEvent
+      );
+    } catch (error) {
+      request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
       throw error;
     }
   }

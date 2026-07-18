@@ -4,6 +4,7 @@ import type { AnchoredTeachingCard, LearningArtifact } from "../../shared/learni
 interface ContextualInspectorProps {
   card: AnchoredTeachingCard;
   artifact: LearningArtifact | null;
+  autoFocusClose?: boolean;
   onClose(): void;
   onRevise(instruction: string): Promise<void>;
   onRestore(revisionId: string): Promise<void>;
@@ -15,6 +16,7 @@ interface ContextualInspectorProps {
 export function ContextualInspector({
   card,
   artifact,
+  autoFocusClose = true,
   onClose,
   onRevise,
   onRestore,
@@ -30,7 +32,9 @@ export function ContextualInspector({
   const [busy, setBusy] = useState(false);
   const isQuestionDraft = card.currentRevision.status === "idle" && card.title.startsWith("Question about");
 
-  useEffect(() => closeRef.current?.focus(), [card.id]);
+  useEffect(() => {
+    if (autoFocusClose) closeRef.current?.focus();
+  }, [autoFocusClose, card.id]);
 
   const submitRevision = async (event: FormEvent) => {
     event.preventDefault();

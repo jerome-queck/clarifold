@@ -133,7 +133,7 @@ describe("anchored teaching workbench", () => {
     }];
     origin.conceptPeeks = [{
       id: "peek-1", sourceAnchorId: "anchor-1", prerequisite: "Hausdorff separation",
-      content: "Keep Hausdorff separation in view at the selected claim.", status: "open"
+      content: "A Hausdorff space separates distinct points with disjoint open neighbourhoods.", status: "open"
     }];
     origin.prerequisiteBranchProposals = [{
       id: "proposal-1", sourceAnchorId: "anchor-1", prerequisite: "finite subcover arguments",
@@ -144,17 +144,27 @@ describe("anchored teaching workbench", () => {
     render(<App />);
 
     expect((await screen.findByRole("article", { name: "Concept Peek Hausdorff separation" })).textContent)
-      .toContain("Keep Hausdorff separation in view");
+      .toContain("separates distinct points");
+    expect(screen.getByRole("article", { name: "Concept Peek Hausdorff separation" }).textContent)
+      .toContain("Anchored at “compact subset” (characters 6–20)");
+    await user.click(screen.getByRole("button", { name: "Show Source Anchor for Concept Peek Hausdorff separation" }));
+    expect(window.quickStudy.submit).toHaveBeenCalledWith({ type: "activateSourceAnchor", sourceAnchorId: "anchor-1" });
     const openPeek = screen.getByRole("button", { name: "Open Concept Peek Hausdorff separation" });
     openPeek.focus();
     await user.keyboard("{Enter}");
     expect(window.quickStudy.submit).toHaveBeenCalledWith({
       type: "openConceptPeek", sourceAnchorId: "anchor-1", prerequisite: "Hausdorff separation"
     });
+    vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The prerequisite proposal could not be saved."));
+    await user.click(screen.getByRole("button", { name: "Propose Prerequisite Branch Hausdorff separation" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("could not be saved");
     await user.click(screen.getByRole("button", { name: "Propose Prerequisite Branch Hausdorff separation" }));
     expect(window.quickStudy.submit).toHaveBeenCalledWith({
       type: "proposePrerequisiteBranch", sourceAnchorId: "anchor-1", prerequisite: "Hausdorff separation"
     });
+    vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The Concept Peek could not be closed."));
+    await user.click(screen.getByRole("button", { name: "Close Concept Peek Hausdorff separation" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("could not be closed");
     await user.click(screen.getByRole("button", { name: "Close Concept Peek Hausdorff separation" }));
     expect(window.quickStudy.submit).toHaveBeenCalledWith({ type: "closeConceptPeek", conceptPeekId: "peek-1" });
     await user.click(screen.getByRole("button", { name: "Accept Prerequisite Branch finite subcover arguments" }));
@@ -200,6 +210,11 @@ describe("anchored teaching workbench", () => {
         label: "Text Source Anchor: compact subset (characters 6–20)"
       }
     };
+    origin.sourceIds = ["source-2", "source-1"];
+    originState.sources.unshift({
+      id: "source-2", kind: "managedAsset", workspaceId: "quick-study-workspace", name: "Supporting notes",
+      mediaType: "text/plain", content: "Supporting notes that are not the Return Point source."
+    });
     const branchState = structuredClone(originState);
     branchState.sessions = [structuredClone(origin), branch];
     branchState.activeSessionId = branch.id;
@@ -226,6 +241,8 @@ describe("anchored teaching workbench", () => {
       name: "Open Anchor Marker for Text Source Anchor: compact subset (characters 6–20)"
     });
     expect(marker).toBe(document.activeElement);
+    expect((screen.getByRole("combobox", { name: "Workbench Source Layer" }) as HTMLSelectElement).value).toBe("source-1");
+    expect(screen.getByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeTruthy();
   });
 });
 

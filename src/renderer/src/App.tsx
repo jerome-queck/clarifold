@@ -36,6 +36,7 @@ export function App() {
       state={state}
       onState={setState}
       returnFocusAnchorId={returnFocusAnchorId}
+      onReturnFocusConsumed={() => setReturnFocusAnchorId(null)}
       onReturnToOrigin={(nextState, sourceAnchorId) => {
         setReturnFocusAnchorId(sourceAnchorId);
         setState(nextState);
@@ -772,10 +773,11 @@ function MissionHistory({ workspace, mission, state, onState }: {
   );
 }
 
-function Workbench({ state, onState, returnFocusAnchorId, onReturnToOrigin }: {
+function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed, onReturnToOrigin }: {
   state: LearningApplicationState;
   onState: StateHandler;
   returnFocusAnchorId: string | null;
+  onReturnFocusConsumed(): void;
   onReturnToOrigin(state: LearningApplicationState, sourceAnchorId: string): void;
 }) {
   const session = state.sessions.find((candidate) => candidate.id === state.activeSessionId)!;
@@ -784,13 +786,19 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnToOrigin }: {
   const [goal, setGoal] = useState(session.learningGoal);
   const [target, setTarget] = useState(session.sessionTarget);
   const [direction, setDirection] = useState(session.proposal.initialTeachingDirection);
-  const [inspectorCardId, setInspectorCardId] = useState<string | null>(null);
+  const [restoringReturnPoint] = useState(Boolean(returnFocusAnchorId));
+  const [inspectorCardId, setInspectorCardId] = useState<string | null>(
+    returnFocusAnchorId ? session.activeTeachingCardId : null
+  );
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(returnFocusAnchorId);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const inspectorCard = session.anchoredTeachingCards.find((card) => card.id === inspectorCardId) ?? null;
   const inspectorArtifact = inspectorCard?.artifactId
     ? session.learningArtifacts.find((artifact) => artifact.id === inspectorCard.artifactId) ?? null
     : null;
+  useEffect(() => {
+    if (returnFocusAnchorId) onReturnFocusConsumed();
+  }, []);
 
   const saveProposal = (applyToTeaching = false) => window.quickStudy.submit({
       type: applyToTeaching ? "applySessionProposalRevision" : "reviseSessionProposal",
@@ -851,6 +859,14 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnToOrigin }: {
               session={session}
               onState={onState}
               onReturnToOrigin={onReturnToOrigin}
+              onShowSourceAnchor={(sourceAnchorId) => {
+                setFocusAnchorId(sourceAnchorId);
+                void window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId })
+                  .then(onState)
+                  .catch((error: unknown) => setWorkbenchError(
+                    error instanceof Error ? error.message : "The Source Anchor could not be shown."
+                  ));
+              }}
             />
             <div className="canvas-heading">
               <div><p className="eyebrow">Source Layer</p><h2>Session source</h2></div>
@@ -904,6 +920,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnToOrigin }: {
           {inspectorCard && <ContextualInspector
             card={inspectorCard}
             artifact={inspectorArtifact}
+            autoFocusClose={!restoringReturnPoint}
             onClose={() => {
               setInspectorCardId(null);
               setFocusAnchorId(inspectorCard.sourceAnchorId);
@@ -930,12 +947,14 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnToOrigin }: {
   );
 }
 
-function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin }: {
+function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin, onShowSourceAnchor }: {
   state: LearningApplicationState;
   session: LearningSession;
   onState: StateHandler;
   onReturnToOrigin(state: LearningApplicationState, sourceAnchorId: string): void;
+  onShowSourceAnchor(sourceAnchorId: string): void;
 }) {
+  const [error, setError] = useState<string | null>(null);
   const branchTrail: LearningSession[] = [];
   let cursor: LearningSession | undefined = session;
   const visited = new Set<string>();
@@ -948,11 +967,24 @@ function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin }: {
   }
   const pending = session.prerequisiteBranchProposals.filter((proposal) => proposal.status === "pending");
   const openPeeks = session.conceptPeeks.filter((peek) => peek.status === "open");
+  const submit = async (action: LearnerAction) => {
+    setError(null);
+    try {
+      onState(await window.quickStudy.submit(action));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Prerequisite navigation could not be updated.");
+    }
+  };
   const returnToOrigin = async () => {
     const returnPoint = session.prerequisiteBranch?.returnPoint;
     if (!returnPoint) return;
-    const nextState = await window.quickStudy.submit({ type: "returnToPrerequisiteOrigin" });
-    onReturnToOrigin(nextState, returnPoint.sourceAnchorId);
+    setError(null);
+    try {
+      const nextState = await window.quickStudy.submit({ type: "returnToPrerequisiteOrigin" });
+      onReturnToOrigin(nextState, returnPoint.sourceAnchorId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Return Point could not be restored.");
+    }
   };
   if (!session.prerequisiteBranch && pending.length === 0 && openPeeks.length === 0) return null;
   return (
@@ -977,9 +1009,12 @@ function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin }: {
         <article key={peek.id} className="concept-peek" aria-label={`Concept Peek ${peek.prerequisite}`}>
           <div><p className="eyebrow">Concept Peek</p><h2>{peek.prerequisite}</h2></div>
           <p>{peek.content}</p>
-          <button className="text-button" aria-label={`Close Concept Peek ${peek.prerequisite}`} onClick={() => void window.quickStudy.submit({
+          <p className="subtle">Anchored at {conceptPeekAnchorLabel(session, peek.sourceAnchorId)}</p>
+          <button className="secondary" aria-label={`Show Source Anchor for Concept Peek ${peek.prerequisite}`}
+            onClick={() => onShowSourceAnchor(peek.sourceAnchorId)}>Show Source Anchor</button>
+          <button className="text-button" aria-label={`Close Concept Peek ${peek.prerequisite}`} onClick={() => void submit({
             type: "closeConceptPeek", conceptPeekId: peek.id
-          }).then(onState)}>Close peek</button>
+          })}>Close peek</button>
         </article>
       ))}
       {pending.map((proposal) => (
@@ -988,20 +1023,28 @@ function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin }: {
           <h2>Study {proposal.prerequisite} in a Prerequisite Branch?</h2>
           <p>This substantial prerequisite would open a linked Learning Session with its own Mathematical Workbench.</p>
           <div className="branch-proposal-actions">
-            <button className="primary" aria-label={`Accept Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void window.quickStudy.submit({
+            <button className="primary" aria-label={`Accept Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void submit({
               type: "decidePrerequisiteBranch", proposalId: proposal.id, decision: "accept"
-            }).then(onState)}>Open branch</button>
-            <button className="secondary" aria-label={`Keep ${proposal.prerequisite} inline as a Concept Peek`} onClick={() => void window.quickStudy.submit({
+            })}>Open branch</button>
+            <button className="secondary" aria-label={`Keep ${proposal.prerequisite} inline as a Concept Peek`} onClick={() => void submit({
               type: "decidePrerequisiteBranch", proposalId: proposal.id, decision: "keepInline"
-            }).then(onState)}>Keep inline instead</button>
-            <button className="text-button" aria-label={`Defer Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void window.quickStudy.submit({
+            })}>Keep inline instead</button>
+            <button className="text-button" aria-label={`Defer Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void submit({
               type: "decidePrerequisiteBranch", proposalId: proposal.id, decision: "defer"
-            }).then(onState)}>Defer</button>
+            })}>Defer</button>
           </div>
         </article>
       ))}
+      {error && <p className="failure-message" role="alert">{error}</p>}
     </section>
   );
+}
+
+function conceptPeekAnchorLabel(session: LearningSession, sourceAnchorId: string): string {
+  const anchor = session.sourceAnchors.find((candidate) => candidate.id === sourceAnchorId);
+  if (!anchor) return "an unavailable Source Anchor";
+  if (anchor.selection.kind === "diagramRegion") return "the selected diagram region";
+  return `“${anchor.selection.exactText}” (characters ${anchor.selection.startOffset}–${anchor.selection.endOffset})`;
 }
 
 function ArgumentRoadmapPanel({ state, session, onState }: {
@@ -1046,6 +1089,15 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
       onState(await window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Source Anchor could not be shown.");
+    }
+  };
+  const handlePrerequisite = async (action: Extract<LearnerAction,
+    { type: "openConceptPeek" | "proposePrerequisiteBranch" }>) => {
+    setError(null);
+    try {
+      onState(await window.quickStudy.submit(action));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The prerequisite action could not be completed.");
     }
   };
   return (
@@ -1099,12 +1151,12 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
           <ul>{session.learningSlice.immediatePrerequisites.map((prerequisite) => <li key={prerequisite}>
             <span>{prerequisite}</span>
             <div>
-              <button className="secondary" aria-label={`Open Concept Peek ${prerequisite}`} onClick={() => void window.quickStudy.submit({
+              <button className="secondary" aria-label={`Open Concept Peek ${prerequisite}`} onClick={() => void handlePrerequisite({
                 type: "openConceptPeek", sourceAnchorId: activeStage.sourceAnchorId, prerequisite
-              }).then(onState)}>Open Concept Peek</button>
-              <button className="text-button" aria-label={`Propose Prerequisite Branch ${prerequisite}`} onClick={() => void window.quickStudy.submit({
+              })}>Open Concept Peek</button>
+              <button className="text-button" aria-label={`Propose Prerequisite Branch ${prerequisite}`} onClick={() => void handlePrerequisite({
                 type: "proposePrerequisiteBranch", sourceAnchorId: activeStage.sourceAnchorId, prerequisite
-              }).then(onState)}>Study as branch</button>
+              })}>Study as branch</button>
             </div>
           </li>)}</ul>
         </section>
@@ -1124,7 +1176,8 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTea
 }) {
   const selectableSources = state.sources.filter((source) => source.workspaceId === session.workspaceId
     && (session.sourceIds.includes(source.id) || (source.kind === "linkedSource" && source.resourceType === "file")));
-  const [sourceId, setSourceId] = useState(session.sourceIds[0]);
+  const returnSourceId = session.sourceAnchors.find((anchor) => anchor.id === focusAnchorId)?.sourceId;
+  const [sourceId, setSourceId] = useState(returnSourceId ?? session.sourceIds[0]);
   const [linkedView, setLinkedView] = useState<Extract<LinkedSourceView, { status: "available" }> | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const source = selectableSources.find((candidate) => candidate.id === sourceId) ?? selectableSources[0];
@@ -1146,6 +1199,14 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTea
     setSourceId(nextSource.id);
     setLinkedView(view);
   };
+  useEffect(() => {
+    const returnSource = selectableSources.find((candidate) => candidate.id === returnSourceId);
+    if (returnSource?.kind === "linkedSource" && linkedView?.sourceId !== returnSource.id) {
+      void chooseSource(returnSource.id).catch((cause: unknown) => setSourceError(
+        cause instanceof Error ? cause.message : "The Return Point source could not be reopened."
+      ));
+    }
+  }, [returnSourceId]);
   const content = source?.kind === "managedAsset" ? source.content : linkedView?.sourceId === source?.id ? linkedView.content : null;
   const mediaType = source?.kind === "managedAsset" ? source.mediaType : linkedView?.sourceId === source?.id ? linkedView.mediaType : null;
   const selectableMedia = mediaType === "text/plain" || mediaType === "image/png" || mediaType === "image/jpeg";
