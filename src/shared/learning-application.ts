@@ -170,6 +170,8 @@ export interface AnchoredTeachingCard {
 export interface LearningArtifact {
   id: string;
   title: string;
+  kind: "learningArtifact" | "reformulatedProof";
+  originatingSessionId: string;
   currentRevision: LearningArtifactRevision;
   revisions: LearningArtifactRevision[];
   sourceAnchorIds: string[];
@@ -182,7 +184,23 @@ export interface LearningArtifactRevision {
   claimOrigin: "modelGenerated" | "learner" | "mixed";
   verificationLevel: "notIndependentlyChecked";
   verificationCurrency: "current";
+  provenance: {
+    action: "promoted" | "edited" | "restored";
+    createdAt: string | null;
+    priorRevisionId: string | null;
+  };
 }
+
+export interface ArtifactPortableCopy {
+  artifactId: string;
+  originatingSessionId: string;
+  suggestedFilename: string;
+  mediaType: "text/markdown";
+  content: string;
+}
+
+export type ArtifactExportResult = { status: "canceled" } | { status: "exported"; path: string };
+export interface ArtifactShareResult { status: "shared"; path: string }
 
 export const TRAIL_ITEM_KINDS = [
   "concept", "reasoningStep", "learningArtifact", "evidence", "unresolvedQuestion", "nextStep"
@@ -608,7 +626,7 @@ export type LearnerAction =
   | { type: "restoreTeachingCardRevision"; cardId: string; revisionId: string }
   | { type: "createTeachingVariant"; cardId: string; name: string; instruction: string }
   | { type: "retryAnchoredTeachingCard"; cardId: string; variantId?: string }
-  | { type: "pinTeachingCardArtifact"; cardId: string }
+  | { type: "pinTeachingCardArtifact"; cardId: string; artifactKind?: LearningArtifact["kind"] }
   | { type: "editLearningArtifact"; sessionId?: string; artifactId: string; content: string }
   | { type: "restoreLearningArtifactRevision"; sessionId?: string; artifactId: string; revisionId: string }
   | { type: "addTrailItem"; kind: TrailItemKind; content: string }
@@ -750,6 +768,54 @@ export class LearningApplication {
 
   getState(): LearningApplicationState {
     return structuredClone(this.state);
+  }
+
+  createArtifactPortableCopy(sessionId: string, artifactId: string): ArtifactPortableCopy {
+    const session = this.requireSession(sessionId);
+    const artifact = requireLearningArtifact(session, artifactId);
+    const kindLabel = artifact.kind === "reformulatedProof" ? "Reformulated Proof" : "Learning Artifact";
+    const anchors = artifact.sourceAnchorIds.map((sourceAnchorId) => {
+      const anchor = requireSourceAnchor(session, sourceAnchorId);
+      const location = anchor.selection.kind === "diagramRegion"
+        ? "selected diagram region"
+        : `\`${anchor.selection.exactText.replaceAll("`", "\\`")}\``;
+      return `- ${sourceAnchorId}: ${location}`;
+    });
+    const filenameStem = artifact.title.trim().toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "learning-artifact";
+    return {
+      artifactId: artifact.id,
+      originatingSessionId: artifact.originatingSessionId,
+      suggestedFilename: `${filenameStem}.md`,
+      mediaType: "text/markdown",
+      content: [
+        `# ${kindLabel}: ${artifact.title}`,
+        "",
+        `- Originating Learning Session: ${artifact.originatingSessionId}`,
+        `- Claim Origin: ${artifact.currentRevision.claimOrigin}`,
+        "- Verification Level: Not independently checked",
+        `- Revision action: ${artifact.currentRevision.provenance.action}`,
+        `- Revision created: ${artifact.currentRevision.provenance.createdAt ?? "Unavailable for migrated revision"}`,
+        "",
+        "## Source Anchors",
+        "",
+        ...anchors,
+        "",
+        "## Content",
+        "",
+        artifact.currentRevision.content,
+        ""
+      ].join("\n")
+    };
+  }
+
+  async exportLearningArtifact(sessionId: string, artifactId: string, destinationPath: string): Promise<ArtifactPortableCopy> {
+    if (!isAbsolute(destinationPath)) throw new Error("Choose an absolute destination for the Artifact Export.");
+    const portableCopy = this.createArtifactPortableCopy(sessionId, artifactId);
+    await mkdir(dirname(destinationPath), { recursive: true });
+    await writeFile(destinationPath, portableCopy.content, "utf8");
+    return portableCopy;
   }
 
   getAgentWorkLogEvidence(sessionId: string, fromSequence: number, toSequence: number): AgentWorkLogEvidence[] {
@@ -1276,6 +1342,10 @@ export class LearningApplication {
       }
       case "pinTeachingCardArtifact": {
         const session = this.requireActiveSession();
+        if (action.artifactKind !== undefined
+          && action.artifactKind !== "learningArtifact" && action.artifactKind !== "reformulatedProof") {
+          throw new Error("Choose Learning Artifact or Reformulated Proof for this promotion.");
+        }
         const card = requireAnchoredTeachingCard(session, action.cardId);
         if (card.currentRevision.status !== "completed" || !card.currentRevision.content.trim()) {
           throw new Error("Complete the Teaching Card before pinning it as a Learning Artifact.");
@@ -1287,12 +1357,19 @@ export class LearningApplication {
           const artifact: LearningArtifact = {
             id: crypto.randomUUID(),
             title: card.title,
+            kind: action.artifactKind ?? "learningArtifact",
+            originatingSessionId: session.id,
             currentRevision: {
               id: crypto.randomUUID(),
               content: card.currentRevision.content,
               claimOrigin: "modelGenerated",
               verificationLevel: "notIndependentlyChecked",
-              verificationCurrency: "current"
+              verificationCurrency: "current",
+              provenance: {
+                action: "promoted",
+                createdAt: new Date().toISOString(),
+                priorRevisionId: null
+              }
             },
             revisions: [],
             sourceAnchorIds: [card.sourceAnchorId],
@@ -1323,7 +1400,12 @@ export class LearningApplication {
           content,
           claimOrigin: artifact.currentRevision.claimOrigin === "learner" ? "learner" : "mixed",
           verificationLevel: "notIndependentlyChecked",
-          verificationCurrency: "current"
+          verificationCurrency: "current",
+          provenance: {
+            action: "edited",
+            createdAt: new Date().toISOString(),
+            priorRevisionId: artifact.revisions.at(-1)!.id
+          }
         };
         break;
       }
@@ -1332,8 +1414,18 @@ export class LearningApplication {
         const artifact = requireLearningArtifact(session, action.artifactId);
         const revisionIndex = artifact.revisions.findIndex((revision) => revision.id === action.revisionId);
         if (revisionIndex < 0) throw new Error("Choose an earlier Learning Artifact revision to restore.");
-        const [restored] = artifact.revisions.splice(revisionIndex, 1, structuredClone(artifact.currentRevision));
-        artifact.currentRevision = restored;
+        const restored = artifact.revisions[revisionIndex];
+        const previousCurrent = structuredClone(artifact.currentRevision);
+        artifact.revisions.push(previousCurrent);
+        artifact.currentRevision = {
+          ...structuredClone(restored),
+          id: crypto.randomUUID(),
+          provenance: {
+            action: "restored",
+            createdAt: new Date().toISOString(),
+            priorRevisionId: restored.id
+          }
+        };
         break;
       }
       case "addTrailItem": {
@@ -3153,7 +3245,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       activeSourceAnchorId: typeof session.activeSourceAnchorId === "string" ? session.activeSourceAnchorId : null,
       anchoredTeachingCards: migrateAnchoredTeachingCards(session.anchoredTeachingCards),
       activeTeachingCardId: typeof session.activeTeachingCardId === "string" ? session.activeTeachingCardId : null,
-      learningArtifacts: migrateLearningArtifacts(session.learningArtifacts),
+      learningArtifacts: migrateLearningArtifacts(session.learningArtifacts, session.id),
       trailDraft: migrateTrailDraft(session.trailDraft),
       consolidationDraft: migrateSessionConsolidationDraft(session.consolidationDraft),
       consolidatedOutcome: migrateConsolidatedSessionOutcome(session.consolidatedOutcome),
@@ -4175,20 +4267,42 @@ function migrateAnchoredTeachingCards(value: unknown): AnchoredTeachingCard[] {
   });
 }
 
-function migrateLearningArtifacts(value: unknown): LearningArtifact[] {
+function migrateLearningArtifacts(value: unknown, sessionId: string): LearningArtifact[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("Stored Learning Artifacts are invalid.");
   return value.map((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.title !== "string"
-      || !validLearningArtifactRevision(candidate.currentRevision)
-      || !Array.isArray(candidate.revisions) || !candidate.revisions.every(validLearningArtifactRevision)
+      || !Array.isArray(candidate.revisions)
       || candidate.pinned !== true
       || !Array.isArray(candidate.sourceAnchorIds)
       || !candidate.sourceAnchorIds.every((sourceAnchorId) => typeof sourceAnchorId === "string")) {
       throw new Error("Stored Learning Artifacts are invalid.");
     }
-    return candidate as unknown as LearningArtifact;
+    const currentRevision = migrateLearningArtifactRevision(candidate.currentRevision, "promoted");
+    const revisions = candidate.revisions.map((revision) => migrateLearningArtifactRevision(revision, "edited"));
+    const kind = candidate.kind === "reformulatedProof" ? "reformulatedProof" : "learningArtifact";
+    if (candidate.originatingSessionId !== undefined && candidate.originatingSessionId !== sessionId) {
+      throw new Error("Stored Learning Artifact origin is invalid.");
+    }
+    const originatingSessionId = sessionId;
+    return { ...candidate, kind, originatingSessionId, currentRevision, revisions } as LearningArtifact;
   });
+}
+
+function migrateLearningArtifactRevision(
+  value: unknown,
+  fallbackAction: LearningArtifactRevision["provenance"]["action"]
+): LearningArtifactRevision {
+  if (!isRecord(value)) throw new Error("Stored Learning Artifact revision is invalid.");
+  const provenance = isRecord(value.provenance)
+    && ["promoted", "edited", "restored"].includes(String(value.provenance.action))
+    && (value.provenance.createdAt === null || typeof value.provenance.createdAt === "string")
+    && (value.provenance.priorRevisionId === null || typeof value.provenance.priorRevisionId === "string")
+    ? value.provenance as unknown as LearningArtifactRevision["provenance"]
+    : { action: fallbackAction, createdAt: null, priorRevisionId: null };
+  const migrated = { ...value, provenance };
+  if (!validLearningArtifactRevision(migrated)) throw new Error("Stored Learning Artifact revision is invalid.");
+  return migrated as unknown as LearningArtifactRevision;
 }
 
 function migrateTrailDraft(value: unknown): TrailDraft {
@@ -4319,7 +4433,11 @@ function validTeachingCardRevision(value: unknown): value is TeachingCardRevisio
 function validLearningArtifactRevision(value: unknown): boolean {
   return isRecord(value) && typeof value.id === "string" && typeof value.content === "string"
     && (value.claimOrigin === "modelGenerated" || value.claimOrigin === "learner" || value.claimOrigin === "mixed")
-    && value.verificationLevel === "notIndependentlyChecked" && value.verificationCurrency === "current";
+    && value.verificationLevel === "notIndependentlyChecked" && value.verificationCurrency === "current"
+    && isRecord(value.provenance)
+    && ["promoted", "edited", "restored"].includes(String(value.provenance.action))
+    && (value.provenance.createdAt === null || typeof value.provenance.createdAt === "string")
+    && (value.provenance.priorRevisionId === null || typeof value.provenance.priorRevisionId === "string");
 }
 
 function validTeachingVariant(value: unknown): value is TeachingVariant {

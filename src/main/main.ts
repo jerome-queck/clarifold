@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, ShareMenu, shell } from "electron";
 import { execFile } from "node:child_process";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -92,7 +93,9 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "cardId" in action && typeof action.cardId === "string"
         && (!("variantId" in action) || action.variantId === undefined || typeof action.variantId === "string");
     case "pinTeachingCardArtifact":
-      return "cardId" in action && typeof action.cardId === "string";
+      return "cardId" in action && typeof action.cardId === "string"
+        && (!("artifactKind" in action) || action.artifactKind === undefined
+          || action.artifactKind === "learningArtifact" || action.artifactKind === "reformulatedProof");
     case "editLearningArtifact":
       return "artifactId" in action && typeof action.artifactId === "string"
         && "content" in action && typeof action.content === "string";
@@ -201,6 +204,42 @@ function registerLearningApplicationHandlers(): void {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (typeof query !== "string") throw new Error("Invalid search query.");
     return learningApplication.searchSessions(query);
+  });
+  ipcMain.handle("artifact:export", async (event, sessionId: unknown, artifactId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sessionId !== "string" || typeof artifactId !== "string") {
+      throw new Error("Invalid Learning Artifact export request.");
+    }
+    const portableCopy = learningApplication.createArtifactPortableCopy(sessionId, artifactId);
+    const fixturePath = process.env.QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH;
+    let destinationPath = fixturePath;
+    if (!destinationPath) {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: "Export Learning Artifact",
+        defaultPath: portableCopy.suggestedFilename,
+        filters: [{ name: "Markdown", extensions: ["md"] }]
+      };
+      const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { status: "canceled" } as const;
+      destinationPath = result.filePath;
+    }
+    await learningApplication.exportLearningArtifact(sessionId, artifactId, destinationPath);
+    return { status: "exported", path: destinationPath } as const;
+  });
+  ipcMain.handle("artifact:share", async (event, sessionId: unknown, artifactId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sessionId !== "string" || typeof artifactId !== "string") {
+      throw new Error("Invalid Learning Artifact share request.");
+    }
+    const portableCopy = learningApplication.createArtifactPortableCopy(sessionId, artifactId);
+    const shareDirectory = join(app.getPath("temp"), "quick-study-artifact-shares", randomUUID());
+    await mkdir(shareDirectory, { recursive: true });
+    const sharePath = join(shareDirectory, portableCopy.suggestedFilename);
+    await learningApplication.exportLearningArtifact(sessionId, artifactId, sharePath);
+    const shareMenu = new ShareMenu({ filePaths: [sharePath] });
+    shareMenu.popup({ window: BrowserWindow.fromWebContents(event.sender) ?? undefined });
+    return { status: "shared", path: sharePath } as const;
   });
   ipcMain.handle("source:linkPrimaryFolder", async (event, workspaceId: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");

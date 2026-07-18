@@ -84,7 +84,9 @@ describe("Contextual Inspector", () => {
     expect(onRevise).toHaveBeenCalledWith("Add the missing neighbourhood choice.");
 
     await user.click(screen.getByRole("button", { name: "Pin as Learning Artifact" }));
-    expect(onPin).toHaveBeenCalledOnce();
+    expect(onPin).toHaveBeenCalledWith("learningArtifact");
+    await user.click(screen.getByRole("button", { name: "Save as Reformulated Proof" }));
+    expect(onPin).toHaveBeenCalledWith("reformulatedProof");
     await user.click(screen.getByRole("button", { name: "Close Contextual Inspector" }));
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -93,12 +95,15 @@ describe("Contextual Inspector", () => {
     const artifact: LearningArtifact = {
       id: "artifact-1",
       title: "Explain compact subset",
+      kind: "learningArtifact",
+      originatingSessionId: "session-1",
       currentRevision: {
         id: "artifact-revision-1",
         content: "A substantial explanation.",
         claimOrigin: "modelGenerated",
         verificationLevel: "notIndependentlyChecked",
-        verificationCurrency: "current"
+        verificationCurrency: "current",
+        provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
       },
       revisions: [],
       sourceAnchorIds: ["anchor-1"],

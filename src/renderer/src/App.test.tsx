@@ -29,6 +29,8 @@ describe("anchored teaching workbench", () => {
       rebuildSourceIndex: vi.fn(),
       searchSourceIndex: vi.fn().mockResolvedValue([]),
       openSourceSearchResult: vi.fn(),
+      exportLearningArtifact: vi.fn().mockResolvedValue({ status: "exported", path: "/tmp/artifact.md" }),
+      shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
       onStateChanged: vi.fn().mockReturnValue(() => undefined),
       openExternal: vi.fn()
     };
@@ -57,6 +59,34 @@ describe("anchored teaching workbench", () => {
     vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The Source Anchor is stale."));
     await user.click(marker);
     expect((await screen.findByRole("alert")).textContent).toContain("The Source Anchor is stale.");
+  });
+
+  it("exports and shares a source-linked artifact with visible revision provenance by keyboard", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.sessions[0].learningArtifacts[0].kind = "reformulatedProof";
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+    const artifact = await screen.findByRole("article", { name: "Reformulated Proof Explain compact subset" });
+    expect(artifact.textContent).toContain("Promoted");
+    expect(artifact.textContent).toContain("19 Jul 2026");
+    expect(artifact.textContent).toContain("1 retained Source Anchor");
+
+    const exportButton = screen.getByRole("button", { name: "Export Reformulated Proof Explain compact subset" });
+    exportButton.focus();
+    await user.keyboard("{Enter}");
+    expect(api.exportLearningArtifact).toHaveBeenCalledWith("session-1", "artifact-1");
+    expect((await screen.findByText("Artifact Export saved to /tmp/artifact.md")).textContent)
+      .toBe("Artifact Export saved to /tmp/artifact.md");
+
+    const shareButton = screen.getByRole("button", { name: "Share Reformulated Proof Explain compact subset" });
+    shareButton.focus();
+    await user.keyboard("{Enter}");
+    expect(api.shareLearningArtifact).toHaveBeenCalledWith("session-1", "artifact-1");
+    expect((await screen.findByText("Artifact Export handed to macOS sharing.")).textContent)
+      .toBe("Artifact Export handed to macOS sharing.");
   });
 
   it("shows the compact Argument Roadmap and lets the learner edit or choose a Learning Slice before teaching", async () => {
@@ -409,6 +439,8 @@ function quickStudyApi(state: LearningApplicationState): typeof window.quickStud
     linkPrimaryFolder: vi.fn(), linkExternalAttachment: vi.fn(), openLinkedSource: vi.fn(),
     indexSource: vi.fn(), clearSourceIndex: vi.fn(), rebuildSourceIndex: vi.fn(),
     searchSourceIndex: vi.fn().mockResolvedValue([]), openSourceSearchResult: vi.fn(),
+    exportLearningArtifact: vi.fn().mockResolvedValue({ status: "exported", path: "/tmp/artifact.md" }),
+    shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
     onStateChanged: vi.fn().mockReturnValue(() => undefined), openExternal: vi.fn()
   };
 }
@@ -487,12 +519,15 @@ function workbenchState(): LearningApplicationState {
       learningArtifacts: [{
         id: "artifact-1",
         title: "Explain compact subset",
+        kind: "learningArtifact",
+        originatingSessionId: "session-1",
         currentRevision: {
           id: "artifact-revision-1",
           content: "Use a finite subcover.",
           claimOrigin: "modelGenerated",
           verificationLevel: "notIndependentlyChecked",
-          verificationCurrency: "current"
+          verificationCurrency: "current",
+          provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
         },
         revisions: [],
         sourceAnchorIds: ["anchor-1"],

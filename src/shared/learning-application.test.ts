@@ -621,7 +621,7 @@ describe("Learning Application", () => {
     }
   });
 
-  it("keeps included Learning Artifacts revisable after consolidation", async () => {
+  it("keeps consolidated artifacts revisable and prepares non-mutating export and share copies", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness",
       scope: "Explain the compactness step",
@@ -649,9 +649,16 @@ describe("Learning Application", () => {
     runtime.completeTeaching();
     await application.waitForModelWork();
     const cardId = application.getState().sessions[0].anchoredTeachingCards[0].id;
-    state = await application.submit({ type: "pinTeachingCardArtifact", cardId });
+    state = await application.submit({ type: "pinTeachingCardArtifact", cardId, artifactKind: "reformulatedProof" });
     const sessionId = state.sessions[0].id;
     const artifactId = state.sessions[0].learningArtifacts[0].id;
+    expect(state.sessions[0].learningArtifacts[0]).toMatchObject({
+      kind: "reformulatedProof",
+      originatingSessionId: sessionId,
+      currentRevision: {
+        provenance: { action: "promoted", priorRevisionId: null }
+      }
+    });
     await application.submit({ type: "beginSessionConsolidation" });
     await application.submit({
       type: "reviseSessionConsolidation",
@@ -681,8 +688,76 @@ describe("Learning Application", () => {
     state = await relaunched.submit({
       type: "restoreLearningArtifactRevision", sessionId, artifactId, revisionId: previousRevisionId
     });
-    expect(state.sessions[0].learningArtifacts[0].currentRevision.content)
-      .toBe("Use compactness to select finitely many separating neighbourhoods.");
+    expect(state.sessions[0].learningArtifacts[0]).toMatchObject({
+      currentRevision: {
+        content: "Use compactness to select finitely many separating neighbourhoods.",
+        provenance: { action: "restored", priorRevisionId: previousRevisionId }
+      },
+      revisions: [
+        expect.objectContaining({ id: previousRevisionId }),
+        expect.objectContaining({ content: "Learner revision after consolidation." })
+      ]
+    });
+
+    const beforePortableCopy = relaunched.getState();
+    const portableCopy = relaunched.createArtifactPortableCopy(sessionId, artifactId);
+    expect(portableCopy).toMatchObject({
+      artifactId,
+      originatingSessionId: sessionId,
+      suggestedFilename: expect.stringMatching(/\.md$/),
+      mediaType: "text/markdown",
+      content: expect.stringContaining("# Reformulated Proof")
+    });
+    expect(portableCopy.content).toContain("Use compactness to select finitely many separating neighbourhoods.");
+    expect(portableCopy.content).toContain("compact subset");
+    expect(Object.keys(portableCopy)).not.toContain("workspaceId");
+
+    const exportPath = join(dataDirectory, "portable-proof.md");
+    await relaunched.exportLearningArtifact(sessionId, artifactId, exportPath);
+    expect(await readFile(exportPath, "utf8")).toBe(portableCopy.content);
+    expect(relaunched.getState()).toEqual(beforePortableCopy);
+  });
+
+  it("migrates Learning Artifacts saved before kind, origin, and revision provenance were recorded", async () => {
+    const { application, dataDirectory } = await launch();
+    const started = await application.submit({ type: "startQuickStudy", mathematics: "Every compact set is closed." });
+    const sourceId = started.sessions[0].sourceIds[0];
+    const anchored = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 13, exactText: "compact", prefix: "Every ", suffix: " set is closed."
+      },
+      paletteAction: "annotate"
+    });
+    const statePath = join(dataDirectory, "learning-application.json");
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    persisted.sessions[0].learningArtifacts = [{
+      id: "legacy-artifact",
+      title: "Compactness proof",
+      currentRevision: {
+        id: "legacy-revision",
+        content: "Use a finite subcover.",
+        claimOrigin: "modelGenerated",
+        verificationLevel: "notIndependentlyChecked",
+        verificationCurrency: "current"
+      },
+      revisions: [],
+      sourceAnchorIds: [anchored.sessions[0].sourceAnchors[0].id],
+      pinned: true
+    }];
+    await writeFile(statePath, JSON.stringify(persisted), "utf8");
+
+    const migrated = await LearningApplication.launch(dataDirectory);
+    applications.push(migrated);
+    expect(migrated.getState().sessions[0].learningArtifacts[0]).toMatchObject({
+      kind: "learningArtifact",
+      originatingSessionId: anchored.sessions[0].id,
+      currentRevision: {
+        id: "legacy-revision",
+        provenance: { action: "promoted", createdAt: null, priorRevisionId: null }
+      }
+    });
   });
 
   it("opens an anchored question in the Contextual Inspector path without dispatching until the learner words it", async () => {
@@ -1105,8 +1180,14 @@ describe("Learning Application", () => {
       revisionId: originalArtifactRevisionId
     });
     expect(restoredArtifact.sessions[0].learningArtifacts[0]).toMatchObject({
-      currentRevision: { id: originalArtifactRevisionId, content: "Use a finite subcover to prove the complement is open." },
-      revisions: [{ content: "Learner-edited finite-subcover proof." }]
+      currentRevision: {
+        content: "Use a finite subcover to prove the complement is open.",
+        provenance: { action: "restored", priorRevisionId: originalArtifactRevisionId }
+      },
+      revisions: [
+        { id: originalArtifactRevisionId, content: "Use a finite subcover to prove the complement is open." },
+        expect.objectContaining({ content: "Learner-edited finite-subcover proof." })
+      ]
     });
   });
 
