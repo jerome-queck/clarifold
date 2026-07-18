@@ -20,6 +20,8 @@ For OpenAI Build Week requirements, tracks, deadlines, required deliverables, fo
 
 For tracked product engineering work, read [`docs/agents/engineering-workflow.md`](docs/agents/engineering-workflow.md) before selecting a flow or changing code. It owns the repository-specific routing, issue-entry, review, and skill-maintenance rules.
 
+For product implementation and review, follow the repository-wide [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
+
 Automatically use only model-invocable skills when their trigger descriptions match. Never auto-invoke a skill marked `disable-model-invocation: true`; use it only when explicitly requested. When the user explicitly asks which engineering flow fits, use `/ask-matt`.
 
 ## Commit attribution

@@ -58,6 +58,8 @@ Run focused tests and typechecking during implementation, then the full relevant
 
 The installed `/code-review` skill compares the merge base with committed `HEAD`, while `/implement` currently places review before its commit step. Until an upstream skill update resolves that mismatch, use this repository adapter:
 
+Use [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md) as the primary source for the Standards axis. It points to the contextual domain and architecture decisions that apply in addition to the review skill's built-in smell baseline.
+
 1. Finish the ticket and run the full relevant verification.
 2. On the issue branch, create a complete, green review-candidate commit. It must reference the child issue (or the standalone issue) and contain the applicable AI attribution trailers.
 3. Run `/code-review main` against that committed `HEAD`.
@@ -91,13 +93,8 @@ git diff --check
 
 Review every changed skill, lockfile entry, and Claude compatibility symlink before accepting the update; the `find` command should print nothing. Do not hand-edit vendored skills, silently add experimental skills, or mix a skill refresh into a product change. If the command produces no diff, there is nothing to commit. When `/implement` or `/code-review` changes upstream, reassess the committed-`HEAD` review adapter above.
 
-## Defer stack-specific policy until the scaffold exists
+## Keep stack-specific guidance current
 
-The repository does not yet have an application scaffold or CI. Do not invent placeholder commands or checks. Once the stack exists:
+The application scaffold and macOS CI now exist. [`README.md`](../../README.md) owns the human-facing requirements, development and verification commands, environment guidance, packaging, and expected demo evidence. `package.json` and [`.github/workflows/macos-ci.yml`](../../.github/workflows/macos-ci.yml) are the executable sources for local commands and CI order, while [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md) owns the judgement-based engineering contract.
 
-- document the canonical install, development, lint, typecheck, test, and build commands;
-- add CI for the real commands, then protect `main` using stable required checks;
-- document environment setup and secret handling; and
-- define preview/deployment verification and the expected demo evidence.
-
-Until then, verification means every relevant command the repository actually provides plus direct evidence for the issue's acceptance criteria.
+When the stack or delivery workflow changes, update the executable configuration and README guidance in the same change. Do not duplicate command matrices in agent documentation. Add preview, deployment, signing, or release policy only when the corresponding real surface exists; until then, the packaged application and its smoke test remain the preview artifact and demo evidence described in the README.

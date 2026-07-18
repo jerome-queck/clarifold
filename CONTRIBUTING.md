@@ -26,6 +26,7 @@ Prototypes are different: capture them on a clearly named throwaway branch outsi
 
 ## Implementation
 
+- Follow the repository-wide [coding standards](CODING_STANDARDS.md). They define the judgement-based architecture, data, trust-boundary, accessibility, and testing rules used during review.
 - Test observable behavior at an agreed public seam. For agent-driven product work, follow the installed `/tdd` workflow.
 - Work one vertical red-green slice at a time: establish a meaningful failure, add only enough behavior to pass, then begin the next slice.
 - After the ticket's intended behavior is green, address structural cleanup during review remediation while keeping the behavior tests passing.
@@ -41,7 +42,7 @@ For product work, use this flow:
 1. Claim the Issue and create its branch from an up-to-date `main`.
 2. Implement and verify the work on that branch.
 3. Create a complete, green local review commit containing `Refs #<number>` and all applicable AI-attribution trailers.
-4. Run `/code-review main` using the repository adapter in the [engineering workflow](docs/agents/engineering-workflow.md). Review against both the child ticket and its parent spec when both exist.
+4. Run `/code-review main` using the repository adapter in the [engineering workflow](docs/agents/engineering-workflow.md). Use [CODING_STANDARDS.md](CODING_STANDARDS.md) as the primary Standards source, and review against both the child ticket and its parent spec when both exist.
 5. Remediate findings on the same branch, retest, and commit the fixes. Rerun review after material changes.
 6. Push the branch and open a pull request targeting `main`.
 7. Pass configured CI and any required human review.

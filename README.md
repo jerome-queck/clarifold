@@ -13,6 +13,8 @@ Node.js 26 is not currently supported by the Electron packaging toolchain.
 
 ## Development
 
+Before contributing, read [`CONTRIBUTING.md`](CONTRIBUTING.md) for the GitHub workflow and [`CODING_STANDARDS.md`](CODING_STANDARDS.md) for the repository-wide engineering contract.
+
 Install the pinned dependencies and launch the renderer and Electron main process:
 
 ```sh

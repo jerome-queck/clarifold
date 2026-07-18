@@ -19,6 +19,7 @@ Parent spec: #<issue-number> <!-- Optional; remove when not applicable. -->
 
 - `/code-review main` result: <!-- Pass, findings addressed, or not applicable with reason. -->
 - Material-fix re-review: <!-- Completed, not needed, or not applicable with reason. -->
+- Standards impact: <!-- No durable contract change, or CODING_STANDARDS.md updated with the changed contract. -->
 
 ## Demo evidence
 
