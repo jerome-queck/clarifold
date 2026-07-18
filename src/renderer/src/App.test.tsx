@@ -15,6 +15,13 @@ describe("anchored teaching workbench", () => {
     window.quickStudy = {
       getState: vi.fn().mockResolvedValue(state),
       submit: vi.fn().mockResolvedValue(state),
+      getAgentWorkLogEvidence: vi.fn().mockResolvedValue([{
+        sequence: 1,
+        type: "turnStarted",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        detail: "Anchored teaching turn started."
+      }]),
       searchSessions: vi.fn().mockResolvedValue([]),
       linkPrimaryFolder: vi.fn(),
       linkExternalAttachment: vi.fn(),
@@ -35,6 +42,8 @@ describe("anchored teaching workbench", () => {
     expect(screen.getByRole("article", { name: "Pinned Learning Artifact Explain compact subset" }).textContent).toContain(
       "Pinned on the main canvas"
     );
+    await user.click(screen.getByRole("button", { name: "Inspect Agent Work Log events 1–2" }));
+    expect(screen.getByRole("list", { name: "Agent Work Log evidence" }).textContent).toContain("Anchored teaching turn started.");
     expect(screen.queryByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeNull();
 
     await user.click(marker);
@@ -101,7 +110,8 @@ function workbenchState(): LearningApplicationState {
         title: "Explain compact subset",
         currentRevision: {
           id: "revision-1", instruction: "Explain", status: "completed", content: "Use a finite subcover.",
-          error: null, retryable: false, contextUsed: [], agentWorkLogReference: null
+          error: null, retryable: false, contextUsed: [],
+          agentWorkLogReference: { sessionId: "session-1", fromSequence: 1, toSequence: 2 }
         },
         revisions: [], variants: [], artifactId: "artifact-1"
       }],

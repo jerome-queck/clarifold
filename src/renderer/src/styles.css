@@ -267,12 +267,16 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .math-canvas > .model-access { margin-top: 4px; }
 .learning-artifact { margin: 6px 0 18px; padding: 24px; border: 2px solid #b8cfbd; border-radius: 16px; background: #f7fbf4; }
 .learning-artifact h2 { font-size: 25px; }
-.artifact-content { white-space: pre-wrap; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; }
+.artifact-content { width: 100%; min-height: 150px; padding: 14px; resize: vertical; border: 1px solid #b8cfbd; border-radius: 10px; color: #1c332f; background: #fff; white-space: pre-wrap; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; }
 .artifact-evidence { display: grid; gap: 6px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid #d4dfd3; }
 .artifact-evidence div { display: grid; grid-template-columns: 140px 1fr; gap: 12px; }
 .artifact-evidence dt { font-weight: 750; }
 .artifact-evidence dd { margin: 0; }
 .record-link { color: #557069 !important; font-size: 12px; }
+.artifact-history, .agent-work-log-link { margin-top: 14px; }
+.artifact-history summary { cursor: pointer; font-weight: 750; }
+.agent-work-log-link > .text-button { padding-left: 0; }
+.agent-work-log-link ol { color: #557069; font-size: 12px; }
 .ask-bar { margin-top: 16px; padding: 24px; border: 1px solid #c9d8cd; border-radius: 16px; background: rgba(255,255,255,.62); }
 .ask-bar h2 { font-size: 25px; }
 .ask-bar label { margin-top: 18px; }

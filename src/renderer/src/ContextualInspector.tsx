@@ -28,6 +28,7 @@ export function ContextualInspector({
   const [variantInstruction, setVariantInstruction] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const isQuestionDraft = card.currentRevision.status === "idle" && card.title.startsWith("Question about");
 
   useEffect(() => closeRef.current?.focus(), [card.id]);
 
@@ -90,6 +91,7 @@ export function ContextualInspector({
           onClick={() => void onRetry()}>Retry anchored Teaching Card</button>}
         {card.currentRevision.contextUsed.length > 0 && <details className="context-used-receipt">
           <summary>Context Used Receipt</summary>
+          <p>Context supplied to this Teaching Card:</p>
           <ul>{card.currentRevision.contextUsed.map((context) => <li key={`${context.sourceId}-${context.location}`}>
             <strong>{context.sourceName}</strong> · {context.location}
           </li>)}</ul>
@@ -123,10 +125,12 @@ export function ContextualInspector({
       ))}
 
       <form className="inspector-form" onSubmit={(event) => void submitRevision(event)}>
-        <label htmlFor={`teaching-follow-up-${card.id}`}>Teaching Card follow-up</label>
+        <label htmlFor={`teaching-follow-up-${card.id}`}>{isQuestionDraft ? "Question about this Source Anchor" : "Teaching Card follow-up"}</label>
         <textarea id={`teaching-follow-up-${card.id}`} value={followUp} disabled={busy || card.currentRevision.status === "streaming"}
           onChange={(event) => setFollowUp(event.target.value)} />
-        <button className="primary" disabled={busy || !followUp.trim() || card.currentRevision.status === "streaming"}>Revise current Teaching Card</button>
+        <button className="primary" disabled={busy || !followUp.trim() || card.currentRevision.status === "streaming"}>
+          {isQuestionDraft ? "Ask about this Source Anchor" : "Revise current Teaching Card"}
+        </button>
       </form>
 
       <form className="inspector-form" onSubmit={(event) => void submitVariant(event)}>

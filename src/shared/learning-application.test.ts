@@ -305,6 +305,48 @@ describe("Learning Application", () => {
     expect(relaunched.getState().sessions[0].anchoredTeachingCards[0].sourceAnchorId).toBe(anchor.id);
   });
 
+  it("opens an anchored question in the Contextual Inspector path without dispatching until the learner words it", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Ask about one phrase",
+      initialTeachingDirection: "Use the selected source",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const started = await application.submit({ type: "submitSessionIntake", mathematics: "Every compact set is closed." });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const requestCount = runtime.teachingRequests.length;
+    const questioned = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: started.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 13, exactText: "compact", prefix: "Every ", suffix: " set is closed."
+      },
+      paletteAction: "question"
+    });
+    const card = questioned.sessions[0].anchoredTeachingCards[0];
+    expect(card).toMatchObject({
+      title: "Question about compact",
+      currentRevision: { status: "idle", instruction: "Ask a question about this source anchor." }
+    });
+    expect(runtime.teachingRequests).toHaveLength(requestCount);
+
+    await application.submit({
+      type: "reviseTeachingCard",
+      cardId: card.id,
+      instruction: "Where is the Hausdorff assumption used?"
+    });
+    expect(runtime.teachingRequests.at(-1)?.focus).toMatchObject({
+      sourceAnchorId: questioned.sessions[0].sourceAnchors[0].id,
+      instruction: "Where is the Hausdorff assumption used?",
+      previousContent: null
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+  });
+
   it("revises one anchored Teaching Card coherently and restores an earlier revision", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness",
@@ -424,6 +466,26 @@ describe("Learning Application", () => {
     expect(pinned.sessions[0].anchoredTeachingCards[0].variants[0].revision.content).toBe(
       "Project the compact closed subset and use that the projection is closed."
     );
+
+    const originalArtifactRevisionId = pinned.sessions[0].learningArtifacts[0].currentRevision.id;
+    const edited = await application.submit({
+      type: "editLearningArtifact",
+      artifactId: pinned.sessions[0].learningArtifacts[0].id,
+      content: "Learner-edited finite-subcover proof."
+    });
+    expect(edited.sessions[0].learningArtifacts[0]).toMatchObject({
+      currentRevision: { content: "Learner-edited finite-subcover proof.", claimOrigin: "learner" },
+      revisions: [{ id: originalArtifactRevisionId, content: "Use a finite subcover to prove the complement is open." }]
+    });
+    const restoredArtifact = await application.submit({
+      type: "restoreLearningArtifactRevision",
+      artifactId: pinned.sessions[0].learningArtifacts[0].id,
+      revisionId: originalArtifactRevisionId
+    });
+    expect(restoredArtifact.sessions[0].learningArtifacts[0]).toMatchObject({
+      currentRevision: { id: originalArtifactRevisionId, content: "Use a finite subcover to prove the complement is open." },
+      revisions: [{ content: "Learner-edited finite-subcover proof." }]
+    });
   });
 
   it("checkpoints and stops the exact anchored Teaching Card revision on quit and relaunch", async () => {
@@ -493,6 +555,10 @@ describe("Learning Application", () => {
       contextUsed: [{ sourceName: "Typed mathematics", location: "Text at characters 6–13" }],
       agentWorkLogReference: { sessionId: started.sessions[0].id }
     });
+    const reference = failed.currentRevision.agentWorkLogReference!;
+    expect(application.getAgentWorkLogEvidence(reference.sessionId, reference.fromSequence, reference.toSequence).map(
+      (event) => event.type
+    )).toEqual(["threadStarted", "turnStarted"]);
 
     const retrying = await application.submit({ type: "retryAnchoredTeachingCard", cardId: withCard.sessions[0].anchoredTeachingCards[0].id });
     expect(retrying.sessions[0].anchoredTeachingCards[0].currentRevision).toMatchObject({

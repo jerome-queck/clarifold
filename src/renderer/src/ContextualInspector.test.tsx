@@ -143,4 +143,23 @@ describe("Contextual Inspector", () => {
     await user.click(screen.getByRole("button", { name: "Retry anchored Teaching Card" }));
     expect(onRetry).toHaveBeenCalledOnce();
   });
+
+  it("collects the learner's anchored question before dispatch", async () => {
+    const user = userEvent.setup();
+    const onRevise = vi.fn().mockResolvedValue(undefined);
+    const card = {
+      id: "card-1", sourceAnchorId: "anchor-1", title: "Question about compact subset",
+      currentRevision: {
+        id: "revision-1", instruction: "Ask a question about this source anchor.", status: "idle", content: "",
+        error: null, retryable: false, contextUsed: [], agentWorkLogReference: null
+      },
+      revisions: [], variants: [], artifactId: null
+    } satisfies AnchoredTeachingCard;
+    render(<ContextualInspector card={card} artifact={null} onClose={() => undefined} onRevise={onRevise}
+      onRestore={async () => undefined} onCreateVariant={async () => undefined}
+      onRetry={async () => undefined} onPin={async () => undefined} />);
+    await user.type(screen.getByRole("textbox", { name: "Question about this Source Anchor" }), "Where is Hausdorff used?");
+    await user.click(screen.getByRole("button", { name: "Ask about this Source Anchor" }));
+    expect(onRevise).toHaveBeenCalledWith("Where is Hausdorff used?");
+  });
 });
