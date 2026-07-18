@@ -1360,6 +1360,13 @@ describe("Learning Application", () => {
     });
     expect(state.sessions.every((session) => session.teachingCard.content === "")).toBe(true);
 
+    runtime.emitTeaching("Focus only on the main theorem and its local lemma.");
+    const duringTeaching = application.getState();
+    expect(duringTeaching.sessions.find((session) => session.id === selected.id)?.teachingCard.content)
+      .toBe("Focus only on the main theorem and its local lemma.");
+    expect(duringTeaching.sessions.filter((session) => session.id !== selected.id)
+      .every((session) => session.teachingCard.status === "idle" && session.learningArtifacts.length === 0)).toBe(true);
+
     runtime.completeTeaching(selected.id);
     await application.waitForModelWork();
     const reloaded = await LearningApplication.launch(dataDirectory);
@@ -1683,6 +1690,61 @@ describe("Learning Application", () => {
     expect(state.sessions).toEqual([]);
     expect(state.sources).toEqual([]);
     expect(state.argumentRoadmaps).toEqual([]);
+  });
+
+  it("rejects ambiguous repeated Source Anchor excerpts instead of choosing the first occurrence", async () => {
+    const mathematics = "Apply the lemma here.\nApply the lemma here.\nConclude the theorem.";
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Apply the lemma",
+      scope: "Use the first application",
+      initialTeachingDirection: "Inspect the application",
+      requiresConfirmation: false,
+      confirmationReason: null,
+      argumentRoadmap: {
+        title: "Two applications and a conclusion",
+        stages: [
+          {
+            title: "First application", majorClaim: "The lemma applies.", dependsOn: [],
+            sourceExcerpt: "Apply the lemma here.", learningGoal: "Understand the first application",
+            boundary: "Study the first application", immediatePrerequisites: []
+          },
+          {
+            title: "Conclusion", majorClaim: "The theorem follows.", dependsOn: [0],
+            sourceExcerpt: "Conclude the theorem.", learningGoal: "Conclude the theorem",
+            boundary: "Study the conclusion", immediatePrerequisites: ["the lemma"]
+          }
+        ],
+        proposedStage: 0
+      }
+    });
+    const { application } = await launchWithRuntime(runtime);
+
+    const state = await application.submit({ type: "submitSessionIntake", mathematics });
+
+    expect(state.intakeError).toContain("invalid Argument Roadmap");
+    expect(state.sessions).toEqual([]);
+    expect(state.sources).toEqual([]);
+  });
+
+  it("requires a roadmap when clearly multi-stage material is returned as one flat proposal", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Explain all three stages",
+      scope: "Cover the whole proof",
+      initialTeachingDirection: "Start explaining",
+      requiresConfirmation: false,
+      confirmationReason: null,
+      argumentRoadmap: null
+    });
+    const { application } = await launchWithRuntime(runtime);
+
+    const state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "First prove the lemma.\nThen prove the theorem.\nFinally derive the corollary."
+    });
+
+    expect(state.intakeError).toBe("Long or multi-stage material requires an Argument Roadmap. Retry to request a fresh proposal.");
+    expect(state.sessions).toEqual([]);
+    expect(runtime.teachingRequests).toEqual([]);
   });
 
   it("launches into an honest authentication failure instead of hanging when Codex is unavailable", async () => {

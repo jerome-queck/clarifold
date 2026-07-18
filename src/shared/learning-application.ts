@@ -1294,6 +1294,9 @@ export class LearningApplication {
             pendingLog.push({ ...event, sequence: pendingLog.length + 1 });
           });
           if (proposal.argumentRoadmap) validateProposedArgumentRoadmap(proposal.argumentRoadmap, mathematics);
+          else if (materialRequiresArgumentRoadmap(mathematics)) {
+            throw new Error("Long or multi-stage material requires an Argument Roadmap. Retry to request a fresh proposal.");
+          }
           this.state.intakeError = null;
         } catch (error) {
           const message = usefulRuntimeError(error);
@@ -2550,13 +2553,20 @@ function validateProposedArgumentRoadmap(proposed: ArgumentRoadmapProposal, math
     || !Number.isInteger(proposed.proposedStage)
     || proposed.proposedStage < 0 || proposed.proposedStage >= proposed.stages.length
     || proposed.stages.some((stage, index) => !stage.title.trim() || !stage.majorClaim.trim()
-      || !stage.sourceExcerpt.trim() || !mathematics.includes(stage.sourceExcerpt)
+      || !stage.sourceExcerpt.trim() || mathematics.indexOf(stage.sourceExcerpt) < 0
+      || mathematics.indexOf(stage.sourceExcerpt) !== mathematics.lastIndexOf(stage.sourceExcerpt)
       || !stage.learningGoal.trim() || !stage.boundary.trim()
       || !Array.isArray(stage.dependsOn) || stage.dependsOn.some((dependency) => !Number.isInteger(dependency)
-        || dependency < 0 || dependency >= proposed.stages.length || dependency === index)
+        || dependency < 0 || dependency >= index)
       || !Array.isArray(stage.immediatePrerequisites)
       || stage.immediatePrerequisites.some((prerequisite) => !prerequisite.trim()));
   if (invalid) throw new Error("Codex returned an invalid Argument Roadmap. Retry to request a fresh proposal.");
+}
+
+function materialRequiresArgumentRoadmap(mathematics: string): boolean {
+  const nonemptyLines = mathematics.split(/\r?\n/).filter((line) => Boolean(line.trim()));
+  const paragraphs = mathematics.split(/(?:\r?\n){2,}/).filter((paragraph) => Boolean(paragraph.trim()));
+  return nonemptyLines.length >= 3 || paragraphs.length >= 3 || mathematics.length >= 2_000;
 }
 
 function migratePersistedState(value: unknown): LearningApplicationState {

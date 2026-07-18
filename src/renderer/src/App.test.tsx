@@ -91,6 +91,9 @@ describe("anchored teaching workbench", () => {
     expect(roadmap.textContent).toContain("Compactness to uniqueness");
     expect(roadmap.textContent).toContain("Every compact subset is closed.");
     expect(roadmap.textContent).toContain("Depends on Compact subsets are closed");
+    expect(roadmap.textContent).toContain("Source Anchor “compact subset” · characters 6–20");
+    await user.click(screen.getByRole("button", { name: "Show Source Anchor for Compact subsets are closed" }));
+    expect(window.quickStudy.submit).toHaveBeenCalledWith({ type: "activateSourceAnchor", sourceAnchorId: "anchor-1" });
     await user.clear(screen.getByLabelText("Learning Slice boundary"));
     await user.type(screen.getByLabelText("Learning Slice boundary"), "Prove the claim using finite subcovers");
     await user.clear(screen.getByLabelText("Immediate prerequisites"));

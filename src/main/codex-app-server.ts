@@ -829,12 +829,13 @@ function parseSessionProposal(content: string): SessionProposal {
 function validArgumentRoadmapProposal(value: unknown): boolean {
   if (value === null) return true;
   if (!isRecord(value) || typeof value.title !== "string" || !value.title.trim()
-    || !Number.isInteger(value.proposedStage) || !Array.isArray(value.stages) || value.stages.length < 2
+    || !Number.isInteger(value.proposedStage) || !Array.isArray(value.stages) || value.stages.length < 2 || value.stages.length > 12
     || (value.proposedStage as number) < 0 || (value.proposedStage as number) >= value.stages.length) return false;
-  return value.stages.every((stage) => isRecord(stage)
+  return value.stages.every((stage, index) => isRecord(stage)
     && typeof stage.title === "string" && Boolean(stage.title.trim())
     && typeof stage.majorClaim === "string" && Boolean(stage.majorClaim.trim())
-    && Array.isArray(stage.dependsOn) && stage.dependsOn.every((dependency) => Number.isInteger(dependency))
+    && Array.isArray(stage.dependsOn) && stage.dependsOn.every((dependency) => Number.isInteger(dependency)
+      && (dependency as number) >= 0 && (dependency as number) < index)
     && typeof stage.sourceExcerpt === "string" && Boolean(stage.sourceExcerpt.trim())
     && typeof stage.learningGoal === "string" && Boolean(stage.learningGoal.trim())
     && typeof stage.boundary === "string" && Boolean(stage.boundary.trim())

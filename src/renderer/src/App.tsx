@@ -948,15 +948,24 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
       <ol className="roadmap-stages">
         {roadmap.stages.map((stage) => {
           const selected = stage.id === roadmap.selectedStageId;
+          const stageSession = state.sessions.find((candidate) => candidate.id === stage.sessionId);
+          const anchor = stageSession?.sourceAnchors.find((candidate) => candidate.id === stage.sourceAnchorId);
+          const anchorDescription = anchor && anchor.selection.kind !== "diagramRegion"
+            ? `Source Anchor “${anchor.selection.exactText}” · characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`
+            : `Source Anchor ${stage.sourceAnchorId}`;
           const dependencies = stage.dependsOnStageIds
             .map((id) => roadmap.stages.find((candidate) => candidate.id === id)?.title)
             .filter((title): title is string => Boolean(title));
           return (
             <li key={stage.id} className={selected ? "selected" : ""}>
               <div><strong>{stage.title}</strong><p>{stage.majorClaim}</p>
-                <small>{dependencies.length ? `Depends on ${dependencies.join(", ")}` : "No roadmap dependencies"} · Source Anchor retained</small>
+                <small>{dependencies.length ? `Depends on ${dependencies.join(", ")}` : "No roadmap dependencies"} · {anchorDescription}</small>
               </div>
-              {selected ? <span className="saved">Current Learning Slice</span> : (
+              {selected ? <div className="roadmap-stage-actions"><span className="saved">Current Learning Slice</span>
+                <button className="text-button" aria-label={`Show Source Anchor for ${stage.title}`}
+                  onClick={() => void window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId: stage.sourceAnchorId }).then(onState)}>
+                  Show Source Anchor
+                </button></div> : (
                 <button className="secondary" disabled={!editable}
                   aria-label={`Choose Learning Slice ${stage.title}`} onClick={() => void choose(stage.id)}>Choose this slice</button>
               )}

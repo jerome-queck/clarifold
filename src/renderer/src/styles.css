@@ -173,6 +173,8 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .roadmap-stages p { margin: 4px 0; color: #385950; line-height: 1.45; }
 .roadmap-stages small { color: #667b74; }
 .roadmap-stages .secondary { flex: 0 0 auto; }
+.roadmap-stage-actions { display: flex; align-items: flex-end; gap: 6px; flex: 0 0 auto; flex-direction: column; }
+.roadmap-stage-actions .text-button { padding: 4px 0; }
 .learning-slice-editor { display: grid; gap: 8px; margin-top: 18px; padding: 18px; border-radius: 12px; background: #fffdf7; }
 .learning-slice-editor .proposal-label { margin: 0 0 4px; }
 .learning-slice-editor textarea { width: 100%; min-height: 70px; padding: 10px; resize: vertical; border: 1px solid #c8d0c8; border-radius: 9px; color: #17332e; background: #fff; }
