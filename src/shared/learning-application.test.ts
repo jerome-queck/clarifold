@@ -129,6 +129,73 @@ describe("Learning Application", () => {
     expect(started.workspaces[0].context.sourceIds).toContain(managedAsset?.id);
   });
 
+  it("persists precise text, equation, and normalized diagram Source Anchors across relaunch", async () => {
+    const { application, dataDirectory } = await launch();
+    const started = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Let $f(x)=x^2$. The diagram below shows its graph."
+    });
+    const session = started.sessions[0];
+    const sourceId = session.sourceIds[0];
+
+    await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "text",
+        startOffset: 4,
+        endOffset: 14,
+        exactText: "$f(x)=x^2$",
+        prefix: "Let ",
+        suffix: ". The diagram below"
+      },
+      paletteAction: "annotate"
+    });
+    await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "equation",
+        equationIndex: 0,
+        startOffset: 4,
+        endOffset: 14,
+        exactText: "$f(x)=x^2$",
+        prefix: "Let ",
+        suffix: ". The diagram below"
+      },
+      paletteAction: "question"
+    });
+    const anchored = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "diagramRegion",
+        bounds: { x: 0.125, y: 0.25, width: 0.5, height: 0.375 }
+      },
+      paletteAction: "addToLearningTrail"
+    });
+
+    expect(anchored.sessions[0].sourceAnchors).toMatchObject([
+      { sourceId, selection: { kind: "text", startOffset: 4, endOffset: 14 }, paletteAction: "annotate" },
+      { sourceId, selection: { kind: "equation", equationIndex: 0, exactText: "$f(x)=x^2$" }, paletteAction: "question" },
+      {
+        sourceId,
+        selection: { kind: "diagramRegion", bounds: { x: 0.125, y: 0.25, width: 0.5, height: 0.375 } },
+        paletteAction: "addToLearningTrail"
+      }
+    ]);
+    expect(anchored.sessions[0].activeSourceAnchorId).toBe(anchored.sessions[0].sourceAnchors[2].id);
+
+    await application.submit({ type: "leaveSession" });
+    const resumed = await application.submit({ type: "resumeSession", sessionId: session.id });
+    expect(resumed.sessions[0].sourceAnchors).toEqual(anchored.sessions[0].sourceAnchors);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].sourceAnchors).toEqual(anchored.sessions[0].sourceAnchors);
+    expect(relaunched.getState().sessions[0].activeSourceAnchorId).toBe(anchored.sessions[0].activeSourceAnchorId);
+  });
+
   it("allows Quick Study to own one Primary Folder and rejects attachments selected inside it", async () => {
     const { application } = await launch();
     const linked = await application.linkPrimaryFolder("quick-study-workspace", {

@@ -44,6 +44,38 @@ export interface PendingQuestion {
   text: string;
 }
 
+export type SourceAnchorPaletteAction = "explain" | "question" | "annotate" | "addToLearningTrail";
+
+export type SourceAnchorSelection =
+  | {
+      kind: "text";
+      startOffset: number;
+      endOffset: number;
+      exactText: string;
+      prefix: string;
+      suffix: string;
+    }
+  | {
+      kind: "equation";
+      equationIndex: number;
+      startOffset: number;
+      endOffset: number;
+      exactText: string;
+      prefix: string;
+      suffix: string;
+    }
+  | {
+      kind: "diagramRegion";
+      bounds: { x: number; y: number; width: number; height: number };
+    };
+
+export interface SourceAnchor {
+  id: string;
+  sourceId: string;
+  selection: SourceAnchorSelection;
+  paletteAction: SourceAnchorPaletteAction;
+}
+
 export interface SubmittedPendingQuestion {
   id: string;
   text: string;
@@ -192,6 +224,8 @@ export interface LearningSession {
   accessPolicy: SessionAccessPolicy;
   accessRequests: SessionAccessRequest[];
   pendingFullAccessConfirmation: boolean;
+  sourceAnchors: SourceAnchor[];
+  activeSourceAnchorId: string | null;
 }
 
 export interface LearningApplicationState {
@@ -237,6 +271,12 @@ export type LearnerAction =
   | { type: "editPendingQuestion"; text: string }
   | { type: "discardPendingQuestion" }
   | { type: "submitPendingQuestion" }
+  | {
+      type: "createSourceAnchor";
+      sourceId: string;
+      selection: SourceAnchorSelection;
+      paletteAction: SourceAnchorPaletteAction;
+    }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
@@ -527,6 +567,26 @@ export class LearningApplication {
         this.state.navigation = { workspaceId: action.workspaceId, missionId: mission.id };
         break;
       }
+      case "createSourceAnchor": {
+        const session = this.requireActiveSession();
+        if (!isSourceAnchorPaletteAction(action.paletteAction)) throw new Error("Choose an available Selection Palette action.");
+        const source = this.state.sources.find((candidate) => candidate.id === action.sourceId);
+        if (!source || source.workspaceId !== session.workspaceId) {
+          throw new Error("Choose a source in the active Learning Session's Study Workspace.");
+        }
+        const selection = validatedSourceAnchorSelection(action.selection, source);
+        const anchor: SourceAnchor = {
+          id: crypto.randomUUID(),
+          sourceId: source.id,
+          selection,
+          paletteAction: action.paletteAction
+        };
+        session.sourceAnchors.push(anchor);
+        session.activeSourceAnchorId = anchor.id;
+        session.activityOrder = this.nextActivityOrder();
+        this.state.resumeSessionId = session.id;
+        break;
+      }
       case "navigateToWorkspace": {
         const workspace = this.state.workspaces.find((candidate) => candidate.id === action.workspaceId);
         if (!workspace) throw new Error("Choose an existing Study Workspace.");
@@ -577,7 +637,9 @@ export class LearningApplication {
           pendingQuestion: null,
           accessPolicy: location.accessPolicy,
           accessRequests: [],
-          pendingFullAccessConfirmation: false
+          pendingFullAccessConfirmation: false,
+          sourceAnchors: [],
+          activeSourceAnchorId: null
         };
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -643,7 +705,9 @@ export class LearningApplication {
           pendingQuestion: null,
           accessPolicy: location.accessPolicy,
           accessRequests: [],
-          pendingFullAccessConfirmation: false
+          pendingFullAccessConfirmation: false,
+          sourceAnchors: [],
+          activeSourceAnchorId: null
         };
         this.agentWorkLogs[session.id] = pendingLog;
         delete this.agentWorkLogs[proposalAttemptId];
@@ -1329,7 +1393,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       pendingQuestion: session.pendingQuestion ?? null,
       accessPolicy: migrateSessionAccessPolicy(session.accessPolicy),
       accessRequests: migrateAccessRequests(session.accessRequests),
-      pendingFullAccessConfirmation: false
+      pendingFullAccessConfirmation: false,
+      sourceAnchors: migrateSourceAnchors(session.sourceAnchors),
+      activeSourceAnchorId: typeof session.activeSourceAnchorId === "string" ? session.activeSourceAnchorId : null
     }));
     return current;
   }
@@ -1353,7 +1419,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       pendingQuestion: null,
       accessPolicy: "focused",
       accessRequests: [],
-      pendingFullAccessConfirmation: false
+      pendingFullAccessConfirmation: false,
+      sourceAnchors: [],
+      activeSourceAnchorId: null
     };
     migrated.sessions.push(session);
     migrated.resumeSessionId = session.id;
@@ -1491,6 +1559,86 @@ function migrateWorkspaceSources(value: unknown): WorkspaceSource[] {
       : candidate.link.lastKnownPath as string;
     return source;
   });
+}
+
+function migrateSourceAnchors(value: unknown): SourceAnchor[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Source Anchors are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.sourceId !== "string"
+      || !isSourceAnchorPaletteAction(candidate.paletteAction)) {
+      throw new Error("Stored Source Anchor is invalid.");
+    }
+    return {
+      id: candidate.id,
+      sourceId: candidate.sourceId,
+      selection: validatedSourceAnchorSelection(candidate.selection),
+      paletteAction: candidate.paletteAction
+    };
+  });
+}
+
+function validatedSourceAnchorSelection(value: unknown, source?: WorkspaceSource): SourceAnchorSelection {
+  if (!isRecord(value)) throw new Error("Choose a valid source region.");
+  if (value.kind === "diagramRegion") {
+    if (!isRecord(value.bounds)) throw new Error("Choose a bounded diagram region.");
+    const bounds = value.bounds;
+    if (![bounds.x, bounds.y, bounds.width, bounds.height].every(
+      (coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate)
+    ) || (bounds.x as number) < 0 || (bounds.y as number) < 0
+      || (bounds.width as number) <= 0 || (bounds.height as number) <= 0
+      || (bounds.x as number) + (bounds.width as number) > 1
+      || (bounds.y as number) + (bounds.height as number) > 1) {
+      throw new Error("Diagram-region bounds must be normalized within the Source Layer.");
+    }
+    return {
+      kind: "diagramRegion",
+      bounds: {
+        x: bounds.x as number,
+        y: bounds.y as number,
+        width: bounds.width as number,
+        height: bounds.height as number
+      }
+    };
+  }
+  if (value.kind !== "text" && value.kind !== "equation") throw new Error("Choose a valid source region.");
+  const startOffset = value.startOffset;
+  const endOffset = value.endOffset;
+  if (!Number.isInteger(startOffset) || !Number.isInteger(endOffset)
+    || (startOffset as number) < 0 || (endOffset as number) <= (startOffset as number)
+    || typeof value.exactText !== "string" || value.exactText.length !== (endOffset as number) - (startOffset as number)
+    || typeof value.prefix !== "string" || typeof value.suffix !== "string") {
+    throw new Error("Text and equation anchors require a precise non-empty source range.");
+  }
+  if (source?.kind === "managedAsset"
+    && source.content.slice(startOffset as number, endOffset as number) !== value.exactText) {
+    throw new Error("The selected source text no longer matches this Source Layer.");
+  }
+  const location = {
+    startOffset: startOffset as number,
+    endOffset: endOffset as number,
+    exactText: value.exactText,
+    prefix: value.prefix,
+    suffix: value.suffix
+  };
+  if (value.kind === "text") return { kind: "text", ...location };
+  if (!Number.isInteger(value.equationIndex) || (value.equationIndex as number) < 0) {
+    throw new Error("An equation anchor requires its equation location.");
+  }
+  return { kind: "equation", equationIndex: value.equationIndex as number, ...location };
+}
+
+export function isSourceAnchorPaletteAction(value: unknown): value is SourceAnchorPaletteAction {
+  return value === "explain" || value === "question" || value === "annotate" || value === "addToLearningTrail";
+}
+
+export function isSourceAnchorSelection(value: unknown): value is SourceAnchorSelection {
+  try {
+    validatedSourceAnchorSelection(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

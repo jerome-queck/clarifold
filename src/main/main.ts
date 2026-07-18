@@ -2,7 +2,12 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { LearningApplication, type LearnerAction } from "../shared/learning-application";
+import {
+  isSourceAnchorPaletteAction,
+  isSourceAnchorSelection,
+  LearningApplication,
+  type LearnerAction
+} from "../shared/learning-application";
 import { CodexAppServerRuntime } from "./codex-app-server";
 import type { ModelRuntime } from "../shared/model-runtime";
 import { MacOsSourceAccess } from "./source-access";
@@ -53,6 +58,10 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "savePendingQuestion":
     case "editPendingQuestion":
       return "text" in action && typeof action.text === "string";
+    case "createSourceAnchor":
+      return "sourceId" in action && typeof action.sourceId === "string"
+        && "selection" in action && isSourceAnchorSelection(action.selection)
+        && "paletteAction" in action && isSourceAnchorPaletteAction(action.paletteAction);
     case "loginWithApiKey":
       return "apiKey" in action && typeof action.apiKey === "string";
     case "reviseSessionProposal":

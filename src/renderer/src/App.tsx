@@ -10,6 +10,7 @@ import type {
   StudyWorkspace
 } from "../../shared/learning-application";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
+import { SourceLayer } from "./SourceLayer";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -666,7 +667,19 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
               <div><p className="eyebrow">Source Layer</p><h2>Your typed mathematics</h2></div>
               <span className="saved">Saved locally</span>
             </div>
-            <article>{session.mathematics}</article>
+            <SourceLayer
+              sourceId={session.sourceIds[0]}
+              content={session.mathematics}
+              anchors={session.sourceAnchors}
+              onChooseAction={(selection, paletteAction) => {
+                void window.quickStudy.submit({
+                  type: "createSourceAnchor",
+                  sourceId: session.sourceIds[0],
+                  selection,
+                  paletteAction
+                }).then(onState);
+              }}
+            />
             <SessionAccessPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
