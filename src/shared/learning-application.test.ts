@@ -411,7 +411,13 @@ describe("Learning Application", () => {
     expect(pinned.sessions[0].anchoredTeachingCards[0]).toMatchObject({ artifactId: pinned.sessions[0].learningArtifacts[0].id });
     expect(pinned.sessions[0].learningArtifacts).toMatchObject([{
       title: "Explain compact",
-      content: "Use a finite subcover to prove the complement is open.",
+      currentRevision: {
+        content: "Use a finite subcover to prove the complement is open.",
+        claimOrigin: "modelGenerated",
+        verificationLevel: "notIndependentlyChecked",
+        verificationCurrency: "current"
+      },
+      revisions: [],
       sourceAnchorIds: [anchorId],
       pinned: true
     }]);
@@ -456,6 +462,50 @@ describe("Learning Application", () => {
       status: "stopped",
       content: "Useful partial anchored explanation"
     });
+  });
+
+  it("retries the same failed anchored Teaching Card with its receipt and work-log link intact", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain one anchor",
+      initialTeachingDirection: "Start locally",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const started = await application.submit({ type: "submitSessionIntake", mathematics: "Every compact set is closed." });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const withCard = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: started.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 13, exactText: "compact", prefix: "Every ", suffix: " set is closed."
+      },
+      paletteAction: "explain"
+    });
+    runtime.failTeaching(new Error("Anchored teaching timed out."));
+    await application.waitForModelWork();
+    const failed = application.getState().sessions[0].anchoredTeachingCards[0];
+    expect(failed.currentRevision).toMatchObject({
+      status: "failed",
+      retryable: true,
+      contextUsed: [{ sourceName: "Typed mathematics", location: "Text at characters 6–13" }],
+      agentWorkLogReference: { sessionId: started.sessions[0].id }
+    });
+
+    const retrying = await application.submit({ type: "retryAnchoredTeachingCard", cardId: withCard.sessions[0].anchoredTeachingCards[0].id });
+    expect(retrying.sessions[0].anchoredTeachingCards[0].currentRevision).toMatchObject({
+      id: failed.currentRevision.id,
+      status: "streaming",
+      content: ""
+    });
+    expect(runtime.teachingRequests.at(-1)?.focus).toMatchObject({
+      sourceAnchorId: withCard.sessions[0].sourceAnchors[0].id,
+      instruction: "Explain or unpack this source anchor."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
   });
 
   it("allows Quick Study to own one Primary Folder and rejects attachments selected inside it", async () => {

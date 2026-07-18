@@ -25,7 +25,9 @@ describe("Contextual Inspector", () => {
         status: "completed",
         content: "Separate an outside point, then take a finite subcover.",
         error: null,
-        retryable: false
+        retryable: false,
+        contextUsed: [{ sourceId: "source-1", sourceName: "Typed mathematics", location: "Text at characters 6–20" }],
+        agentWorkLogReference: { sessionId: "session-1", fromSequence: 1, toSequence: 4 }
       },
       revisions: [{
         id: "revision-1",
@@ -33,7 +35,9 @@ describe("Contextual Inspector", () => {
         status: "completed",
         content: "Compactness gives a finite subcover.",
         error: null,
-        retryable: false
+        retryable: false,
+        contextUsed: [],
+        agentWorkLogReference: null
       }],
       variants: [{
         id: "variant-1",
@@ -44,7 +48,9 @@ describe("Contextual Inspector", () => {
           status: "completed",
           content: "Projection gives a genuinely different route.",
           error: null,
-          retryable: false
+          retryable: false,
+          contextUsed: [],
+          agentWorkLogReference: null
         }
       }],
       artifactId: null
@@ -57,12 +63,14 @@ describe("Contextual Inspector", () => {
       onRevise={onRevise}
       onRestore={onRestore}
       onCreateVariant={vi.fn()}
+      onRetry={vi.fn()}
       onPin={onPin}
     />);
 
     expect(screen.getByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close Contextual Inspector" })).toBe(document.activeElement);
     expect(screen.getByText("Separate an outside point, then take a finite subcover.")).toBeTruthy();
+    expect(screen.getByText("Typed mathematics").parentElement?.textContent).toContain("Text at characters 6–20");
     expect(screen.getByRole("region", { name: "Teaching Variant Closed-map route" }).textContent).toContain(
       "Projection gives a genuinely different route."
     );
@@ -85,7 +93,14 @@ describe("Contextual Inspector", () => {
     const artifact: LearningArtifact = {
       id: "artifact-1",
       title: "Explain compact subset",
-      content: "A substantial explanation.",
+      currentRevision: {
+        id: "artifact-revision-1",
+        content: "A substantial explanation.",
+        claimOrigin: "modelGenerated",
+        verificationLevel: "notIndependentlyChecked",
+        verificationCurrency: "current"
+      },
+      revisions: [],
       sourceAnchorIds: ["anchor-1"],
       pinned: true
     };
@@ -93,15 +108,39 @@ describe("Contextual Inspector", () => {
       id: "card-1",
       sourceAnchorId: "anchor-1",
       title: artifact.title,
-      currentRevision: { id: "revision-1", instruction: "Explain", status: "completed", content: artifact.content, error: null, retryable: false },
+      currentRevision: {
+        id: "revision-1", instruction: "Explain", status: "completed", content: artifact.currentRevision.content,
+        error: null, retryable: false, contextUsed: [], agentWorkLogReference: null
+      },
       revisions: [],
       variants: [],
       artifactId: artifact.id
     } satisfies AnchoredTeachingCard;
     render(<ContextualInspector card={card} artifact={artifact} onClose={() => undefined}
       onRevise={async () => undefined} onRestore={async () => undefined}
-      onCreateVariant={async () => undefined} onPin={async () => undefined} />);
+      onCreateVariant={async () => undefined} onRetry={async () => undefined} onPin={async () => undefined} />);
     expect(screen.getByRole("status").textContent).toContain("Pinned Learning Artifact retains this Source Anchor");
     expect(screen.queryByRole("button", { name: "Pin as Learning Artifact" })).toBeNull();
+  });
+
+  it("makes an anchored runtime failure actionable", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    const card = {
+      id: "card-1",
+      sourceAnchorId: "anchor-1",
+      title: "Explain compact subset",
+      currentRevision: {
+        id: "revision-1", instruction: "Explain", status: "failed", content: "Useful partial work",
+        error: "Anchored teaching timed out.", retryable: true, contextUsed: [], agentWorkLogReference: null
+      },
+      revisions: [], variants: [], artifactId: null
+    } satisfies AnchoredTeachingCard;
+    render(<ContextualInspector card={card} artifact={null} onClose={() => undefined}
+      onRevise={async () => undefined} onRestore={async () => undefined}
+      onCreateVariant={async () => undefined} onRetry={onRetry} onPin={async () => undefined} />);
+    expect(screen.getByRole("alert").textContent).toContain("Anchored teaching timed out.");
+    await user.click(screen.getByRole("button", { name: "Retry anchored Teaching Card" }));
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 });

@@ -8,6 +8,7 @@ interface ContextualInspectorProps {
   onRevise(instruction: string): Promise<void>;
   onRestore(revisionId: string): Promise<void>;
   onCreateVariant(name: string, instruction: string): Promise<void>;
+  onRetry(variantId?: string): Promise<void>;
   onPin(): Promise<void>;
 }
 
@@ -18,6 +19,7 @@ export function ContextualInspector({
   onRevise,
   onRestore,
   onCreateVariant,
+  onRetry,
   onPin
 }: ContextualInspectorProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -84,6 +86,14 @@ export function ContextualInspector({
           ? <p>{card.currentRevision.content}</p>
           : <p className="subtle">{card.currentRevision.status === "streaming" ? "Preparing the anchored explanation…" : "No explanation content yet."}</p>}
         {card.currentRevision.error && <p className="failure-message" role="alert">{card.currentRevision.error}</p>}
+        {card.currentRevision.retryable && <button className="secondary" disabled={busy}
+          onClick={() => void onRetry()}>Retry anchored Teaching Card</button>}
+        {card.currentRevision.contextUsed.length > 0 && <details className="context-used-receipt">
+          <summary>Context Used Receipt</summary>
+          <ul>{card.currentRevision.contextUsed.map((context) => <li key={`${context.sourceId}-${context.location}`}>
+            <strong>{context.sourceName}</strong> · {context.location}
+          </li>)}</ul>
+        </details>}
       </section>
 
       {card.revisions.length > 0 && (
@@ -102,9 +112,13 @@ export function ContextualInspector({
       )}
 
       {card.variants.map((variant) => (
-        <section className="teaching-variant" aria-label={`Teaching Variant ${variant.name}`} key={variant.id}>
+        <section className="teaching-variant" aria-label={`Teaching Variant ${variant.name}`} aria-live="polite" key={variant.id}>
           <div className="card-heading"><h3>{variant.name}</h3><span className="saved">Named alternative</span></div>
-          <p>{variant.revision.content || (variant.revision.status === "streaming" ? "Preparing this alternative route…" : variant.revision.error)}</p>
+          {variant.revision.error
+            ? <p className="failure-message" role="alert">{variant.revision.error}</p>
+            : <p>{variant.revision.content || (variant.revision.status === "streaming" ? "Preparing this alternative route…" : "No alternative content yet.")}</p>}
+          {variant.revision.retryable && <button className="secondary" disabled={busy}
+            onClick={() => void onRetry(variant.id)}>Retry Teaching Variant {variant.name}</button>}
         </section>
       ))}
 

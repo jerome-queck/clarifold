@@ -124,7 +124,7 @@ describe("Source Layer selection", () => {
   it("activates a durable Anchor Marker from the keyboard", async () => {
     const user = userEvent.setup();
     const onActivateAnchor = vi.fn();
-    render(<SourceLayer
+    const { rerender } = render(<SourceLayer
       sourceId="source-1"
       content="Every compact subset is closed."
       anchors={[{
@@ -147,6 +147,23 @@ describe("Source Layer selection", () => {
     marker.focus();
     await user.keyboard("{Enter}");
     expect(onActivateAnchor).toHaveBeenCalledWith("anchor-1");
+
+    screen.getByRole("button", { name: "Draw diagram region" }).focus();
+    rerender(<SourceLayer
+      sourceId="source-1"
+      content="Every compact subset is closed."
+      anchors={[{
+        id: "anchor-1",
+        sourceId: "source-1",
+        selection: {
+          kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset", prefix: "Every ", suffix: " is closed."
+        }
+      }]}
+      focusAnchorId="anchor-1"
+      onChooseAction={() => undefined}
+      onActivateAnchor={onActivateAnchor}
+    />);
+    expect(marker).toBe(document.activeElement);
   });
 
   it("closes the Selection Palette with Escape and restores focus to the selected source control", async () => {

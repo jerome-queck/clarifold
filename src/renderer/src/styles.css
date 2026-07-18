@@ -257,11 +257,22 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .teaching-history ol { padding-left: 24px; }
 .teaching-history li + li { margin-top: 12px; }
 .teaching-history p { margin-bottom: 4px; color: #385950; }
+.context-used-receipt { margin-top: 14px; color: #385950; }
+.context-used-receipt summary { cursor: pointer; font-weight: 750; }
+.context-used-receipt li + li { margin-top: 5px; }
 .teaching-variant { padding: 18px; border: 1px solid #c9d8cd; border-radius: 12px; background: #f5f7f1; }
 .teaching-variant h3 { margin: 0; }
 .inspector-form textarea { width: 100%; min-height: 82px; padding: 10px; resize: vertical; border: 1px solid #c8d0c8; border-radius: 9px; color: #17332e; background: #fbfaf6; }
 .inspector-form input, .inspector-form textarea { margin-bottom: 10px; }
 .math-canvas > .model-access { margin-top: 4px; }
+.learning-artifact { margin: 6px 0 18px; padding: 24px; border: 2px solid #b8cfbd; border-radius: 16px; background: #f7fbf4; }
+.learning-artifact h2 { font-size: 25px; }
+.artifact-content { white-space: pre-wrap; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; }
+.artifact-evidence { display: grid; gap: 6px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid #d4dfd3; }
+.artifact-evidence div { display: grid; grid-template-columns: 140px 1fr; gap: 12px; }
+.artifact-evidence dt { font-weight: 750; }
+.artifact-evidence dd { margin: 0; }
+.record-link { color: #557069 !important; font-size: 12px; }
 .ask-bar { margin-top: 16px; padding: 24px; border: 1px solid #c9d8cd; border-radius: 16px; background: rgba(255,255,255,.62); }
 .ask-bar h2 { font-size: 25px; }
 .ask-bar label { margin-top: 18px; }

@@ -9,6 +9,7 @@ import {
   type ModelRuntimeEvent,
   type RuntimeAccessDecision,
   type RuntimeAccessRequest,
+  type TeachingRequest,
   type TeachingSourceContext,
   type SessionProposal
 } from "./model-runtime";
@@ -101,6 +102,16 @@ export interface TeachingCardState {
 export interface TeachingCardRevision extends TeachingCardState {
   id: string;
   instruction: string;
+  contextUsed: Array<{
+    sourceId: string;
+    sourceName: string;
+    location: string;
+  }>;
+  agentWorkLogReference: {
+    sessionId: string;
+    fromSequence: number;
+    toSequence: number;
+  } | null;
 }
 
 export interface TeachingVariant {
@@ -122,9 +133,33 @@ export interface AnchoredTeachingCard {
 export interface LearningArtifact {
   id: string;
   title: string;
-  content: string;
+  currentRevision: {
+    id: string;
+    content: string;
+    claimOrigin: "modelGenerated";
+    verificationLevel: "notIndependentlyChecked";
+    verificationCurrency: "current";
+  };
+  revisions: Array<{
+    id: string;
+    content: string;
+    claimOrigin: "modelGenerated";
+    verificationLevel: "notIndependentlyChecked";
+    verificationCurrency: "current" | "changedSinceCheck";
+  }>;
   sourceAnchorIds: string[];
   pinned: true;
+}
+
+interface ModelTeachingTarget {
+  start(sourceContext: TeachingSourceContext[], nextLogSequence: number): void;
+  isStreaming(): boolean;
+  append(delta: string): void;
+  complete(): void;
+  fail(error: unknown): void;
+  stop(): void;
+  markUnconfirmed(): void;
+  recordRuntimeSequence(sequence: number): void;
 }
 
 export interface SessionSearchResult {
@@ -407,6 +442,7 @@ export type LearnerAction =
   | { type: "reviseTeachingCard"; cardId: string; instruction: string }
   | { type: "restoreTeachingCardRevision"; cardId: string; revisionId: string }
   | { type: "createTeachingVariant"; cardId: string; name: string; instruction: string }
+  | { type: "retryAnchoredTeachingCard"; cardId: string; variantId?: string }
   | { type: "pinTeachingCardArtifact"; cardId: string }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
@@ -991,6 +1027,26 @@ export class LearningApplication {
         await this.beginAnchoredTeaching(session, anchor, variant.revision, card.currentRevision.content, variant.name);
         break;
       }
+      case "retryAnchoredTeachingCard": {
+        const session = this.requireActiveSession();
+        this.requireModelAccess();
+        if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model teaching to finish before retrying this Teaching Card.");
+        const card = requireAnchoredTeachingCard(session, action.cardId);
+        const anchor = requireSourceAnchor(session, card.sourceAnchorId);
+        const variant = action.variantId
+          ? card.variants.find((candidate) => candidate.id === action.variantId)
+          : null;
+        if (action.variantId && !variant) throw new Error("Choose a Teaching Variant in this Teaching Card.");
+        const revision = variant?.revision ?? card.currentRevision;
+        if (!revision.retryable) throw new Error("This anchored Teaching Card is not ready to retry.");
+        const previousContent = variant
+          ? card.currentRevision.content
+          : card.revisions.at(-1)?.content ?? null;
+        session.activeTeachingCardId = card.id;
+        session.activeSourceAnchorId = anchor.id;
+        await this.beginAnchoredTeaching(session, anchor, revision, previousContent, variant?.name ?? null);
+        break;
+      }
       case "pinTeachingCardArtifact": {
         const session = this.requireActiveSession();
         const card = requireAnchoredTeachingCard(session, action.cardId);
@@ -1004,7 +1060,14 @@ export class LearningApplication {
           const artifact: LearningArtifact = {
             id: crypto.randomUUID(),
             title: card.title,
-            content: card.currentRevision.content,
+            currentRevision: {
+              id: crypto.randomUUID(),
+              content: card.currentRevision.content,
+              claimOrigin: "modelGenerated",
+              verificationLevel: "notIndependentlyChecked",
+              verificationCurrency: "current"
+            },
+            revisions: [],
             sourceAnchorIds: [card.sourceAnchorId],
             pinned: true
           };
@@ -1481,7 +1544,6 @@ export class LearningApplication {
   ): Promise<void> {
     this.requireModelAccess();
     if (this.modelWorks.has(session.id)) throw new Error("Model teaching is already active for this Learning Session.");
-    const sourceContext = await this.buildTeachingSourceContext(session);
     if (submission) {
       if (session.currentTeachingInput.kind === "sessionIntake" && session.teachingCard.status !== "idle") {
         session.teachingCardHistory.push(structuredClone(session.teachingCard));
@@ -1493,64 +1555,29 @@ export class LearningApplication {
     } else {
       session.currentTeachingInput = { kind: "sessionIntake", text: mathematics };
     }
-    const controller = new AbortController();
-    session.proposal.status = "accepted";
-    replaceTeachingCard(session, { status: "streaming", content: "", error: null, retryable: false });
-    const runtime = this.modelRuntime!;
-    const promise = runtime.streamTeaching({
-      sessionId: session.id,
-      mathematics,
-      learningGoal: session.learningGoal,
-      scope: session.proposal.scope,
-      initialTeachingDirection: session.proposal.initialTeachingDirection,
-      accessScope: this.getSessionAccessScope(session.id),
-      sourceContext,
-      onAccessRequest: (request) => controller.signal.aborted
-        ? Promise.resolve({ status: "denied", policy: session.accessPolicy })
-        : this.handleRuntimeAccessRequest(session, request),
-      signal: controller.signal,
-      onDelta: (delta) => {
-        if (controller.signal.aborted || session.teachingCard.status !== "streaming") return;
-        session.teachingCard.content += delta;
-        this.emitState();
-        this.queuePersistence();
+    await this.runModelTeaching(session, mathematics, undefined, {
+      start: () => {
+        session.proposal.status = "accepted";
+        replaceTeachingCard(session, { status: "streaming", content: "", error: null, retryable: false });
       },
-      onRuntimeEvent: (event) => {
-        if (controller.signal.aborted) return;
-        const log = this.agentWorkLogs[session.id] ??= [];
-        log.push({ ...event, sequence: log.length + 1 });
-        this.queuePersistence();
-      }
-    }).then(() => {
-      if (controller.signal.aborted) return;
-      if (session.teachingCard.status === "streaming") {
+      isStreaming: () => session.teachingCard.status === "streaming",
+      append: (delta) => { session.teachingCard.content += delta; },
+      complete: () => {
         session.teachingCard.status = "completed";
         session.returnContext.nextAction = "Review the Teaching Card and continue from the point that needs work";
-      }
-    }).catch((error: unknown) => {
-      if (controller.signal.aborted) return;
-      const message = usefulRuntimeError(error);
-      replaceTeachingCard(session, {
+      },
+      fail: (error) => replaceTeachingCard(session, {
         ...session.teachingCard,
         status: "failed",
-        error: message,
+        error: usefulRuntimeError(error),
         retryable: true
-      });
-      this.recordModelAccessLoss(error);
-    }).finally(() => {
-      if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
-      this.queuePersistence();
-      this.emitState();
-    });
-    this.modelWorks.set(session.id, {
-      controller,
-      promise,
+      }),
       stop: () => replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content)),
       markUnconfirmed: () => {
         session.teachingCard.error = "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
       },
-      restart: () => this.beginTeaching(session, mathematics, submission)
-    });
+      recordRuntimeSequence: () => undefined
+    }, () => this.beginTeaching(session, mathematics, submission));
   }
 
   private async beginAnchoredTeaching(
@@ -1562,53 +1589,85 @@ export class LearningApplication {
   ): Promise<void> {
     this.requireModelAccess();
     if (this.modelWorks.has(session.id)) throw new Error("Model teaching is already active for this Learning Session.");
+    const focus: NonNullable<TeachingRequest["focus"]> = {
+      kind: "sourceAnchor",
+      sourceAnchorId: anchor.id,
+      sourceId: anchor.sourceId,
+      selection: anchor.selection,
+      instruction: revision.instruction,
+      previousContent,
+      variantName
+    };
+    await this.runModelTeaching(session, sourceAnchorMathematics(anchor), focus, {
+      start: (sourceContext, nextLogSequence) => {
+        revision.contextUsed = sourceContext.map((context) => ({
+          sourceId: context.sourceId,
+          sourceName: context.name,
+          location: context.sourceId === anchor.sourceId ? sourceAnchorLocation(anchor) : "Authorized session source"
+        }));
+        revision.agentWorkLogReference = {
+          sessionId: session.id,
+          fromSequence: nextLogSequence,
+          toSequence: nextLogSequence
+        };
+        Object.assign(revision, { status: "streaming", content: "", error: null, retryable: false });
+      },
+      isStreaming: () => revision.status === "streaming",
+      append: (delta) => { revision.content += delta; },
+      complete: () => { revision.status = "completed"; },
+      fail: (error) => Object.assign(revision, { status: "failed", error: usefulRuntimeError(error), retryable: true }),
+      stop: () => interruptTeachingCardRevision(revision),
+      markUnconfirmed: () => {
+        revision.error = "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
+      },
+      recordRuntimeSequence: (sequence) => {
+        if (revision.agentWorkLogReference) revision.agentWorkLogReference.toSequence = sequence;
+      }
+    }, () => this.beginAnchoredTeaching(session, anchor, revision, previousContent, variantName));
+  }
+
+  private async runModelTeaching(
+    session: LearningSession,
+    mathematics: string,
+    focus: TeachingRequest["focus"],
+    target: ModelTeachingTarget,
+    restart: () => Promise<void>
+  ): Promise<void> {
     const sourceContext = await this.buildTeachingSourceContext(session);
-    revision.status = "streaming";
-    revision.content = "";
-    revision.error = null;
-    revision.retryable = false;
+    const log = this.agentWorkLogs[session.id] ??= [];
+    target.start(sourceContext, log.length + 1);
     const controller = new AbortController();
     const runtime = this.modelRuntime!;
     const promise = runtime.streamTeaching({
       sessionId: session.id,
-      mathematics: sourceAnchorMathematics(anchor),
+      mathematics,
       learningGoal: session.learningGoal,
       scope: session.proposal.scope,
       initialTeachingDirection: session.proposal.initialTeachingDirection,
       accessScope: this.getSessionAccessScope(session.id),
       sourceContext,
-      focus: {
-        kind: "sourceAnchor",
-        sourceAnchorId: anchor.id,
-        sourceId: anchor.sourceId,
-        selection: anchor.selection,
-        instruction: revision.instruction,
-        previousContent,
-        variantName
-      },
+      ...(focus ? { focus } : {}),
       onAccessRequest: (request) => controller.signal.aborted
         ? Promise.resolve({ status: "denied", policy: session.accessPolicy })
         : this.handleRuntimeAccessRequest(session, request),
       signal: controller.signal,
       onDelta: (delta) => {
-        if (controller.signal.aborted || revision.status !== "streaming") return;
-        revision.content += delta;
+        if (controller.signal.aborted || !target.isStreaming()) return;
+        target.append(delta);
         this.emitState();
         this.queuePersistence();
       },
       onRuntimeEvent: (event) => {
         if (controller.signal.aborted) return;
-        const log = this.agentWorkLogs[session.id] ??= [];
         log.push({ ...event, sequence: log.length + 1 });
+        target.recordRuntimeSequence(log.length);
         this.queuePersistence();
       }
     }).then(() => {
-      if (!controller.signal.aborted && revision.status === "streaming") revision.status = "completed";
+      if (!controller.signal.aborted && target.isStreaming()) target.complete();
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
-      revision.status = "failed";
-      revision.error = usefulRuntimeError(error);
-      revision.retryable = true;
+      target.fail(error);
       this.recordModelAccessLoss(error);
     }).finally(() => {
       if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
@@ -1618,11 +1677,9 @@ export class LearningApplication {
     this.modelWorks.set(session.id, {
       controller,
       promise,
-      stop: () => interruptTeachingCardRevision(revision),
-      markUnconfirmed: () => {
-        revision.error = "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
-      },
-      restart: () => this.beginAnchoredTeaching(session, anchor, revision, previousContent, variantName)
+      stop: target.stop,
+      markUnconfirmed: target.markUnconfirmed,
+      restart
     });
   }
 
@@ -2124,7 +2181,9 @@ function teachingCardRevision(instruction: string): TeachingCardRevision {
     status: "idle",
     content: "",
     error: null,
-    retryable: false
+    retryable: false,
+    contextUsed: [],
+    agentWorkLogReference: null
   };
 }
 
@@ -2140,6 +2199,14 @@ function sourceAnchorMathematics(anchor: SourceAnchor): string {
     return `Selected diagram region at normalized bounds x=${x}, y=${y}, width=${width}, height=${height}.`;
   }
   return anchor.selection.exactText;
+}
+
+function sourceAnchorLocation(anchor: SourceAnchor): string {
+  if (anchor.selection.kind === "diagramRegion") {
+    const { x, y, width, height } = anchor.selection.bounds;
+    return `Diagram region at ${Math.round(x * 100)}% left, ${Math.round(y * 100)}% top, ${Math.round(width * 100)}% wide, ${Math.round(height * 100)}% high`;
+  }
+  return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} at characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`;
 }
 
 function requireAnchoredTeachingCard(session: LearningSession, cardId: string): AnchoredTeachingCard {
@@ -2454,7 +2521,9 @@ function migrateLearningArtifacts(value: unknown): LearningArtifact[] {
   if (!Array.isArray(value)) throw new Error("Stored Learning Artifacts are invalid.");
   return value.map((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.title !== "string"
-      || typeof candidate.content !== "string" || candidate.pinned !== true
+      || !validLearningArtifactRevision(candidate.currentRevision)
+      || !Array.isArray(candidate.revisions) || !candidate.revisions.every(validLearningArtifactRevision)
+      || candidate.pinned !== true
       || !Array.isArray(candidate.sourceAnchorIds)
       || !candidate.sourceAnchorIds.every((sourceAnchorId) => typeof sourceAnchorId === "string")) {
       throw new Error("Stored Learning Artifacts are invalid.");
@@ -2467,7 +2536,18 @@ function validTeachingCardRevision(value: unknown): value is TeachingCardRevisio
   return isRecord(value) && typeof value.id === "string" && typeof value.instruction === "string"
     && ["idle", "streaming", "completed", "stopped", "failed"].includes(String(value.status))
     && typeof value.content === "string" && (value.error === null || typeof value.error === "string")
-    && typeof value.retryable === "boolean";
+    && typeof value.retryable === "boolean" && Array.isArray(value.contextUsed)
+    && value.contextUsed.every((context) => isRecord(context) && typeof context.sourceId === "string"
+      && typeof context.sourceName === "string" && typeof context.location === "string")
+    && (value.agentWorkLogReference === null || (isRecord(value.agentWorkLogReference)
+      && typeof value.agentWorkLogReference.sessionId === "string"
+      && Number.isInteger(value.agentWorkLogReference.fromSequence) && Number.isInteger(value.agentWorkLogReference.toSequence)));
+}
+
+function validLearningArtifactRevision(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === "string" && typeof value.content === "string"
+    && value.claimOrigin === "modelGenerated" && value.verificationLevel === "notIndependentlyChecked"
+    && (value.verificationCurrency === "current" || value.verificationCurrency === "changedSinceCheck");
 }
 
 function validTeachingVariant(value: unknown): value is TeachingVariant {

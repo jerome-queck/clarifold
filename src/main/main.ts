@@ -86,6 +86,9 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "cardId" in action && typeof action.cardId === "string"
         && "name" in action && typeof action.name === "string"
         && "instruction" in action && typeof action.instruction === "string";
+    case "retryAnchoredTeachingCard":
+      return "cardId" in action && typeof action.cardId === "string"
+        && (!("variantId" in action) || action.variantId === undefined || typeof action.variantId === "string");
     case "pinTeachingCardArtifact":
       return "cardId" in action && typeof action.cardId === "string";
     case "loginWithApiKey":

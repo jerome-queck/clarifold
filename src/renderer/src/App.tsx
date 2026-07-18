@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   LearningApplicationState,
+  LearningArtifact,
   LearningSession,
   LearnerAction,
   LinkedSource,
@@ -760,10 +761,8 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
   const [goal, setGoal] = useState(session.learningGoal);
   const [target, setTarget] = useState(session.sessionTarget);
   const [direction, setDirection] = useState(session.proposal.initialTeachingDirection);
-  const [inspectorCardId, setInspectorCardId] = useState<string | null>(session.activeTeachingCardId);
-  useEffect(() => {
-    if (session.activeTeachingCardId) setInspectorCardId(session.activeTeachingCardId);
-  }, [session.activeTeachingCardId]);
+  const [inspectorCardId, setInspectorCardId] = useState<string | null>(null);
+  const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
   const inspectorCard = session.anchoredTeachingCards.find((card) => card.id === inspectorCardId) ?? null;
   const inspectorArtifact = inspectorCard?.artifactId
     ? session.learningArtifacts.find((artifact) => artifact.id === inspectorCard.artifactId) ?? null
@@ -828,10 +827,14 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
               <span className="saved">Saved locally</span>
             </div>
             <WorkbenchSourceLayer state={state} session={session} onState={onState}
+              focusAnchorId={focusAnchorId}
+              onTeachingCardCreated={setInspectorCardId}
               onActivateAnchor={(sourceAnchorId) => {
                 const card = session.anchoredTeachingCards.find((candidate) => candidate.sourceAnchorId === sourceAnchorId);
+                setFocusAnchorId(null);
                 setInspectorCardId(card?.id ?? null);
               }} />
+            {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} key={artifact.id} />)}
             <SessionAccessPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
@@ -841,7 +844,10 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
           {inspectorCard && <ContextualInspector
             card={inspectorCard}
             artifact={inspectorArtifact}
-            onClose={() => setInspectorCardId(null)}
+            onClose={() => {
+              setInspectorCardId(null);
+              setFocusAnchorId(inspectorCard.sourceAnchorId);
+            }}
             onRevise={async (instruction) => onState(await window.quickStudy.submit({
               type: "reviseTeachingCard", cardId: inspectorCard.id, instruction
             }))}
@@ -850,6 +856,9 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
             }))}
             onCreateVariant={async (name, instruction) => onState(await window.quickStudy.submit({
               type: "createTeachingVariant", cardId: inspectorCard.id, name, instruction
+            }))}
+            onRetry={async (variantId) => onState(await window.quickStudy.submit({
+              type: "retryAnchoredTeachingCard", cardId: inspectorCard.id, ...(variantId ? { variantId } : {})
             }))}
             onPin={async () => onState(await window.quickStudy.submit({
               type: "pinTeachingCardArtifact", cardId: inspectorCard.id
@@ -861,11 +870,13 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
   );
 }
 
-function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor }: {
+function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTeachingCardCreated, focusAnchorId }: {
   state: LearningApplicationState;
   session: LearningSession;
   onState: StateHandler;
   onActivateAnchor(sourceAnchorId: string): void;
+  onTeachingCardCreated(teachingCardId: string): void;
+  focusAnchorId: string | null;
 }) {
   const selectableSources = state.sources.filter((source) => source.workspaceId === session.workspaceId
     && (session.sourceIds.includes(source.id) || (source.kind === "linkedSource" && source.resourceType === "file")));
@@ -908,13 +919,19 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor }: {
           mediaType={mediaType}
           anchors={session.sourceAnchors.filter((anchor) => anchor.sourceId === source.id)}
           onActivateAnchor={onActivateAnchor}
+          focusAnchorId={focusAnchorId}
           onChooseAction={(selection, paletteAction) => {
             void window.quickStudy.submit({
               type: "createSourceAnchor",
               sourceId: source.id,
               selection,
               paletteAction
-            }).then(onState);
+            }).then((nextState) => {
+              onState(nextState);
+              if (paletteAction !== "explain") return;
+              const activeSession = nextState.sessions.find((candidate) => candidate.id === nextState.activeSessionId);
+              if (activeSession?.activeTeachingCardId) onTeachingCardCreated(activeSession.activeTeachingCardId);
+            });
           }}
         />
       ) : source?.kind === "linkedSource" && content === null ? (
@@ -924,6 +941,23 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor }: {
       )}
       {sourceError && <p className="failure-message" role="alert">{sourceError}</p>}
     </section>
+  );
+}
+
+function PinnedLearningArtifact({ artifact }: { artifact: LearningArtifact }) {
+  return (
+    <article className="learning-artifact" aria-label={`Pinned Learning Artifact ${artifact.title}`}>
+      <div className="card-heading">
+        <div><p className="eyebrow">Learning Artifact</p><h2>{artifact.title}</h2></div>
+        <span className="saved">Pinned on the main canvas</span>
+      </div>
+      <p className="artifact-content">{artifact.currentRevision.content}</p>
+      <dl className="artifact-evidence">
+        <div><dt>Claim Origin</dt><dd>Model-generated</dd></div>
+        <div><dt>Verification Level</dt><dd>Not independently checked</dd></div>
+        <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor</dd></div>
+      </dl>
+    </article>
   );
 }
 
@@ -1072,11 +1106,12 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
 }
 
 function SessionRecord({ session }: { session: LearningSession }) {
-  if (session.submittedPendingQuestions.length === 0 && session.teachingCardHistory.length === 0) return null;
+  if (session.submittedPendingQuestions.length === 0 && session.teachingCardHistory.length === 0
+    && session.anchoredTeachingCards.length === 0 && session.learningArtifacts.length === 0) return null;
   return (
     <section className="session-record" aria-labelledby="session-record-title">
       <p className="eyebrow">Session Record</p>
-      <h2 id="session-record-title">Submitted questions and earlier teaching</h2>
+      <h2 id="session-record-title">Retained learner-visible teaching work</h2>
       {session.teachingCardHistory.map((card, index) => (
         <article key={`teaching-${index}`}>
           <h3>Earlier Teaching Card</h3>
@@ -1091,6 +1126,28 @@ function SessionRecord({ session }: { session: LearningSession }) {
             <summary>Teaching Card · {teachingStatusLabel(submission.teachingCard.status)}</summary>
             <p>{submission.teachingCard.content || submission.teachingCard.error || "Teaching has not produced content."}</p>
           </details>
+        </article>
+      ))}
+      {session.anchoredTeachingCards.map((card) => (
+        <article key={card.id}>
+          <h3>Anchored Teaching Card · {card.title}</h3>
+          <p>{card.currentRevision.content || card.currentRevision.error || "Teaching has not produced content."}</p>
+          <p className="record-link">Linked Source Anchor: {card.sourceAnchorId}</p>
+          {card.currentRevision.agentWorkLogReference && <p className="record-link">
+            Agent Work Log evidence: events {card.currentRevision.agentWorkLogReference.fromSequence}–{card.currentRevision.agentWorkLogReference.toSequence}
+          </p>}
+          {(card.revisions.length > 0 || card.variants.length > 0) && <details>
+            <summary>{card.revisions.length} prior revisions · {card.variants.length} named variants</summary>
+            {card.revisions.map((revision, index) => <p key={revision.id}>Revision {index + 1}: {revision.content || revision.error}</p>)}
+            {card.variants.map((variant) => <p key={variant.id}>{variant.name}: {variant.revision.content || variant.revision.error}</p>)}
+          </details>}
+        </article>
+      ))}
+      {session.learningArtifacts.map((artifact) => (
+        <article key={artifact.id}>
+          <h3>Pinned Learning Artifact · {artifact.title}</h3>
+          <p>{artifact.currentRevision.content}</p>
+          <p className="record-link">Linked Source Anchors: {artifact.sourceAnchorIds.join(", ")}</p>
         </article>
       ))}
     </section>
