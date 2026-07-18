@@ -77,9 +77,18 @@ function registerLearningApplicationHandlers(): void {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     return learningApplication.getState();
   });
-  ipcMain.handle("learning:submit", (event, action: unknown) => {
+  ipcMain.handle("learning:submit", async (event, action: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (!isLearnerAction(action)) throw new Error("Invalid learner action.");
+    if (action.type === "refreshAuthentication" && !learningApplication.getState().runtimeAvailable) {
+      try {
+        const dataDirectory = process.env.QUICK_STUDY_DATA_DIR ?? app.getPath("userData");
+        modelRuntime = await CodexAppServerRuntime.launch(dataDirectory);
+        return learningApplication.restoreModelRuntime(modelRuntime);
+      } catch (error) {
+        return learningApplication.reportModelRuntimeFailure(error);
+      }
+    }
     return learningApplication.submit(action);
   });
   ipcMain.handle("learning:searchSessions", (event, query: unknown) => {

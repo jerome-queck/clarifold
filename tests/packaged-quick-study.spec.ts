@@ -118,13 +118,12 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByRole("button", { name: "Leave session" }).click();
     await quit();
     await writeFile(accessStatePath, JSON.stringify({
-      status: "unavailable",
-      message: "Network connection is unavailable."
+      status: "runtime"
     }), "utf8");
 
     page = await launch();
     await expect(page.getByRole("heading", { name: "Local Working Mode" })).toBeVisible();
-    await expect(page.getByRole("status")).toContainText("Network connection is unavailable.");
+    await expect(page.getByRole("status")).toContainText("Codex runtime became unavailable.");
     await page.getByLabel("Search Learning Sessions").fill("finite prefix");
     const searchResult = page.getByRole("button", {
       name: "Open search result Understand where convergence controls the tail"

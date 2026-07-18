@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LearningApplication } from "./learning-application";
-import type { ModelRuntime, SessionProposal, TeachingRequest } from "./model-runtime";
+import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type SessionProposal, type TeachingRequest } from "./model-runtime";
 
 describe("Learning Application", () => {
   const dataDirectories: string[] = [];
@@ -208,7 +208,7 @@ describe("Learning Application", () => {
     const { application } = await launchWithRuntime(runtime);
     await application.submit({ type: "submitSessionIntake", mathematics: "Derive the quotient rule." });
 
-    runtime.failTeaching(new Error("Codex authentication expired. Sign in and retry."));
+    runtime.failTeaching(new ModelAccessError("authentication", "Codex authentication expired. Sign in and retry."));
     await application.waitForModelWork();
     expect(application.getState().sessions[0].teachingCard).toMatchObject({
       status: "failed",
@@ -241,7 +241,7 @@ describe("Learning Application", () => {
     const { application } = await launchWithRuntime(runtime);
     await application.submit({ type: "submitSessionIntake", mathematics: "Explain this claim." });
 
-    runtime.failTeaching(new Error("Codex runtime became unavailable. Restart Codex and retry."));
+    runtime.failTeaching(new ModelAccessError("runtime", "Codex runtime became unavailable. Restart Codex and retry."));
     await application.waitForModelWork();
 
     expect(application.getState()).toMatchObject({
@@ -372,7 +372,7 @@ describe("Learning Application", () => {
       requiresConfirmation: false,
       confirmationReason: null
     });
-    runtime.proposalError = new Error(message);
+    runtime.proposalError = new ModelAccessError(cause as ModelAccessCause, message);
     const { application } = await launchWithRuntime(runtime);
 
     const state = await application.submit({
@@ -392,7 +392,7 @@ describe("Learning Application", () => {
       requiresConfirmation: false,
       confirmationReason: null
     }, true);
-    runtime.authenticationError = new Error("Network connection is unavailable.");
+    runtime.authenticationError = new ModelAccessError("network", "Network connection is unavailable.");
     const { application } = await launchWithRuntime(runtime);
 
     let state = await application.submit({
@@ -458,6 +458,57 @@ describe("Learning Application", () => {
     state = await reloaded.submit({ type: "resumeSession", sessionId });
 
     expect(state.sessions[0].pendingQuestion).toMatchObject({ text: "Where is finiteness used?" });
+  });
+
+  it("restores a replaced Codex Runtime without submitting a Pending Question", async () => {
+    const { application } = await launch();
+    let state = await application.submit({ type: "startQuickStudy", mathematics: "Explain compactness." });
+    await application.submit({ type: "savePendingQuestion", text: "Where is finiteness used?" });
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Unused",
+      scope: "Unused",
+      initialTeachingDirection: "Unused",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+
+    state = await application.restoreModelRuntime(runtime);
+
+    expect(state).toMatchObject({ runtimeAvailable: true, modelAccess: { status: "available" } });
+    expect(state.sessions[0].pendingQuestion).toMatchObject({ text: "Where is finiteness used?" });
+    expect(runtime.teachingRequests).toHaveLength(0);
+  });
+
+  it("retains questions and earlier Teaching Cards while allowing only one active turn", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Use an open cover",
+      initialTeachingDirection: "Start with the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Explain compactness." });
+
+    await expect(application.submit({ type: "submitQuestion", text: "Why finite?" }))
+      .rejects.toThrow("already active");
+    runtime.emitTeaching("First explanation");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    let state = await application.submit({ type: "submitQuestion", text: "Why finite?" });
+    expect(state.sessions[0].questionCards).toEqual([
+      expect.objectContaining({ text: "Why finite?" })
+    ]);
+    expect(state.sessions[0].teachingCardHistory).toEqual([
+      expect.objectContaining({ status: "completed", content: "First explanation" })
+    ]);
+    runtime.failTeaching(new ModelAccessError("network", "Network connection is unavailable."));
+    await application.waitForModelWork();
+
+    state = application.getState();
+    expect(state.sessions[0].questionCards[0].text).toBe("Why finite?");
+    expect(state.sessions[0].teachingCard).toMatchObject({ status: "failed" });
   });
 
   it("tracks every teaching job and persists stopped retryable cards across shutdown and relaunch", async () => {

@@ -33,6 +33,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       break;
     case "account/read":
+      if (accessState().status === "runtime") {
+        process.exit(1);
+      }
       if (accessState().status === "unavailable") {
         send({ id: message.id, error: { code: -32000, message: accessState().message } });
         break;

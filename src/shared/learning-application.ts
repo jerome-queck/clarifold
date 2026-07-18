@@ -1,9 +1,15 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { AuthenticationState, ModelRuntime, ModelRuntimeEvent, SessionProposal } from "./model-runtime";
+import {
+  ModelAccessError,
+  type AuthenticationState,
+  type ModelAccessCause,
+  type ModelRuntime,
+  type ModelRuntimeEvent,
+  type SessionProposal
+} from "./model-runtime";
 
 export type SessionStatus = "active" | "paused";
-export type ModelAccessCause = "network" | "authentication" | "subscriptionCapacity" | "quota" | "runtime";
 
 export type ModelAccessState =
   | { status: "available" }
@@ -12,6 +18,18 @@ export type ModelAccessState =
 export interface PendingQuestion {
   id: string;
   text: string;
+}
+
+export interface QuestionCard {
+  id: string;
+  text: string;
+}
+
+export interface TeachingCardState {
+  status: "idle" | "streaming" | "completed" | "stopped" | "failed";
+  content: string;
+  error: string | null;
+  retryable: boolean;
 }
 
 export interface SessionSearchResult {
@@ -78,12 +96,9 @@ export interface LearningSession {
     status: "accepted" | "awaitingConfirmation";
     confirmationReason: string | null;
   };
-  teachingCard: {
-    status: "idle" | "streaming" | "completed" | "stopped" | "failed";
-    content: string;
-    error: string | null;
-    retryable: boolean;
-  };
+  teachingCard: TeachingCardState;
+  teachingCardHistory: TeachingCardState[];
+  questionCards: QuestionCard[];
   pendingQuestion: PendingQuestion | null;
   accessPolicy: "focused";
 }
@@ -154,7 +169,7 @@ export type LearnerAction =
 export class LearningApplication {
   private state: LearningApplicationState = initialState();
   private readonly statePath: string;
-  private readonly modelRuntime: ModelRuntime | null;
+  private modelRuntime: ModelRuntime | null;
   private persistence = Promise.resolve();
   private readonly modelWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
@@ -191,7 +206,7 @@ export class LearningApplication {
         application.updateAuthentication(await modelRuntime.getAuthentication());
       } catch (error) {
         application.state.authentication = failedAuthentication(null, error);
-        application.state.modelAccess = unavailableModelAccess(error);
+        application.applyModelAccessFailure(error);
       }
     } else {
       application.state.runtimeAvailable = false;
@@ -230,6 +245,29 @@ export class LearningApplication {
         missionName: mission.name
       }];
     });
+  }
+
+  async restoreModelRuntime(modelRuntime: ModelRuntime): Promise<LearningApplicationState> {
+    if (this.modelRuntime && this.modelRuntime !== modelRuntime) {
+      await this.modelRuntime.shutdown().catch(() => undefined);
+    }
+    this.modelRuntime = modelRuntime;
+    this.state.runtimeAvailable = true;
+    try {
+      this.updateAuthentication(await modelRuntime.getAuthentication());
+    } catch (error) {
+      this.state.authentication = failedAuthentication(null, error);
+      this.applyModelAccessFailure(error);
+    }
+    return this.publishAndPersist();
+  }
+
+  async reportModelRuntimeFailure(error: unknown): Promise<LearningApplicationState> {
+    this.state.runtimeAvailable = false;
+    this.state.modelAccess = unavailableModelAccess(
+      error instanceof ModelAccessError ? error : new ModelAccessError("runtime", usefulRuntimeError(error))
+    );
+    return this.publishAndPersist();
   }
 
   async waitForModelWork(): Promise<void> {
@@ -326,6 +364,8 @@ export class LearningApplication {
           },
           proposal: defaultAcceptedProposal(),
           teachingCard: emptyTeachingCard(),
+          teachingCardHistory: [],
+          questionCards: [],
           pendingQuestion: null,
           accessPolicy: "focused"
         };
@@ -360,7 +400,7 @@ export class LearningApplication {
             sequence: pendingLog.length + 1
           });
           this.state.intakeError = message;
-          this.recordModelAccessLoss(message);
+          this.recordModelAccessLoss(error);
           break;
         }
         this.pauseActiveSession();
@@ -384,6 +424,8 @@ export class LearningApplication {
             confirmationReason: proposal.confirmationReason
           },
           teachingCard: emptyTeachingCard(),
+          teachingCardHistory: [],
+          questionCards: [],
           pendingQuestion: null,
           accessPolicy: "focused"
         };
@@ -458,7 +500,7 @@ export class LearningApplication {
           this.updateAuthentication(await this.modelRuntime.getAuthentication());
         } catch (error) {
           this.state.authentication = failedAuthentication("apiKey", error);
-          this.state.modelAccess = unavailableModelAccess(error);
+          this.applyModelAccessFailure(error);
         }
         break;
       }
@@ -468,7 +510,7 @@ export class LearningApplication {
           this.updateAuthentication(await this.modelRuntime.getAuthentication());
         } catch (error) {
           this.state.authentication = failedAuthentication(null, error);
-          this.state.modelAccess = unavailableModelAccess(error);
+          this.applyModelAccessFailure(error);
         }
         break;
       }
@@ -500,15 +542,16 @@ export class LearningApplication {
         this.requireModelAccess();
         const session = this.requireActiveSession();
         if (!session.pendingQuestion) throw new Error("There is no Pending Question to submit.");
-        const question = session.pendingQuestion.text;
-        this.beginTeaching(session, question);
+        const question = { ...session.pendingQuestion };
+        this.beginTeaching(session, question.text, question);
         session.pendingQuestion = null;
         break;
       }
       case "submitQuestion": {
         this.requireModelAccess();
         const session = this.requireActiveSession();
-        this.beginTeaching(session, requiredText(action.text, "Ask Bar question"));
+        const text = requiredText(action.text, "Ask Bar question");
+        this.beginTeaching(session, text, { id: crypto.randomUUID(), text });
         break;
       }
       case "resumeSession": {
@@ -573,8 +616,19 @@ export class LearningApplication {
     await rename(temporaryPath, this.statePath);
   }
 
-  private beginTeaching(session: LearningSession, mathematics = session.mathematics): void {
+  private beginTeaching(
+    session: LearningSession,
+    mathematics = session.mathematics,
+    questionCard: QuestionCard | null = null
+  ): void {
     this.requireModelAccess();
+    if (this.modelWorks.has(session.id)) throw new Error("Model teaching is already active for this Learning Session.");
+    if (questionCard) {
+      if (session.teachingCard.status !== "idle") {
+        session.teachingCardHistory.push(structuredClone(session.teachingCard));
+      }
+      session.questionCards.push(questionCard);
+    }
     const controller = new AbortController();
     session.proposal.status = "accepted";
     session.teachingCard = { status: "streaming", content: "", error: null, retryable: false };
@@ -611,7 +665,7 @@ export class LearningApplication {
         error: message,
         retryable: true
       };
-      this.recordModelAccessLoss(message);
+      this.recordModelAccessLoss(error);
     }).finally(() => {
       if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
       this.queuePersistence();
@@ -627,6 +681,7 @@ export class LearningApplication {
     work.controller.abort();
     try {
       await this.modelRuntime.cancelTeaching(session.id);
+      if (this.modelWorks.get(session.id) === work) this.modelWorks.delete(session.id);
       return true;
     } catch {
       session.teachingCard.error = "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
@@ -654,9 +709,13 @@ export class LearningApplication {
     return changed;
   }
 
-  private recordModelAccessLoss(message: string): void {
-    const modelAccess = classifyUnavailableModelAccess(message);
-    if (!modelAccess) return;
+  private recordModelAccessLoss(error: unknown): void {
+    if (!(error instanceof ModelAccessError)) return;
+    const modelAccess: Extract<ModelAccessState, { status: "unavailable" }> = {
+      status: "unavailable",
+      cause: error.cause,
+      message: error.message
+    };
     this.state.modelAccess = modelAccess;
     if (modelAccess.cause === "runtime") this.state.runtimeAvailable = false;
     if (modelAccess.cause === "authentication" || modelAccess.cause === "runtime") {
@@ -665,9 +724,15 @@ export class LearningApplication {
         method: this.state.authentication.method,
         accountLabel: null,
         loginUrl: null,
-        error: message
+        error: error.message
       };
     }
+  }
+
+  private applyModelAccessFailure(error: unknown): void {
+    const modelAccess = unavailableModelAccess(error);
+    this.state.modelAccess = modelAccess;
+    if (modelAccess.cause === "runtime") this.state.runtimeAvailable = false;
   }
 
   private updateAuthentication(authentication: AuthenticationState): void {
@@ -692,6 +757,14 @@ export class LearningApplication {
   private queuePersistence(): void {
     const state = this.getState();
     this.persistence = this.persistence.catch(() => undefined).then(() => this.persist(state));
+  }
+
+  private async publishAndPersist(): Promise<LearningApplicationState> {
+    const state = this.getState();
+    this.emitState(state);
+    this.persistence = this.persistence.catch(() => undefined).then(() => this.persist(state));
+    await this.persistence;
+    return state;
   }
 
   private requireActiveSession(): LearningSession {
@@ -789,6 +862,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       ...session,
       proposal: session.proposal ?? defaultAcceptedProposal(),
       teachingCard: session.teachingCard ?? emptyTeachingCard(),
+      teachingCardHistory: session.teachingCardHistory ?? [],
+      questionCards: session.questionCards ?? [],
       pendingQuestion: session.pendingQuestion ?? null,
       accessPolicy: session.accessPolicy ?? "focused"
     }));
@@ -807,6 +882,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       activityOrder: 1,
       proposal: defaultAcceptedProposal(),
       teachingCard: emptyTeachingCard(),
+      teachingCardHistory: [],
+      questionCards: [],
       pendingQuestion: null,
       accessPolicy: "focused"
     };
@@ -896,19 +973,11 @@ function initialState(): LearningApplicationState {
 
 function unavailableModelAccess(error: unknown): Extract<ModelAccessState, { status: "unavailable" }> {
   const message = usefulRuntimeError(error);
-  return classifyUnavailableModelAccess(message) ?? { status: "unavailable", cause: "runtime", message };
-}
-
-function classifyUnavailableModelAccess(
-  message: string
-): Extract<ModelAccessState, { status: "unavailable" }> | null {
-  let cause: ModelAccessCause | null = null;
-  if (/network|offline|connection/i.test(message)) cause = "network";
-  else if (/subscription.*capacity|capacity.*subscription/i.test(message)) cause = "subscriptionCapacity";
-  else if (/quota|usage limit|api usage/i.test(message)) cause = "quota";
-  else if (/authentication|sign in|credential|signed out/i.test(message)) cause = "authentication";
-  else if (/runtime|app-server|codex (?:stopped|unavailable)/i.test(message)) cause = "runtime";
-  return cause ? { status: "unavailable", cause, message } : null;
+  return {
+    status: "unavailable",
+    cause: error instanceof ModelAccessError ? error.cause : "runtime",
+    message
+  };
 }
 
 function authenticationMessage(authentication: Exclude<AuthenticationState, { status: "signedIn" }>): string {
