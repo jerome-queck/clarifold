@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import type {
   SourceAnchor,
   SourceAnchorPaletteAction,
-  SourceAnchorSelection
+  SourceAnchorSelection,
+  NormalizedSourceRegionBounds
 } from "../../shared/learning-application";
 
 const SOURCE_CONTEXT_CHARACTERS = 32;
@@ -10,7 +11,7 @@ const SOURCE_CONTEXT_CHARACTERS = 32;
 interface SourceLayerProps {
   sourceId: string;
   content: string;
-  mediaType?: "text/plain" | "image/png" | "image/jpeg" | "application/pdf";
+  mediaType?: "text/plain" | "image/png" | "image/jpeg";
   anchors: SourceAnchor[];
   onChooseAction(selection: SourceAnchorSelection, action: SourceAnchorPaletteAction): void;
 }
@@ -32,13 +33,20 @@ interface TextSegment {
 
 type SourceSegment = EquationSegment | TextSegment;
 
+interface PercentSourceRegionBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, onChooseAction }: SourceLayerProps) {
   const sourceRef = useRef<HTMLElement>(null);
   const originRef = useRef<HTMLElement | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const [selection, setSelection] = useState<SourceAnchorSelection | null>(null);
   const [drawingRegion, setDrawingRegion] = useState(false);
-  const [keyboardRegion, setKeyboardRegion] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [keyboardRegion, setKeyboardRegion] = useState<PercentSourceRegionBounds | null>(null);
   const segments = useMemo(() => mediaType === "text/plain" ? sourceSegments(content) : [], [content, mediaType]);
 
   const openPalette = (nextSelection: SourceAnchorSelection, origin: HTMLElement) => {
@@ -69,7 +77,7 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
       ? textLocation(content, location.startOffset, location.endOffset, "equation", equation.equationIndex)
       : textLocation(content, location.startOffset, location.endOffset, "text"), source);
   };
-  const diagramSelection = (bounds: Extract<SourceAnchorSelection, { kind: "diagramRegion" }>["bounds"], origin: HTMLElement) => {
+  const diagramSelection = (bounds: NormalizedSourceRegionBounds, origin: HTMLElement) => {
     setDrawingRegion(false);
     openPalette({ kind: "diagramRegion", bounds }, origin);
   };
@@ -162,9 +170,7 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
             aria-label={`Select equation ${segment.equationIndex + 1}: ${segment.text}`}
             onClick={(event) => selectEquation(segment, event.currentTarget)}
           >{segment.text}</button>
-        )) : mediaType === "application/pdf" ? (
-          <object className="source-layer-pdf" data={content} type="application/pdf" aria-label="Linked PDF Source Layer" />
-        ) : <img className="source-layer-image" src={content} alt="Linked Source diagram" />}
+        )) : <img className="source-layer-image" src={content} alt="Linked Source diagram" />}
         {anchors.flatMap((anchor) => anchor.selection.kind === "diagramRegion" ? [(
           <span
             className="diagram-anchor-marker"
@@ -300,10 +306,10 @@ function clampRatio(value: number): number {
 }
 
 function updateKeyboardRegion(
-  region: { x: number; y: number; width: number; height: number },
+  region: PercentSourceRegionBounds,
   coordinate: "x" | "y" | "width" | "height",
   value: number
-): { x: number; y: number; width: number; height: number } {
+): PercentSourceRegionBounds {
   const minimum = coordinate === "width" || coordinate === "height" ? 1 : 0;
   const maximum = coordinate === "x" || coordinate === "y"
     ? 99

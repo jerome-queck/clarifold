@@ -711,8 +711,7 @@ function WorkbenchSourceLayer({ state, session, onState }: {
   };
   const content = source?.kind === "managedAsset" ? source.content : linkedView?.sourceId === source?.id ? linkedView.content : null;
   const mediaType = source?.kind === "managedAsset" ? source.mediaType : linkedView?.sourceId === source?.id ? linkedView.mediaType : null;
-  const selectableMedia = mediaType === "text/plain" || mediaType === "image/png" || mediaType === "image/jpeg"
-    || mediaType === "application/pdf";
+  const selectableMedia = mediaType === "text/plain" || mediaType === "image/png" || mediaType === "image/jpeg";
 
   return (
     <section className="workbench-source" aria-labelledby="workbench-source-title">

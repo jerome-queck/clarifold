@@ -54,6 +54,13 @@ export interface SourceTextLocation {
   suffix: string;
 }
 
+export interface NormalizedSourceRegionBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export type SourceAnchorSelection =
   | ({ kind: "text" } & SourceTextLocation)
   | ({
@@ -62,7 +69,7 @@ export type SourceAnchorSelection =
     } & SourceTextLocation)
   | {
       kind: "diagramRegion";
-      bounds: { x: number; y: number; width: number; height: number };
+      bounds: NormalizedSourceRegionBounds;
     };
 
 export interface SourceAnchor {
