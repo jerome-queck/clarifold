@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import {
   ModelAccessError,
   type AuthenticationState,
@@ -72,9 +72,7 @@ export interface SourceFingerprint {
   modifiedAtMs: number;
 }
 
-export type LocalSourceAccessGrant =
-  | { kind: "securityScopedBookmark"; bookmarkData: string }
-  | { kind: "directPath" };
+export type LocalSourceAccessGrant = { kind: "securityScopedBookmark"; bookmarkData: string } | null;
 
 export interface SelectedLocalSource {
   name: string;
@@ -95,6 +93,8 @@ export interface LinkedSource {
     lastKnownPath: string;
     accessGrant: LocalSourceAccessGrant;
     fingerprint: SourceFingerprint;
+    observedFingerprint: SourceFingerprint | null;
+    revisionStatus: "current" | "changed";
     accessStatus: "available" | "unavailable";
     error: string | null;
   };
@@ -115,6 +115,7 @@ export interface AvailableLinkedSourceView {
   sourceId: string;
   resourceType: "file" | "folder";
   content: string;
+  mediaType: "text/plain" | "application/pdf" | "image/png" | "image/jpeg" | "inode/directory" | "application/octet-stream";
   fingerprint: SourceFingerprint;
 }
 
@@ -123,7 +124,7 @@ export interface LocalSourceAccess {
 }
 
 export type LinkedSourceView =
-  | ({ status: "available" } & AvailableLinkedSourceView)
+  | ({ status: "available"; revisionChanged: boolean } & AvailableLinkedSourceView)
   | { status: "unavailable"; sourceId: string; error: string };
 
 export interface StudyMission {
@@ -345,7 +346,7 @@ export class LearningApplication {
     workspaceId: string,
     selection: SelectedLocalSource
   ): Promise<LearningApplicationState> {
-    const workspace = this.requireNamedWorkspace(workspaceId);
+    const workspace = this.requireWorkspace(workspaceId);
     if (selection.resourceType !== "folder") throw new Error("Choose a folder for the Primary Folder.");
     if (workspace.context.primaryFolderSourceId) throw new Error("This Study Workspace already has a Primary Folder.");
     const source = linkedSource(workspaceId, "primaryFolder", selection);
@@ -361,6 +362,10 @@ export class LearningApplication {
   ): Promise<LearningApplicationState> {
     const workspace = this.requireWorkspace(workspaceId);
     if (selection.resourceType !== "file") throw new Error("Choose a file for an External Attachment.");
+    const primaryFolder = this.primaryFolderFor(workspace);
+    if (primaryFolder && pathIsInside(selection.lastKnownPath, primaryFolder.link.lastKnownPath)) {
+      throw new Error("This file is already covered by the Primary Folder.");
+    }
     const source = linkedSource(workspaceId, "externalAttachment", selection);
     this.state.sources.push(source);
     workspace.context.sourceIds.push(source.id);
@@ -375,11 +380,13 @@ export class LearningApplication {
     if (!this.sourceAccess) throw new Error("Local source access is unavailable.");
     try {
       const view = await this.sourceAccess.read(source);
+      const revisionChanged = !sameFingerprint(source.link.fingerprint, view.fingerprint);
       source.link.accessStatus = "available";
       source.link.error = null;
-      source.link.fingerprint = view.fingerprint;
+      source.link.observedFingerprint = revisionChanged ? view.fingerprint : null;
+      source.link.revisionStatus = revisionChanged ? "changed" : "current";
       await this.publishAndPersist();
-      return { status: "available", ...view };
+      return { status: "available", revisionChanged, ...view };
     } catch (error) {
       const message = usefulSourceError(error);
       source.link.accessStatus = "unavailable";
@@ -405,6 +412,8 @@ export class LearningApplication {
       lastKnownPath: selection.lastKnownPath,
       accessGrant: selection.accessGrant,
       fingerprint: selection.fingerprint,
+      observedFingerprint: null,
+      revisionStatus: "current",
       accessStatus: "available",
       error: null
     };
@@ -952,6 +961,12 @@ export class LearningApplication {
     return workspace;
   }
 
+  private primaryFolderFor(workspace: StudyWorkspace): LinkedSource | null {
+    if (!workspace.context.primaryFolderSourceId) return null;
+    const source = this.state.sources.find((candidate) => candidate.id === workspace.context.primaryFolderSourceId);
+    return source?.kind === "linkedSource" && source.role === "primaryFolder" ? source : null;
+  }
+
   private createManagedTextAsset(workspaceId: string, content: string): ManagedAsset {
     const workspace = this.requireWorkspace(workspaceId);
     const asset: ManagedAsset = {
@@ -1023,6 +1038,15 @@ function usefulSourceError(error: unknown): string {
     : "The source is missing or access is no longer available.";
 }
 
+function sameFingerprint(left: SourceFingerprint, right: SourceFingerprint): boolean {
+  return left.size === right.size && left.modifiedAtMs === right.modifiedAtMs;
+}
+
+function pathIsInside(path: string, folderPath: string): boolean {
+  const relation = relative(folderPath, path);
+  return relation !== "" && !relation.startsWith("..") && !isAbsolute(relation);
+}
+
 function mostRecentSessionId(sessions: LearningSession[]): string | null {
   return sessions.reduce<LearningSession | null>(
     (latest, session) => (!latest || session.activityOrder > latest.activityOrder ? session : latest),
@@ -1042,7 +1066,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
         primaryFolderSourceId: workspace.context?.primaryFolderSourceId ?? null
       }
     }));
-    current.sources ??= [];
+    current.sources = migrateWorkspaceSources(current.sources);
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -1150,10 +1174,57 @@ function linkedSource(
       lastKnownPath: selection.lastKnownPath,
       accessGrant: selection.accessGrant,
       fingerprint: selection.fingerprint,
+      observedFingerprint: null,
+      revisionStatus: "current",
       accessStatus: "available",
       error: null
     }
   };
+}
+
+function migrateWorkspaceSources(value: unknown): WorkspaceSource[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored sources are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.workspaceId !== "string"
+      || typeof candidate.name !== "string" || !candidate.name.trim()) {
+      throw new Error("Stored source is invalid.");
+    }
+    if (candidate.kind === "managedAsset") {
+      if (candidate.mediaType !== "text/plain" || typeof candidate.content !== "string") {
+        throw new Error("Stored Managed Asset is invalid.");
+      }
+      return candidate as unknown as ManagedAsset;
+    }
+    if (candidate.kind !== "linkedSource" || !["primaryFolder", "externalAttachment"].includes(String(candidate.role))
+      || !["file", "folder"].includes(String(candidate.resourceType)) || !isRecord(candidate.link)
+      || typeof candidate.link.lastKnownPath !== "string" || !isAbsolute(candidate.link.lastKnownPath)
+      || !validAccessGrant(candidate.link.accessGrant) || !validFingerprint(candidate.link.fingerprint)
+      || !["available", "unavailable"].includes(String(candidate.link.accessStatus))
+      || !(candidate.link.error === null || typeof candidate.link.error === "string")) {
+      throw new Error("Stored Linked Source is invalid.");
+    }
+    const source = candidate as unknown as LinkedSource;
+    source.link.observedFingerprint = validFingerprint(candidate.link.observedFingerprint)
+      ? candidate.link.observedFingerprint as unknown as SourceFingerprint
+      : null;
+    source.link.revisionStatus = candidate.link.revisionStatus === "changed" ? "changed" : "current";
+    return source;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validAccessGrant(value: unknown): value is LocalSourceAccessGrant {
+  return value === null || (isRecord(value) && value.kind === "securityScopedBookmark"
+    && typeof value.bookmarkData === "string" && Boolean(value.bookmarkData));
+}
+
+function validFingerprint(value: unknown): value is SourceFingerprint {
+  return isRecord(value) && typeof value.size === "number" && Number.isFinite(value.size) && value.size >= 0
+    && typeof value.modifiedAtMs === "number" && Number.isFinite(value.modifiedAtMs) && value.modifiedAtMs >= 0;
 }
 
 function initialState(): LearningApplicationState {

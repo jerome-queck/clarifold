@@ -92,7 +92,7 @@ describe("Learning Application", () => {
       name: "lecture-3.pdf",
       resourceType: "file",
       lastKnownPath: "/Users/learner/Downloads/lecture-3.pdf",
-      accessGrant: { kind: "directPath" },
+      accessGrant: null,
       fingerprint: { size: 4_096, modifiedAtMs: 1_726_000_100_000 }
     });
     expect(withAttachment.sources).toContainEqual(expect.objectContaining({
@@ -118,6 +118,26 @@ describe("Learning Application", () => {
     expect(started.workspaces[0].context.sourceIds).toContain(managedAsset?.id);
   });
 
+  it("allows Quick Study to own one Primary Folder and rejects attachments selected inside it", async () => {
+    const { application } = await launch();
+    const linked = await application.linkPrimaryFolder("quick-study-workspace", {
+      name: "quick-notes",
+      resourceType: "folder",
+      lastKnownPath: "/Users/learner/quick-notes",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "folder-bookmark" },
+      fingerprint: { size: 64, modifiedAtMs: 1234 }
+    });
+    expect(linked.workspaces[0].context.primaryFolderSourceId).not.toBeNull();
+
+    await expect(application.linkExternalAttachment("quick-study-workspace", {
+      name: "inside.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/quick-notes/inside.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "file-bookmark" },
+      fingerprint: { size: 12, modifiedAtMs: 1235 }
+    })).rejects.toThrow("already covered by the Primary Folder");
+  });
+
   it("reopens a Linked Source read-only and preserves its association when access fails", async () => {
     const sourceAccess = new DeterministicSourceAccess();
     const { application } = await launchWithSourceAccess(sourceAccess);
@@ -139,6 +159,17 @@ describe("Learning Application", () => {
       content: "Every open cover has a finite subcover."
     });
     expect(sourceAccess.openedSourceIds).toEqual([source.id]);
+
+    sourceAccess.fingerprint = { size: 65, modifiedAtMs: 4321 };
+    const changed = await application.openLinkedSource(source.id);
+    expect(changed).toMatchObject({ status: "available", revisionChanged: true });
+    expect(application.getState().sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      link: {
+        fingerprint: { size: 64, modifiedAtMs: 1234 },
+        observedFingerprint: { size: 65, modifiedAtMs: 4321 },
+        revisionStatus: "changed"
+      }
+    });
 
     sourceAccess.error = new Error("The source is missing or access is no longer available.");
     const unavailable = await application.openLinkedSource(source.id);
@@ -887,6 +918,24 @@ describe("Learning Application", () => {
     });
   });
 
+  it("rejects an invalid persisted source before its path can reach local source access", async () => {
+    const { application, dataDirectory } = await launch();
+    const created = await application.submit({ type: "createWorkspace", name: "Analysis" });
+    await application.linkExternalAttachment(created.navigation.workspaceId, {
+      name: "notes.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/notes.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
+      fingerprint: { size: 12, modifiedAtMs: 1234 }
+    });
+    const statePath = join(dataDirectory, "learning-application.json");
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    persisted.sources[0].link.lastKnownPath = "../../etc/passwd";
+    await writeFile(statePath, JSON.stringify(persisted), "utf8");
+
+    await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow("Stored Linked Source is invalid");
+  });
+
   it("pauses an active Learning Session when hierarchy navigation returns to the dashboard", async () => {
     const { application } = await launch();
     const started = await application.submit({ type: "startQuickStudy", mathematics: "Find the derivative of sine." });
@@ -909,6 +958,7 @@ describe("Learning Application", () => {
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
   error: Error | null = null;
+  fingerprint = { size: 64, modifiedAtMs: 1234 };
 
   async read(source: LinkedSource) {
     this.openedSourceIds.push(source.id);
@@ -917,7 +967,8 @@ class DeterministicSourceAccess implements LocalSourceAccess {
       sourceId: source.id,
       resourceType: source.resourceType,
       content: "Every open cover has a finite subcover.",
-      fingerprint: source.link.fingerprint
+      fingerprint: this.fingerprint,
+      mediaType: "text/plain" as const
     };
   }
 }

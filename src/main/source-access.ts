@@ -1,5 +1,13 @@
-import { basename } from "node:path";
-import type { LinkedSource, SelectedLocalSource, SourceFingerprint } from "../shared/learning-application";
+import { basename, extname } from "node:path";
+import type {
+  AvailableLinkedSourceView,
+  LinkedSource,
+  LocalSourceAccess,
+  SelectedLocalSource,
+  SourceFingerprint
+} from "../shared/learning-application";
+
+const MAX_SOURCE_VIEW_BYTES = 25 * 1024 * 1024;
 
 interface FileStat {
   size: number;
@@ -16,19 +24,12 @@ interface SourceAccessDependencies {
     buttonLabel: string;
   }): Promise<{ canceled: boolean; filePaths: string[]; bookmarks?: string[] }>;
   stat(path: string): Promise<FileStat>;
-  readFile(path: string, encoding: "utf8"): Promise<string>;
+  readFile(path: string): Promise<Buffer>;
   readdir(path: string): Promise<string[]>;
   startAccessingSecurityScopedResource(bookmarkData: string): () => void;
 }
 
-export interface LinkedSourceView {
-  sourceId: string;
-  resourceType: "file" | "folder";
-  content: string;
-  fingerprint: SourceFingerprint;
-}
-
-export class MacOsSourceAccess {
+export class MacOsSourceAccess implements LocalSourceAccess {
   constructor(private readonly dependencies: SourceAccessDependencies) {}
 
   async select(resourceType: "file" | "folder"): Promise<SelectedLocalSource | null> {
@@ -46,19 +47,24 @@ export class MacOsSourceAccess {
     return this.describePath(path, resourceType);
   }
 
-  async read(source: LinkedSource): Promise<LinkedSourceView> {
-    const stopAccess = source.link.accessGrant.kind === "securityScopedBookmark"
+  async read(source: LinkedSource): Promise<AvailableLinkedSourceView> {
+    const stopAccess = source.link.accessGrant
       ? this.dependencies.startAccessingSecurityScopedResource(source.link.accessGrant.bookmarkData)
       : null;
     try {
       const stat = await this.dependencies.stat(source.link.lastKnownPath);
-      const content = source.resourceType === "file"
-        ? await this.dependencies.readFile(source.link.lastKnownPath, "utf8")
-        : (await this.dependencies.readdir(source.link.lastKnownPath)).sort().join("\n");
+      if (source.resourceType === "file" && stat.size > MAX_SOURCE_VIEW_BYTES) {
+        throw new Error("This source is too large for the read-only preview.");
+      }
+      const mediaType = source.resourceType === "folder" ? "inode/directory" : sourceMediaType(source.name);
+      const content = source.resourceType === "folder"
+        ? (await this.dependencies.readdir(source.link.lastKnownPath)).sort().join("\n")
+        : sourceContent(await this.dependencies.readFile(source.link.lastKnownPath), mediaType);
       return {
         sourceId: source.id,
         resourceType: source.resourceType,
         content,
+        mediaType,
         fingerprint: fingerprint(stat)
       };
     } finally {
@@ -81,7 +87,7 @@ export class MacOsSourceAccess {
       lastKnownPath: path,
       accessGrant: bookmarkData
         ? { kind: "securityScopedBookmark", bookmarkData }
-        : { kind: "directPath" },
+        : null,
       fingerprint: fingerprint(stat)
     };
   }
@@ -89,4 +95,25 @@ export class MacOsSourceAccess {
 
 function fingerprint(stat: FileStat): SourceFingerprint {
   return { size: stat.size, modifiedAtMs: stat.mtimeMs };
+}
+
+function sourceMediaType(name: string): AvailableLinkedSourceView["mediaType"] {
+  switch (extname(name).toLocaleLowerCase()) {
+    case ".pdf": return "application/pdf";
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".txt":
+    case ".md":
+    case ".tex":
+    case ".lean":
+    case ".csv": return "text/plain";
+    default: return "application/octet-stream";
+  }
+}
+
+function sourceContent(content: Buffer, mediaType: AvailableLinkedSourceView["mediaType"]): string {
+  return mediaType === "text/plain"
+    ? content.toString("utf8")
+    : `data:${mediaType};base64,${content.toString("base64")}`;
 }

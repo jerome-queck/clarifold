@@ -34,7 +34,7 @@ describe("macOS source access", () => {
 
   it("balances security-scoped access around a read-only file view", async () => {
     const stopAccess = vi.fn();
-    const readFile = vi.fn().mockResolvedValue("A compact space admits a finite subcover.");
+    const readFile = vi.fn().mockResolvedValue(Buffer.from("A compact space admits a finite subcover."));
     const startAccess = vi.fn().mockReturnValue(stopAccess);
     const access = new MacOsSourceAccess({
       showOpenDialog: vi.fn(),
@@ -47,9 +47,48 @@ describe("macOS source access", () => {
     const view = await access.read(linkedFile());
 
     expect(startAccess).toHaveBeenCalledWith("opaque-bookmark");
-    expect(readFile).toHaveBeenCalledWith("/Users/learner/notes/lecture.txt", "utf8");
+    expect(readFile).toHaveBeenCalledWith("/Users/learner/notes/lecture.txt");
     expect(stopAccess).toHaveBeenCalledOnce();
     expect(view.content).toContain("finite subcover");
+  });
+
+  it("uses a persisted bookmark after a source-access relaunch", async () => {
+    const first = dependencies();
+    first.showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: ["/Users/learner/notes/lecture.txt"],
+      bookmarks: ["relaunch-bookmark"]
+    });
+    const selected = await new MacOsSourceAccess(first).select("file");
+    const second = dependencies();
+    const stopAccess = vi.fn();
+    second.startAccessingSecurityScopedResource.mockReturnValue(stopAccess);
+    second.readFile.mockResolvedValue(Buffer.from("reopened"));
+
+    await new MacOsSourceAccess(second).read({
+      ...linkedFile(),
+      link: {
+        ...linkedFile().link,
+        accessGrant: selected!.accessGrant
+      }
+    });
+
+    expect(second.startAccessingSecurityScopedResource).toHaveBeenCalledWith("relaunch-bookmark");
+    expect(stopAccess).toHaveBeenCalledOnce();
+  });
+
+  it("returns PDFs as a binary Source Layer instead of decoding them as UTF-8", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("%PDF-1.7\n"));
+    const access = new MacOsSourceAccess(sourceDependencies);
+
+    const view = await access.read({ ...linkedFile(), name: "lecture.pdf", link: {
+      ...linkedFile().link,
+      lastKnownPath: "/Users/learner/notes/lecture.pdf"
+    } });
+
+    expect(view.mediaType).toBe("application/pdf");
+    expect(view.content).toBe("data:application/pdf;base64,JVBERi0xLjcK");
   });
 
   it("stops security-scoped access when reading fails", async () => {
@@ -71,6 +110,16 @@ function fileStat() {
   return { size: 128, mtimeMs: 1234, isFile: () => true, isDirectory: () => false };
 }
 
+function dependencies() {
+  return {
+    showOpenDialog: vi.fn(),
+    stat: vi.fn().mockResolvedValue(fileStat()),
+    readFile: vi.fn(),
+    readdir: vi.fn(),
+    startAccessingSecurityScopedResource: vi.fn()
+  };
+}
+
 function linkedFile(): LinkedSource {
   return {
     id: "source-1",
@@ -83,6 +132,8 @@ function linkedFile(): LinkedSource {
       lastKnownPath: "/Users/learner/notes/lecture.txt",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
       fingerprint: { size: 128, modifiedAtMs: 1234 },
+      observedFingerprint: null,
+      revisionStatus: "current",
       accessStatus: "available",
       error: null
     }

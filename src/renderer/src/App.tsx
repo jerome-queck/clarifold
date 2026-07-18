@@ -89,15 +89,13 @@ function SourcesPanel({ workspace, state, onState }: {
         <span className="saved">Originals stay in place</span>
       </div>
       <div className="source-actions">
-        {workspace.kind === "named" && (
-          <button
-            className="secondary"
-            disabled={Boolean(primaryFolder)}
-            onClick={() => void window.quickStudy.linkPrimaryFolder(workspace.id).then(onState)}
-          >
-            {primaryFolder ? "Primary Folder linked" : "Link Primary Folder"}
-          </button>
-        )}
+        <button
+          className="secondary"
+          disabled={Boolean(primaryFolder)}
+          onClick={() => void window.quickStudy.linkPrimaryFolder(workspace.id).then(onState)}
+        >
+          {primaryFolder ? "Primary Folder linked" : "Link Primary Folder"}
+        </button>
         <button
           className="secondary"
           onClick={() => void window.quickStudy.linkExternalAttachment(workspace.id).then(onState)}
@@ -133,7 +131,14 @@ function SourcesPanel({ workspace, state, onState }: {
       {view?.status === "available" && (
         <section className="source-view" aria-label="Linked Source view">
           <h3>Read-only Source Layer</h3>
-          <pre>{view.content}</pre>
+          {view.revisionChanged && (
+            <p className="failure-message" role="status">Changed since the recorded Source Revision. Existing anchors have not been moved.</p>
+          )}
+          {view.mediaType === "image/png" || view.mediaType === "image/jpeg" ? (
+            <img src={view.content} alt="Linked Source preview" />
+          ) : view.mediaType === "application/pdf" ? (
+            <object data={view.content} type="application/pdf" aria-label="Linked PDF Source Layer" />
+          ) : <pre>{view.content}</pre>}
         </section>
       )}
       {view?.status === "unavailable" && <p className="failure-message" role="alert">{view.error}</p>}
@@ -162,6 +167,9 @@ function SourceGroup({ title, empty, sources, onOpen, onLocateAgain }: {
               </div>
               <small>{source.link.lastKnownPath}</small>
               {source.link.error && <p className="failure-message">{source.link.error}</p>}
+              {source.link.revisionStatus === "changed" && (
+                <p className="failure-message">Changed since the recorded Source Revision.</p>
+              )}
               <button
                 className="text-button"
                 aria-label={`${source.link.accessStatus === "unavailable" ? "Retry" : "Open"} Linked Source ${source.name}`}
