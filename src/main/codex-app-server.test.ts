@@ -156,6 +156,7 @@ describe("Codex app-server contract", () => {
       learningGoal: "Understand the alternating series test",
       scope: "Check decreasing magnitude and zero limit",
       initialTeachingDirection: "Inspect the absolute values first",
+      accessScope: focusedAccessScope(),
       onDelta: (delta) => deltas.push(delta),
       signal: new AbortController().signal
     });
@@ -197,6 +198,7 @@ describe("Codex app-server contract", () => {
       learningGoal: "Understand diagonalization",
       scope: "Construct the differing sequence",
       initialTeachingDirection: "Assume an enumeration",
+      accessScope: focusedAccessScope(),
       onDelta: () => undefined,
       signal: new AbortController().signal
     });
@@ -287,6 +289,7 @@ describe("Codex app-server contract", () => {
       learningGoal: "Understand this",
       scope: "One claim",
       initialTeachingDirection: "Start",
+      accessScope: focusedAccessScope(),
       onDelta: () => undefined,
       signal: new AbortController().signal
     });
@@ -358,6 +361,15 @@ type ProtocolMessage = {
   result?: unknown;
   error?: { code: number; message: string };
 };
+
+function focusedAccessScope() {
+  return {
+    policy: "focused" as const,
+    sourceIds: [],
+    allowsBroadLocalRead: false,
+    allowsSourceModification: false as const
+  };
+}
 
 class ScriptedTransport implements AppServerTransport {
   readonly messages: ProtocolMessage[] = [];

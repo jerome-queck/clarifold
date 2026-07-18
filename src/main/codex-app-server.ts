@@ -310,6 +310,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
           `Learning Goal: ${request.learningGoal}`,
           `Scope: ${request.scope}`,
           `Initial teaching direction: ${request.initialTeachingDirection}`,
+          `Session Access Policy: ${accessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
           "Mathematics:",
           request.mathematics,
           "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
@@ -518,6 +519,10 @@ export class CodexAppServerRuntime implements ModelRuntime {
       if (active.turnId === turnId) this.activeTeachingTurns.delete(sessionId);
     }
   }
+}
+
+function accessPolicyLabel(policy: TeachingRequest["accessScope"]["policy"]): string {
+  return { focused: "Focused Access", workspace: "Workspace Access", full: "Full Access" }[policy];
 }
 
 function isInitializeResponse(value: unknown): boolean {

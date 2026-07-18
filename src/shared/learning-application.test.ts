@@ -874,6 +874,146 @@ describe("Learning Application", () => {
     expect(secondMission).not.toHaveProperty("context");
   });
 
+  it("defaults access by intake location and bounds Focused and Workspace source context", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the orbit-stabilizer theorem",
+      scope: "Relate an orbit to a stabilizer index",
+      initialTeachingDirection: "Start from the group action map",
+      requiresConfirmation: false,
+      confirmationReason: null
+    });
+    const { application } = await launchWithRuntime(runtime);
+
+    const quickStudy = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Why is an orbit in bijection with the stabilizer cosets?"
+    });
+    const focusedSession = quickStudy.sessions[0];
+    expect(focusedSession.accessPolicy).toBe("focused");
+    expect(application.getSessionAccessScope(focusedSession.id)).toEqual({
+      policy: "focused",
+      sourceIds: focusedSession.sourceIds,
+      allowsBroadLocalRead: false,
+      allowsSourceModification: false
+    });
+
+    let state = await application.submit({ type: "createWorkspace", name: "Abstract Algebra" });
+    const algebraWorkspaceId = state.navigation.workspaceId;
+    state = await application.submit({ type: "createMission", workspaceId: algebraWorkspaceId, name: "Group actions" });
+    const algebraMissionId = state.navigation.missionId!;
+    const algebraSources = await application.linkExternalAttachment(algebraWorkspaceId, {
+      name: "group-actions.pdf",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/algebra/group-actions.pdf",
+      canonicalPath: "/Users/learner/algebra/group-actions.pdf",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "algebra-bookmark" },
+      fingerprint: { size: 64, modifiedAtMs: 1234 }
+    });
+    const algebraSourceId = algebraSources.workspaces.find((workspace) => workspace.id === algebraWorkspaceId)!.context.sourceIds[0];
+
+    state = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const topologyWorkspaceId = state.navigation.workspaceId;
+    const topologySources = await application.linkExternalAttachment(topologyWorkspaceId, {
+      name: "compactness.pdf",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/topology/compactness.pdf",
+      canonicalPath: "/Users/learner/topology/compactness.pdf",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "topology-bookmark" },
+      fingerprint: { size: 48, modifiedAtMs: 5678 }
+    });
+    const topologySourceId = topologySources.workspaces.find((workspace) => workspace.id === topologyWorkspaceId)!.context.sourceIds[0];
+
+    const workspaceStart = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Explain orbit-stabilizer using the linked notes.",
+      location: { workspaceId: algebraWorkspaceId, missionId: algebraMissionId }
+    });
+    const workspaceSession = workspaceStart.sessions.find((session) => session.id === workspaceStart.activeSessionId)!;
+    expect(workspaceSession.accessPolicy).toBe("workspace");
+    expect(application.getSessionAccessScope(workspaceSession.id)).toEqual({
+      policy: "workspace",
+      sourceIds: expect.arrayContaining([...workspaceSession.sourceIds, algebraSourceId]),
+      allowsBroadLocalRead: false,
+      allowsSourceModification: false
+    });
+    expect(application.getSessionAccessScope(workspaceSession.id).sourceIds).not.toContain(topologySourceId);
+    expect(runtime.teachingRequests.at(-1)?.accessScope).toEqual(application.getSessionAccessScope(workspaceSession.id));
+  });
+
+  it("requires explicit learner decisions for Access Requests and never inherits Full Access", async () => {
+    const { application, dataDirectory } = await launch();
+    let state = await application.submit({ type: "startQuickStudy", mathematics: "Prove Fermat's little theorem." });
+    const firstSessionId = state.activeSessionId!;
+
+    state = await application.requestSessionAccess(firstSessionId, {
+      requestedPolicy: "full",
+      reason: "The proof cites a local lemma that is not attached.",
+      exactScope: "/Users/learner/number-theory/lemmas.pdf",
+      intendedAction: "Read the lemma statement without modifying the source."
+    });
+    expect(state.sessions[0]).toMatchObject({
+      accessPolicy: "focused",
+      accessRequests: [{
+        requestedPolicy: "full",
+        reason: "The proof cites a local lemma that is not attached.",
+        exactScope: "/Users/learner/number-theory/lemmas.pdf",
+        intendedAction: "Read the lemma statement without modifying the source.",
+        status: "pending"
+      }]
+    });
+
+    state = await application.submit({ type: "decideAccessRequest", requestId: state.sessions[0].accessRequests[0].id, decision: "deny" });
+    expect(state.sessions[0]).toMatchObject({
+      accessPolicy: "focused",
+      accessRequests: [{ status: "denied", decidedPolicy: null }]
+    });
+
+    state = await application.requestSessionAccess(firstSessionId, {
+      requestedPolicy: "full",
+      reason: "A second supporting source is outside this Study Workspace.",
+      exactScope: "/Users/learner/shared/reference.pdf",
+      intendedAction: "Read one referenced theorem without modifying the source."
+    });
+    const approvedRequest = state.sessions[0].accessRequests.at(-1)!;
+    state = await application.submit({ type: "decideAccessRequest", requestId: approvedRequest.id, decision: "approve" });
+    expect(state.sessions[0].accessPolicy).toBe("full");
+    expect(state.sessions[0].accessRequests.at(-1)).toMatchObject({ status: "approved", decidedPolicy: "full" });
+
+    await application.submit({ type: "leaveSession" });
+    const reloaded = await LearningApplication.launch(dataDirectory);
+    applications.push(reloaded);
+    expect(reloaded.getState().sessions.find((session) => session.id === firstSessionId)?.accessPolicy).toBe("full");
+    const second = await reloaded.submit({ type: "startQuickStudy", mathematics: "Compute 2 to the tenth modulo 11." });
+    expect(second.sessions.find((session) => session.id === second.activeSessionId)?.accessPolicy).toBe("focused");
+  });
+
+  it("uses the Full Access preference only for the extra confirmation step", async () => {
+    const { application } = await launch();
+    let state = await application.submit({ type: "startQuickStudy", mathematics: "Study a local proof." });
+    expect(state.accessConfirmationPreference.confirmFullAccess).toBe(true);
+
+    state = await application.submit({ type: "selectSessionAccessPolicy", policy: "full" });
+    expect(state.sessions[0].accessPolicy).toBe("focused");
+    expect(state.sessions[0].accessRequests.at(-1)).toMatchObject({
+      requestedPolicy: "full",
+      status: "pending"
+    });
+    state = await application.submit({
+      type: "decideAccessRequest",
+      requestId: state.sessions[0].accessRequests.at(-1)!.id,
+      decision: "deny"
+    });
+
+    state = await application.submit({ type: "setFullAccessConfirmation", enabled: false });
+    state = await application.submit({ type: "selectSessionAccessPolicy", policy: "full" });
+    expect(state.accessConfirmationPreference.confirmFullAccess).toBe(false);
+    expect(state.sessions[0].accessPolicy).toBe("full");
+
+    state = await application.submit({ type: "selectSessionAccessPolicy", policy: "focused" });
+    expect(state.sessions[0].accessPolicy).toBe("focused");
+    expect(state.accessConfirmationPreference.confirmFullAccess).toBe(false);
+  });
+
   it("files Quick Study work intact and orders the Resume Card by the most recently touched session", async () => {
     const { application, dataDirectory } = await launch();
 

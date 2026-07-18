@@ -10,6 +10,24 @@ import {
 } from "./model-runtime";
 
 export type SessionStatus = "active" | "paused";
+export type SessionAccessPolicy = "focused" | "workspace" | "full";
+
+export interface SessionAccessScope {
+  policy: SessionAccessPolicy;
+  sourceIds: string[];
+  allowsBroadLocalRead: boolean;
+  allowsSourceModification: false;
+}
+
+export interface SessionAccessRequest {
+  id: string;
+  requestedPolicy: Exclude<SessionAccessPolicy, "focused">;
+  reason: string;
+  exactScope: string;
+  intendedAction: string;
+  status: "pending" | "approved" | "denied" | "narrowed";
+  decidedPolicy: SessionAccessPolicy | null;
+}
 
 export type ModelAccessState =
   | { status: "available" }
@@ -164,7 +182,8 @@ export interface LearningSession {
   submittedPendingQuestions: SubmittedPendingQuestion[];
   currentTeachingInput: { kind: "sessionIntake"; text: string } | { kind: "pendingQuestion"; submissionId: string; text: string };
   pendingQuestion: PendingQuestion | null;
-  accessPolicy: "focused";
+  accessPolicy: SessionAccessPolicy;
+  accessRequests: SessionAccessRequest[];
 }
 
 export interface LearningApplicationState {
@@ -191,11 +210,14 @@ export interface LearningApplicationState {
   intakeError: string | null;
   runtimeAvailable: boolean;
   modelAccess: ModelAccessState;
+  accessConfirmationPreference: {
+    confirmFullAccess: boolean;
+  };
 }
 
 export type LearnerAction =
-  | { type: "startQuickStudy"; mathematics: string }
-  | { type: "submitSessionIntake"; mathematics: string }
+  | { type: "startQuickStudy"; mathematics: string; location?: StudyLocation }
+  | { type: "submitSessionIntake"; mathematics: string; location?: StudyLocation }
   | { type: "confirmSessionProposal" }
   | { type: "cancelModelWork" }
   | { type: "cancelSessionModelWork"; sessionId: string }
@@ -207,6 +229,14 @@ export type LearnerAction =
   | { type: "editPendingQuestion"; text: string }
   | { type: "discardPendingQuestion" }
   | { type: "submitPendingQuestion" }
+  | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
+  | { type: "setFullAccessConfirmation"; enabled: boolean }
+  | {
+      type: "decideAccessRequest";
+      requestId: string;
+      decision: "approve" | "deny" | "narrow";
+      narrowedPolicy?: SessionAccessPolicy;
+    }
   | {
       type: "reviseSessionProposal";
       learningGoal: string;
@@ -291,6 +321,45 @@ export class LearningApplication {
 
   getState(): LearningApplicationState {
     return structuredClone(this.state);
+  }
+
+  getSessionAccessScope(sessionId: string): SessionAccessScope {
+    const session = this.requireSession(sessionId);
+    const workspace = this.requireWorkspace(session.workspaceId);
+    const sourceIds = session.accessPolicy === "focused"
+      ? session.sourceIds
+      : session.accessPolicy === "workspace"
+        ? [...session.sourceIds, ...workspace.context.sourceIds]
+        : this.state.sources.map((source) => source.id);
+    return {
+      policy: session.accessPolicy,
+      sourceIds: [...new Set(sourceIds)],
+      allowsBroadLocalRead: session.accessPolicy === "full",
+      allowsSourceModification: false
+    };
+  }
+
+  async requestSessionAccess(
+    sessionId: string,
+    request: Pick<SessionAccessRequest, "requestedPolicy" | "reason" | "exactScope" | "intendedAction">
+  ): Promise<LearningApplicationState> {
+    const session = this.requireSession(sessionId);
+    if (accessPolicyRank(request.requestedPolicy) <= accessPolicyRank(session.accessPolicy)) {
+      throw new Error("An Access Request must ask for broader authority than the current Session Access Policy.");
+    }
+    if (session.accessRequests.some((candidate) => candidate.status === "pending")) {
+      throw new Error("Decide the current Access Request before requesting another elevation.");
+    }
+    session.accessRequests.push({
+      id: crypto.randomUUID(),
+      requestedPolicy: request.requestedPolicy,
+      reason: requiredText(request.reason, "Access Request reason"),
+      exactScope: requiredText(request.exactScope, "Access Request scope"),
+      intendedAction: requiredText(request.intendedAction, "Access Request intended action"),
+      status: "pending",
+      decidedPolicy: null
+    });
+    return this.publishAndPersist();
   }
 
   subscribe(listener: (state: LearningApplicationState) => void): () => void {
@@ -477,11 +546,12 @@ export class LearningApplication {
         const mathematics = action.mathematics.trim();
         if (!mathematics) throw new Error("Typed mathematics is required to start Quick Study.");
         this.pauseActiveSession();
-        const managedAsset = this.createManagedTextAsset(this.state.quickStudy.workspace.id, mathematics);
+        const location = this.resolveIntakeLocation(action.location);
+        const managedAsset = this.createManagedTextAsset(location.workspaceId, mathematics);
         const session: LearningSession = {
           id: crypto.randomUUID(),
-          workspaceId: this.state.quickStudy.workspace.id,
-          missionId: this.state.quickStudy.mission.id,
+          workspaceId: location.workspaceId,
+          missionId: location.missionId,
           mathematics,
           sourceIds: [managedAsset.id],
           learningGoal: `Understand ${mathematics}`,
@@ -498,7 +568,8 @@ export class LearningApplication {
           submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: mathematics },
           pendingQuestion: null,
-          accessPolicy: "focused"
+          accessPolicy: location.accessPolicy,
+          accessRequests: []
         };
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -535,11 +606,12 @@ export class LearningApplication {
           break;
         }
         this.pauseActiveSession();
-        const managedAsset = this.createManagedTextAsset(this.state.quickStudy.workspace.id, mathematics);
+        const location = this.resolveIntakeLocation(action.location);
+        const managedAsset = this.createManagedTextAsset(location.workspaceId, mathematics);
         const session: LearningSession = {
           id: crypto.randomUUID(),
-          workspaceId: this.state.quickStudy.workspace.id,
-          missionId: this.state.quickStudy.mission.id,
+          workspaceId: location.workspaceId,
+          missionId: location.missionId,
           mathematics,
           sourceIds: [managedAsset.id],
           learningGoal: proposal.learningGoal,
@@ -561,7 +633,8 @@ export class LearningApplication {
           submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: mathematics },
           pendingQuestion: null,
-          accessPolicy: "focused"
+          accessPolicy: location.accessPolicy,
+          accessRequests: []
         };
         this.agentWorkLogs[session.id] = pendingLog;
         delete this.agentWorkLogs[proposalAttemptId];
@@ -689,6 +762,44 @@ export class LearningApplication {
         session.pendingQuestion = null;
         break;
       }
+      case "setFullAccessConfirmation": {
+        this.state.accessConfirmationPreference.confirmFullAccess = action.enabled;
+        break;
+      }
+      case "selectSessionAccessPolicy": {
+        const session = this.requireActiveSession();
+        if (session.accessRequests.some((candidate) => candidate.status === "pending")) {
+          throw new Error("Decide the current Access Request before changing the Session Access Policy.");
+        }
+        if (action.policy === session.accessPolicy) break;
+        if (action.policy === "full" && this.state.accessConfirmationPreference.confirmFullAccess) {
+          session.accessRequests.push(fullAccessConfirmationRequest());
+          break;
+        }
+        session.accessPolicy = action.policy;
+        break;
+      }
+      case "decideAccessRequest": {
+        const session = this.requireActiveSession();
+        const request = session.accessRequests.find((candidate) => candidate.id === action.requestId);
+        if (!request || request.status !== "pending") throw new Error("Choose a pending Access Request in this Learning Session.");
+        if (action.decision === "deny") {
+          request.status = "denied";
+          request.decidedPolicy = null;
+          break;
+        }
+        const decidedPolicy = action.decision === "approve" ? request.requestedPolicy : action.narrowedPolicy;
+        if (!decidedPolicy || accessPolicyRank(decidedPolicy) <= accessPolicyRank(session.accessPolicy)
+          || accessPolicyRank(decidedPolicy) >= accessPolicyRank(request.requestedPolicy)) {
+          if (action.decision === "narrow") {
+            throw new Error("A narrowed policy must be broader than the current policy and narrower than the request.");
+          }
+        }
+        session.accessPolicy = decidedPolicy!;
+        request.status = action.decision === "approve" ? "approved" : "narrowed";
+        request.decidedPolicy = decidedPolicy!;
+        break;
+      }
       case "resumeSession": {
         const session = this.requireSession(action.sessionId);
         this.pauseActiveSession();
@@ -788,6 +899,7 @@ export class LearningApplication {
       learningGoal: session.learningGoal,
       scope: session.proposal.scope,
       initialTeachingDirection: session.proposal.initialTeachingDirection,
+      accessScope: this.getSessionAccessScope(session.id),
       signal: controller.signal,
       onDelta: (delta) => {
         if (session.teachingCard.status !== "streaming") return;
@@ -982,6 +1094,19 @@ export class LearningApplication {
     return mission;
   }
 
+  private resolveIntakeLocation(location?: StudyLocation): StudyLocation & { accessPolicy: SessionAccessPolicy } {
+    if (!location) {
+      return {
+        workspaceId: this.state.quickStudy.workspace.id,
+        missionId: this.state.quickStudy.mission.id,
+        accessPolicy: "focused"
+      };
+    }
+    const workspace = this.requireNamedWorkspace(location.workspaceId);
+    const mission = this.requireMission(workspace.id, location.missionId);
+    return { workspaceId: workspace.id, missionId: mission.id, accessPolicy: "workspace" };
+  }
+
   private pauseActiveSession(): void {
     if (!this.state.activeSessionId) return;
     this.requireSession(this.state.activeSessionId).status = "paused";
@@ -1016,6 +1141,10 @@ function requiredText(value: string, subject: string): string {
   const text = value.trim();
   if (!text) throw new Error(`${subject} text is required.`);
   return text;
+}
+
+function accessPolicyRank(policy: SessionAccessPolicy): number {
+  return { focused: 0, workspace: 1, full: 2 }[policy];
 }
 
 function usefulRuntimeError(error: unknown): string {
@@ -1067,6 +1196,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       cause: "runtime",
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     };
+    current.accessConfirmationPreference ??= { confirmFullAccess: true };
     current.sessions = current.sessions.map((session) => ({
       ...session,
       sourceIds: session.sourceIds ?? [],
@@ -1076,7 +1206,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       submittedPendingQuestions: session.submittedPendingQuestions ?? [],
       currentTeachingInput: session.currentTeachingInput ?? { kind: "sessionIntake", text: session.mathematics },
       pendingQuestion: session.pendingQuestion ?? null,
-      accessPolicy: session.accessPolicy ?? "focused"
+      accessPolicy: session.accessPolicy ?? "focused",
+      accessRequests: session.accessRequests ?? []
     }));
     return current;
   }
@@ -1098,7 +1229,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       submittedPendingQuestions: [],
       currentTeachingInput: { kind: "sessionIntake", text: legacy.session.mathematics },
       pendingQuestion: null,
-      accessPolicy: "focused"
+      accessPolicy: "focused",
+      accessRequests: []
     };
     migrated.sessions.push(session);
     migrated.resumeSessionId = session.id;
@@ -1260,7 +1392,20 @@ function initialState(): LearningApplicationState {
       status: "unavailable",
       cause: "runtime",
       message: "Codex Runtime is unavailable. Restart Codex and try again."
-    }
+    },
+    accessConfirmationPreference: { confirmFullAccess: true }
+  };
+}
+
+function fullAccessConfirmationRequest(): SessionAccessRequest {
+  return {
+    id: crypto.randomUUID(),
+    requestedPolicy: "full",
+    reason: "Full Access was selected for this Learning Session.",
+    exactScope: "Broader local-file and agent-tool access for this Learning Session only.",
+    intendedAction: "Read relevant local material without modifying or deleting source files.",
+    status: "pending",
+    decidedPolicy: null
   };
 }
 

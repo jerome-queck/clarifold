@@ -1,3 +1,5 @@
+import type { SessionAccessScope } from "./learning-application";
+
 export type AuthenticationMethod = "chatgpt" | "apiKey";
 export type ModelAccessCause = "network" | "authentication" | "subscriptionCapacity" | "quota" | "runtime";
 
@@ -33,6 +35,7 @@ export interface TeachingRequest {
   learningGoal: string;
   scope: string;
   initialTeachingDirection: string;
+  accessScope: SessionAccessScope;
   onDelta(delta: string): void;
   onRuntimeEvent?(event: ModelRuntimeEvent): void;
   signal: AbortSignal;
