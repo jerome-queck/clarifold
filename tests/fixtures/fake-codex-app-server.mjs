@@ -102,8 +102,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               })
             }
           });
-        } else if (message.params.input[0].text.includes("TRIGGER_ACCESS_REQUEST")
-          && threadPolicies.get(message.params.threadId) !== "full") {
+        } else if ((message.params.input[0].text.includes("TRIGGER_ACCESS_REQUEST")
+          && threadPolicies.get(message.params.threadId) !== "full")
+          || (message.params.input[0].text.includes("TRIGGER_NARROW_ACCESS_REQUEST")
+            && message.params.input[0].text.includes("Session Access Policy: Focused Access"))) {
           writeFileSync(join(process.env.QUICK_STUDY_DATA_DIR, "fake-codex-last-teaching-input.json"), JSON.stringify({
             prompt: message.params.input[0].text
           }), "utf8");

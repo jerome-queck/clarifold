@@ -122,13 +122,13 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByRole("button", { name: "Open Study Workspace Quick Study" }).click();
     await expect(page.getByText("Focused Access · no workspace setup required", { exact: true })).toBeVisible();
 
-    await page.getByLabel("Typed mathematics").fill("TRIGGER_ACCESS_REQUEST: Explain why a finite group action has finite orbits.");
+    await page.getByLabel("Typed mathematics").fill("TRIGGER_NARROW_ACCESS_REQUEST: Explain why a finite group action has finite orbits.");
     await page.getByRole("button", { name: "Propose Learning Session" }).click();
     await expect(page.getByRole("region", { name: "Request Full Access" })).toBeVisible();
     await page.getByRole("button", { name: "Narrow to Workspace Access" }).press("Enter");
     await expect(page.getByRole("region", { name: "Workspace Access" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Current Teaching Card" })).toContainText(
-      "Access narrowed. The Learning Session now uses Workspace Access."
+      "Start from the key definition"
     );
     await page.getByRole("button", { name: "Leave session" }).click();
     await page.getByLabel("Destination Study Mission").selectOption({ label: "Abstract Algebra — Group actions" });

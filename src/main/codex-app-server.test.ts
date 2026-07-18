@@ -390,7 +390,7 @@ describe("Codex app-server contract", () => {
       if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "thread-access" } });
       if (message.method === "turn/start") {
         transport.respond(message.id, { turn: { id: "turn-access" } });
-        setTimeout(() => transport.request(700, "item/tool/call", {
+        transport.request(700, "item/tool/call", {
           threadId: "thread-access",
           turnId: "turn-access",
           callId: "call-access",
@@ -402,7 +402,7 @@ describe("Codex app-server contract", () => {
             exactScope: "/Users/learner/reference.pdf",
             intendedAction: "Read the cited theorem statement."
           }
-        }), 0);
+        });
       }
       if (message.id === 700 && message.result) {
         transport.notify("turn/completed", {

@@ -230,6 +230,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     onAccessRequest?: TeachingRequest["onAccessRequest"];
   }>();
   private readonly earlyTurnNotifications = new Map<string, ProtocolMessage[]>();
+  private readonly turnRegistrationWaiters = new Map<string, () => void>();
   private runtimeFailure: Error | null = null;
   private readonly teachingStartSignals = new Map<string, {
     promise: Promise<void>;
@@ -432,6 +433,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
         onRuntimeEvent,
         onAccessRequest: teachingRequest?.onAccessRequest
       });
+      this.turnRegistrationWaiters.get(turnResponse.turn.id)?.();
       if (sessionId) this.activeTeachingTurns.set(sessionId, {
         threadId: threadResponse.thread.id,
         turnId: turnResponse.turn.id
@@ -448,7 +450,21 @@ export class CodexAppServerRuntime implements ModelRuntime {
 
   private async handleDynamicToolCall(params: unknown): Promise<unknown> {
     const call = parseAccessRequestToolCall(params);
-    const turn = this.turns.get(call.turnId);
+    let turn = this.turns.get(call.turnId);
+    if (!turn) {
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          this.turnRegistrationWaiters.delete(call.turnId);
+          resolve();
+        }, 1_000);
+        this.turnRegistrationWaiters.set(call.turnId, () => {
+          clearTimeout(timeout);
+          this.turnRegistrationWaiters.delete(call.turnId);
+          resolve();
+        });
+      });
+      turn = this.turns.get(call.turnId);
+    }
     if (!turn?.onAccessRequest) throw new Error("This turn cannot request Session Access elevation.");
     const decision = await turn.onAccessRequest(call.request);
     return {
