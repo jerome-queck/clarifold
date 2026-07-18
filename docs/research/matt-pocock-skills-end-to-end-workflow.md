@@ -185,11 +185,11 @@ git diff --check
 
 The `find` command should print nothing. Do not hand-edit vendored files under `.agents/skills/` for repository policy, and do not silently add experimental skills during an update. Recheck whether repository compatibility rules—especially the committed-diff review adapter—are still necessary after each update.
 
-### Deferred until the application scaffold exists
+### Current application and CI contract
 
-- Record the application's real focused-test, full-test, typecheck, build, and end-to-end smoke commands. Do not invent generic placeholders.
-- Add CI that runs those commands, then protect `main` with the resulting required checks.
-- Expand the placeholder README with setup, run, sample-data, judge-access, and Codex/GPT-5.6 collaboration instructions required by [`docs/openai-build-week.md`](../openai-build-week.md).
+- [`README.md`](../../README.md) owns supported requirements, development and verification commands, environment guidance, packaging, and demo evidence.
+- [`.github/workflows/macos-ci.yml`](../../.github/workflows/macos-ci.yml) runs the repository's full verification lane for pull requests and pushes to `main`.
+- [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md) is the primary source for judgement-based code review; executable configuration remains authoritative for mechanically enforced checks.
 
 ### Keep advanced flows optional
 
