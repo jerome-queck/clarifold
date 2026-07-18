@@ -275,6 +275,9 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .teaching-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
 .contextual-inspector { grid-column: 2; padding: 24px; }
 .contextual-inspector h2 { font-size: 24px; }
+.source-annotation { margin: 16px 0; padding: 16px; border: 1px solid #cbd6cc; border-radius: 12px; background: #f6f8f3; }
+.annotation-verbatim { white-space: pre-wrap; }
+.annotation-purpose-change { color: #6f5a42; font-size: 12px; }
 .anchored-teaching-card, .teaching-history, .teaching-variant, .inspector-form { margin-top: 18px; padding-top: 18px; border-top: 1px solid #deddd4; }
 .anchored-teaching-card p, .teaching-variant p { line-height: 1.6; white-space: pre-wrap; }
 .anchored-teaching-card.failed { color: #8d3d2b; }

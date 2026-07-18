@@ -690,6 +690,9 @@ function teachingFocus(request: TeachingRequest): string {
       selection: request.focus.selection
     })}`,
     `Learner instruction: ${request.focus.instruction}`,
+    (request.focus.tutorFeedback ?? []).length === 0
+      ? "Tutor Feedback: none. Personal Notes are excluded from ordinary teaching context."
+      : `Tutor Feedback for this Source Anchor:\n${request.focus.tutorFeedback!.map((item) => `- ${item.content}`).join("\n")}`,
     request.focus.previousContent === null
       ? "This is the first explanation route for the anchor."
       : `Revise or branch from this current route without producing a chronological message feed:\n${request.focus.previousContent}`,

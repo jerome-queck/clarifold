@@ -96,7 +96,7 @@ function trailSession(): LearningSession {
       id: "anchor-1", sourceId: "source-1",
       selection: { kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset", prefix: "Every ", suffix: " is closed." }
     }],
-    sourceAnchorRequests: [], activeSourceAnchorId: "anchor-1",
+    sourceAnchorRequests: [], annotations: [], activeSourceAnchorId: "anchor-1",
     anchoredTeachingCards: [{
       id: "card-1", sourceAnchorId: "anchor-1", title: "Explain compact subset",
       currentRevision: { id: "revision-1", instruction: "Explain", status: "completed", content: "Use a finite subcover.", error: null,

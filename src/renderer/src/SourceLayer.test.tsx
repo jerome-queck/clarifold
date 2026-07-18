@@ -36,13 +36,15 @@ describe("Source Layer selection", () => {
     expect(screen.getByRole("button", { name: "Explain or unpack selected text" })).toBe(document.activeElement);
     expect(onChooseAction).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Annotate selected text" }));
+    expect(screen.getByRole("button", { name: "Add note to selected text" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tell tutor about selected text" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Add note to selected text" }));
     expect(onChooseAction).toHaveBeenCalledWith(expect.objectContaining({
       kind: "text",
       startOffset: 6,
       endOffset: 13,
       exactText: "compact"
-    }), "annotate");
+    }), "addNote");
   });
 
   it("preserves an equation's source offsets and surrounding context for keyboard selection", async () => {
@@ -85,7 +87,8 @@ describe("Source Layer selection", () => {
 
     expect(screen.getByRole("button", { name: "Explain or unpack selected diagram region" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ask about selected diagram region" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Annotate selected diagram region" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add note to selected diagram region" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tell tutor about selected diagram region" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Add selected diagram region to the Learning Trail" }));
     expect(onChooseAction).toHaveBeenCalledWith({
       kind: "diagramRegion",
@@ -113,12 +116,12 @@ describe("Source Layer selection", () => {
     await user.click(screen.getByRole("button", { name: "Draw diagram region" }));
     fireEvent(source, new MouseEvent("pointerdown", { bubbles: true, clientX: 30, clientY: 30 }));
     fireEvent(source, new MouseEvent("pointerup", { bubbles: true, clientX: 130, clientY: 80 }));
-    await user.click(screen.getByRole("button", { name: "Annotate selected diagram region" }));
+    await user.click(screen.getByRole("button", { name: "Tell tutor about selected diagram region" }));
 
     expect(onChooseAction).toHaveBeenCalledWith({
       kind: "diagramRegion",
       bounds: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 }
-    }, "annotate");
+    }, "tellTutor");
   });
 
   it("activates a durable Anchor Marker from the keyboard", async () => {

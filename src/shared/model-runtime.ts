@@ -89,6 +89,7 @@ export interface TeachingRequest {
     sourceId: string;
     selection: SourceAnchorSelection;
     instruction: string;
+    tutorFeedback?: Array<{ annotationId: string; content: string }>;
     previousContent: string | null;
     variantName: string | null;
   };
