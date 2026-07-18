@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { execFile } from "node:child_process";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -27,16 +27,15 @@ const sourceAccess = new MacOsSourceAccess({
     const stopAccess = app.startAccessingSecurityScopedResource(bookmarkData);
     return () => stopAccess();
   },
-  extractText: async (path) => {
-    const { stdout } = await execFileAsync("/usr/bin/mdls", ["-raw", "-name", "kMDItemTextContent", path], {
-      maxBuffer: 25 * 1024 * 1024
+  extractDocument: async (path) => {
+    const helperPath = join(__dirname, "../helpers/source-index-extractor").replace("app.asar", "app.asar.unpacked");
+    const { stdout } = await execFileAsync(helperPath, [path], {
+      timeout: 45_000,
+      maxBuffer: 25 * 1024 * 1024,
+      encoding: "utf8"
     });
-    return stdout;
-  },
-  createThumbnail: async (path) => (await nativeImage.createThumbnailFromPath(path, {
-    width: 160,
-    height: 200
-  })).toDataURL()
+    return JSON.parse(stdout);
+  }
 });
 
 function isTrustedSender(frameUrl: string | undefined): boolean {

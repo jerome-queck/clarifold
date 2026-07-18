@@ -1,6 +1,6 @@
 module.exports = {
   packagerConfig: {
-    asar: true,
+    asar: { unpackDir: "dist/helpers" },
     icon: undefined,
     osxSign: {
       identity: "-",
@@ -12,6 +12,7 @@ module.exports = {
       /^\/src($|\/)/,
       /^\/tests($|\/)/,
       /^\/docs($|\/)/,
+      /^\/native($|\/)/,
       /^\/prototype($|\/)/,
       /^\/.agents($|\/)/,
       /^\/.claude($|\/)/,

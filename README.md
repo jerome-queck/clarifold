@@ -26,6 +26,8 @@ npm ci
 npm run dev
 ```
 
+The development command builds the native Source Index helper before starting Electron. Restart it after changing `native/source-index-extractor.swift` so the helper is rebuilt.
+
 Local application data uses Electron's standard `userData` directory. Set `QUICK_STUDY_DATA_DIR` to isolate it when developing or diagnosing persistence.
 
 ## Verification
@@ -51,6 +53,6 @@ There is no hosted preview or deployment for this local-first desktop slice. The
 ## Architecture
 
 - `src/shared/learning-application.ts` is the public Learning Application boundary and owns Study Workspace, Study Mission, Learning Session, Managed Asset and Linked Source relationships, Source Index lifecycle and search, filing, navigation, Local Working Mode, Pending Questions, session metadata search, and durable state transitions. Canonical application state and the clearable `source-index.json` cache are persisted separately and atomically.
-- `src/main/` owns filesystem persistence and the narrow macOS source-access adapter. It requests security-scoped bookmarks when the Mac App Store runtime supports them, records no synthetic permission grant in the current non-App-Sandbox preview package, balances scoped access around read-only and indexing operations, uses local macOS metadata extraction and thumbnails for supported PDF/image indexing, and exposes only typed operations through a sandboxed preload bridge. The last-known path lets that unrestricted preview reopen a source but is never presented as sandbox authority.
+- `src/main/` owns filesystem persistence and the narrow macOS source-access adapter. It requests security-scoped bookmarks when the Mac App Store runtime supports them, records no synthetic permission grant in the current non-App-Sandbox preview package, balances scoped access around read-only and indexing operations, uses a bounded native PDFKit/Vision helper for PDF extraction, OCR, geometry, and thumbnails, and exposes only typed operations through a sandboxed preload bridge. The last-known path lets that unrestricted preview reopen a source but is never presented as sandbox authority.
 - `src/renderer/` is the React Mathematical Workbench.
 - `tests/packaged-quick-study.spec.ts` launches the packaged application and verifies organization, Source Index build/search/clear/rebuild, identity-preserving filing, keyboard-operable source and hierarchy controls, source non-mutation across relaunch, Local Working Mode, access recovery, and explicit Pending Question submission through the visible UI.

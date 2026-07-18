@@ -213,11 +213,23 @@ describe("macOS source access", () => {
     });
   });
 
-  it("uses local OCR metadata and a generated thumbnail for an image index", async () => {
+  it("uses the bounded native extractor for OCR and image geometry", async () => {
     const sourceDependencies = {
       ...dependencies(),
-      extractText: vi.fn().mockResolvedValue("Assume the sequence is Cauchy"),
-      createThumbnail: vi.fn().mockResolvedValue("data:image/png;base64,c21hbGw=")
+      extractDocument: vi.fn().mockResolvedValue({
+        extractionMethod: "ocr" as const,
+        pages: [{
+          pageNumber: 1,
+          width: 800,
+          height: 600,
+          thumbnailDataUrl: "data:image/png;base64,c21hbGw=",
+          regions: [{
+            kind: "text" as const,
+            text: "Assume the sequence is Cauchy",
+            bounds: { x: 0.1, y: 0.2, width: 0.7, height: 0.08 }
+          }]
+        }]
+      })
     };
     sourceDependencies.readFile.mockResolvedValue(Buffer.from("synthetic-image"));
     const access = new MacOsSourceAccess(sourceDependencies);
@@ -229,8 +241,7 @@ describe("macOS source access", () => {
 
     const extraction = await access.extractForIndex(image);
 
-    expect(sourceDependencies.extractText).toHaveBeenCalledWith("/Users/learner/notes/proof.png");
-    expect(sourceDependencies.createThumbnail).toHaveBeenCalledWith("/Users/learner/notes/proof.png");
+    expect(sourceDependencies.extractDocument).toHaveBeenCalledWith("/Users/learner/notes/proof.png");
     expect(extraction).toMatchObject({
       extractionMethod: "ocr",
       pages: [{ thumbnailDataUrl: "data:image/png;base64,c21hbGw=", regions: [expect.objectContaining({

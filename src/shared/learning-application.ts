@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   ModelAccessError,
@@ -153,6 +154,7 @@ export interface SourceSearchResult {
   match: {
     pageNumber: number;
     bounds: SourceIndexBounds;
+    kind: SourceIndexRegion["kind"];
     sourceStartOffset?: number;
     sourceEndOffset?: number;
   };
@@ -163,16 +165,27 @@ export type OpenedSourceSearchResult = LinkedSourceView & {
     pageNumber: number;
     exactText: string;
     bounds: SourceIndexBounds;
+    thumbnailDataUrl: string;
     sourceStartOffset?: number;
     sourceEndOffset?: number;
   };
 };
 
-interface SourceIndexDocument extends SourceIndexExtraction {
+interface CachedSourceIndexRegion extends Omit<SourceIndexRegion, "text"> {
+  termHashes: string[];
+}
+
+interface CachedSourceIndexPage extends Omit<SourceIndexPage, "regions"> {
+  regions: CachedSourceIndexRegion[];
+}
+
+interface SourceIndexDocument {
   sourceId: string;
   sourceName: string;
   workspaceId: string;
   fingerprint: SourceFingerprint;
+  extractionMethod: SourceIndexExtraction["extractionMethod"];
+  pages: CachedSourceIndexPage[];
 }
 
 export interface QuickStudyHome {
@@ -524,32 +537,62 @@ export class LearningApplication {
     this.requireWorkspace(workspaceId);
     if (query.length > 500) throw new Error("Source Index search is limited to 500 characters.");
     const terms = searchTerms(query);
+    const termHashes = terms.map(sourceIndexTermHash);
     if (terms.length === 0) return [];
     this.sourceSearchResults.clear();
     const workspace = this.requireWorkspace(workspaceId);
     const results: SourceSearchResult[] = [];
+    const seenLocations = new Set<string>();
     for (const document of this.sourceIndexDocuments.values()) {
       if (document.workspaceId !== workspaceId || this.sourceIndexStatus(document.sourceId)?.status !== "ready") continue;
+      const source = this.state.sources.find((candidate): candidate is LinkedSource =>
+        candidate.id === document.sourceId && candidate.kind === "linkedSource"
+      );
+      if (!source) continue;
       const view = await this.openLinkedSource(document.sourceId);
       if (view.status === "unavailable") {
         await this.markSourceIndexUnavailable(document.sourceId, view.error);
         continue;
       }
+      const hasCachedMatch = document.pages.some((page) => page.regions.some(
+        (region) => termHashes.every((termHash) => region.termHashes.includes(termHash))
+      ));
+      if (!hasCachedMatch) continue;
+      let liveExtraction: SourceIndexExtraction;
+      try {
+        liveExtraction = validatedSourceIndexExtraction(await this.sourceAccess!.extractForIndex(source));
+      } catch (error) {
+        await this.markSourceIndexUnavailable(document.sourceId, usefulSourceError(error));
+        continue;
+      }
       for (const page of document.pages) {
         for (const region of page.regions) {
-          const searchable = region.text.toLocaleLowerCase();
-          if (!terms.every((term) => searchable.includes(term))) continue;
+          if (!termHashes.every((termHash) => region.termHashes.includes(termHash))) continue;
+          const livePage = liveExtraction.pages.find((candidate) => candidate.pageNumber === page.pageNumber);
+          const liveRegion = livePage?.regions.find((candidate) => sameIndexMatch(candidate, {
+            pageNumber: page.pageNumber,
+            bounds: region.bounds,
+            kind: region.kind,
+            ...(region.sourceStartOffset === undefined ? {} : { sourceStartOffset: region.sourceStartOffset }),
+            ...(region.sourceEndOffset === undefined ? {} : { sourceEndOffset: region.sourceEndOffset })
+          }));
+          if (!livePage || !liveRegion) continue;
+          const locationKey = [document.sourceId, page.pageNumber, region.bounds.x, region.bounds.y,
+            region.bounds.width, region.bounds.height, region.sourceStartOffset, region.sourceEndOffset].join(":");
+          if (seenLocations.has(locationKey)) continue;
+          seenLocations.add(locationKey);
           const result: SourceSearchResult = {
             id: crypto.randomUUID(),
             sourceId: document.sourceId,
             sourceName: document.sourceName,
             workspaceName: workspace.name,
             locationLabel: `Page ${page.pageNumber}`,
-            preview: searchPreview(region.text, terms),
-            thumbnailDataUrl: page.thumbnailDataUrl,
+            preview: searchPreview(liveRegion.text, terms),
+            thumbnailDataUrl: livePage.thumbnailDataUrl,
             match: {
               pageNumber: page.pageNumber,
               bounds: region.bounds,
+              kind: region.kind,
               ...(region.sourceStartOffset === undefined ? {} : { sourceStartOffset: region.sourceStartOffset }),
               ...(region.sourceEndOffset === undefined ? {} : { sourceEndOffset: region.sourceEndOffset })
             }
@@ -581,7 +624,13 @@ export class LearningApplication {
         workspaceId: source.workspaceId,
         fingerprint: source.link.fingerprint,
         extractionMethod: extraction.extractionMethod,
-        pages: extraction.pages
+        pages: extraction.pages.map((page) => ({
+          ...page,
+          regions: page.regions.map(({ text, ...region }) => ({
+            ...region,
+            termHashes: [...new Set(searchTerms(text).map(sourceIndexTermHash))]
+          }))
+        }))
       };
       this.sourceIndexDocuments.set(sourceId, document);
       this.removeSourceSearchResults(sourceId);
@@ -635,16 +684,27 @@ export class LearningApplication {
     }
     const view = await this.openLinkedSource(result.sourceId);
     if (view.status === "unavailable") return view;
-    const document = this.sourceIndexDocuments.get(result.sourceId);
-    const page = document?.pages.find((candidate) => candidate.pageNumber === result.match.pageNumber);
+    const source = this.state.sources.find((candidate): candidate is LinkedSource =>
+      candidate.id === result.sourceId && candidate.kind === "linkedSource"
+    );
+    if (!source) throw new Error("Search this Source Index again before opening the result.");
+    let extraction: SourceIndexExtraction;
+    try {
+      extraction = validatedSourceIndexExtraction(await this.sourceAccess!.extractForIndex(source));
+    } catch (error) {
+      await this.markSourceIndexUnavailable(result.sourceId, usefulSourceError(error));
+      throw error;
+    }
+    const page = extraction.pages.find((candidate) => candidate.pageNumber === result.match.pageNumber);
     const region = page?.regions.find((candidate) => sameIndexMatch(candidate, result.match));
-    if (!region) throw new Error("Search this Source Index again before opening the result.");
+    if (!page || !region) throw new Error("Search this Source Index again before opening the result.");
     return {
       ...view,
       highlight: {
         pageNumber: result.match.pageNumber,
         exactText: region.text,
         bounds: region.bounds,
+        thumbnailDataUrl: page.thumbnailDataUrl,
         ...(region.sourceStartOffset === undefined ? {} : { sourceStartOffset: region.sourceStartOffset }),
         ...(region.sourceEndOffset === undefined ? {} : { sourceEndOffset: region.sourceEndOffset })
       }
@@ -1196,7 +1256,10 @@ export class LearningApplication {
       const documents = validatedSourceIndexDocuments(stored);
       this.sourceIndexDocuments = new Map(documents.map((document) => [document.sourceId, document]));
     } catch (error) {
-      if (!isMissingFile(error)) throw error;
+      if (!isMissingFile(error)) {
+        this.sourceIndexDocuments.clear();
+        await this.persistSourceIndexCache().catch(() => undefined);
+      }
     }
     const sourceIds = new Set(this.state.sources.map((source) => source.id));
     this.state.sourceIndexes = this.state.sourceIndexes.filter((summary) => sourceIds.has(summary.sourceId));
@@ -1924,19 +1987,71 @@ function validatedSourceIndexDocuments(value: unknown): SourceIndexDocument[] {
       || typeof candidate.workspaceId !== "string" || !validFingerprint(candidate.fingerprint)) {
       throw new Error("Stored Source Index cache is invalid.");
     }
-    const extraction = validatedSourceIndexExtraction(candidate);
+    if (!["embeddedText", "pdfText", "ocr"].includes(String(candidate.extractionMethod))
+      || !Array.isArray(candidate.pages) || candidate.pages.length === 0 || candidate.pages.length > 10_000) {
+      throw new Error("Stored Source Index cache is invalid.");
+    }
+    const pages = validatedCachedSourceIndexPages(candidate.pages);
     return {
       sourceId: candidate.sourceId,
       sourceName: candidate.sourceName,
       workspaceId: candidate.workspaceId,
       fingerprint: candidate.fingerprint,
-      ...extraction
+      extractionMethod: candidate.extractionMethod as SourceIndexExtraction["extractionMethod"],
+      pages
     };
   });
   if (new Set(documents.map((document) => document.sourceId)).size !== documents.length) {
     throw new Error("Stored Source Index cache is invalid.");
   }
   return documents;
+}
+
+function validatedCachedSourceIndexPages(value: unknown[]): CachedSourceIndexPage[] {
+  const pageNumbers = new Set<number>();
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || !Number.isInteger(candidate.pageNumber) || (candidate.pageNumber as number) < 1
+      || typeof candidate.width !== "number" || !Number.isFinite(candidate.width) || candidate.width <= 0
+      || typeof candidate.height !== "number" || !Number.isFinite(candidate.height) || candidate.height <= 0
+      || typeof candidate.thumbnailDataUrl !== "string"
+      || !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(candidate.thumbnailDataUrl)
+      || candidate.thumbnailDataUrl.length > 750_000 || !Array.isArray(candidate.regions)) {
+      throw new Error("Stored Source Index cache is invalid.");
+    }
+    const pageNumber = candidate.pageNumber as number;
+    if (pageNumbers.has(pageNumber)) throw new Error("Stored Source Index cache is invalid.");
+    pageNumbers.add(pageNumber);
+    const regions = candidate.regions.map((region) => {
+      if (!isRecord(region) || (region.kind !== "text" && region.kind !== "equation")
+        || !validSourceIndexBounds(region.bounds) || !Array.isArray(region.termHashes)
+        || region.termHashes.some((hash) => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) {
+        throw new Error("Stored Source Index cache is invalid.");
+      }
+      const hasStart = region.sourceStartOffset !== undefined;
+      const hasEnd = region.sourceEndOffset !== undefined;
+      if (hasStart !== hasEnd || (hasStart && (!Number.isInteger(region.sourceStartOffset)
+        || !Number.isInteger(region.sourceEndOffset) || (region.sourceStartOffset as number) < 0
+        || (region.sourceEndOffset as number) <= (region.sourceStartOffset as number)))) {
+        throw new Error("Stored Source Index cache is invalid.");
+      }
+      return {
+        kind: region.kind as SourceIndexRegion["kind"],
+        bounds: region.bounds as unknown as SourceIndexBounds,
+        termHashes: [...new Set(region.termHashes as string[])],
+        ...(hasStart ? {
+          sourceStartOffset: region.sourceStartOffset as number,
+          sourceEndOffset: region.sourceEndOffset as number
+        } : {})
+      };
+    });
+    return {
+      pageNumber,
+      width: candidate.width as number,
+      height: candidate.height as number,
+      thumbnailDataUrl: candidate.thumbnailDataUrl as string,
+      regions
+    };
+  });
 }
 
 function validatedSourceIndexExtraction(value: unknown): SourceIndexExtraction {
@@ -2007,7 +2122,11 @@ function validSourceIndexBounds(value: unknown): value is SourceIndexBounds {
 }
 
 function searchTerms(query: string): string[] {
-  return query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  return query.toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+}
+
+function sourceIndexTermHash(term: string): string {
+  return createHash("sha256").update(term).digest("hex");
 }
 
 function searchPreview(text: string, terms: string[]): string {
@@ -2020,7 +2139,7 @@ function searchPreview(text: string, terms: string[]): string {
 }
 
 function sameIndexMatch(region: SourceIndexRegion, match: SourceSearchResult["match"]): boolean {
-  return region.bounds.x === match.bounds.x && region.bounds.y === match.bounds.y
+  return region.kind === match.kind && region.bounds.x === match.bounds.x && region.bounds.y === match.bounds.y
     && region.bounds.width === match.bounds.width && region.bounds.height === match.bounds.height
     && region.sourceStartOffset === match.sourceStartOffset && region.sourceEndOffset === match.sourceEndOffset;
 }

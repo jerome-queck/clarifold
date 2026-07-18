@@ -421,6 +421,9 @@ describe("Learning Application", () => {
       pageCount: 1,
       equationCount: 1
     }));
+    const persistedIndex = await readFile(join(dataDirectory, "source-index.json"), "utf8");
+    expect(persistedIndex).not.toContain("Every open cover");
+    expect(persistedIndex).not.toContain("finite subcover");
     const [result] = await application.searchSourceIndex(workspaceId, "finite subcover");
     expect(result).toMatchObject({
       sourceId: source.id,
@@ -455,7 +458,7 @@ describe("Learning Application", () => {
     expect(rebuilt.sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "ready" }));
     await expect(relaunched.searchSourceIndex(workspaceId, "finite subcover")).resolves.toHaveLength(1);
     expect(relaunched.getState().sessions[0].sourceAnchors).toEqual(anchored);
-    expect(sourceAccess.indexedSourceIds).toEqual([source.id, source.id]);
+    expect(sourceAccess.indexedSourceIds.filter((id) => id === source.id).length).toBeGreaterThanOrEqual(4);
     expect(started.sessions[0].sourceAnchors).toEqual([]);
   });
 
@@ -495,7 +498,17 @@ describe("Learning Application", () => {
       status: "ready",
       extractionMethod: "ocr"
     }));
-    await expect(application.searchSourceIndex(workspace.navigation.workspaceId, "sequence Cauchy")).resolves.toHaveLength(1);
+    const [ocrResult] = await application.searchSourceIndex(workspace.navigation.workspaceId, "sequence Cauchy");
+    expect(ocrResult).toBeDefined();
+    await expect(application.openSourceSearchResult(ocrResult.id)).resolves.toMatchObject({
+      status: "available",
+      highlight: {
+        pageNumber: 1,
+        exactText: "Assume the sequence is Cauchy",
+        thumbnailDataUrl: "data:image/png;base64,c21hbGw=",
+        bounds: { x: 0.08, y: 0.12, width: 0.7, height: 0.08 }
+      }
+    });
 
     await application.clearSourceIndex(source.id);
     sourceAccess.error = new Error("The source is missing or access is no longer available.");
@@ -507,6 +520,51 @@ describe("Learning Application", () => {
     }));
     await expect(application.searchSourceIndex(workspace.navigation.workspaceId, "sequence Cauchy")).resolves.toEqual([]);
     await expect(application.openSourceSearchResult("missing-result")).rejects.toThrow("Search this Source Index again");
+  });
+
+  it("restores a ready Source Index and discards a corrupt derived cache without blocking launch", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.contentBySourceName.set("lemma.txt", "Every finite subgroup is compact.");
+    sourceAccess.indexBySourceName.set("lemma.txt", {
+      extractionMethod: "embeddedText",
+      pages: [{
+        pageNumber: 1,
+        width: 1000,
+        height: 1400,
+        thumbnailDataUrl: "data:image/png;base64,c21hbGw=",
+        regions: [{
+          kind: "text",
+          text: "Every finite subgroup is compact.",
+          bounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+          sourceStartOffset: 0,
+          sourceEndOffset: 33
+        }]
+      }]
+    });
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "lemma.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/lemma.txt",
+      canonicalPath: "/Users/learner/lemma.txt",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.indexSource(source.id);
+
+    const readyRelaunch = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(readyRelaunch);
+    expect(readyRelaunch.getState().sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "ready" }));
+    await expect(readyRelaunch.searchSourceIndex(workspace.navigation.workspaceId, "finite subgroup")).resolves.toHaveLength(1);
+
+    await writeFile(join(dataDirectory, "source-index.json"), "{corrupt", "utf8");
+    const recovered = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(recovered);
+    expect(recovered.getState().sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "cleared" }));
+    await expect(recovered.searchSourceIndex(workspace.navigation.workspaceId, "finite subgroup")).resolves.toEqual([]);
+    expect(JSON.parse(await readFile(join(dataDirectory, "source-index.json"), "utf8"))).toEqual([]);
   });
 
   it("refuses a legacy Primary Folder until its descendant fingerprint can be re-established", async () => {

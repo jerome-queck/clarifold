@@ -173,11 +173,13 @@ function SourceIndexPanel({ workspace, state, onState }: {
   const [results, setResults] = useState<SourceSearchResult[]>([]);
   const [opened, setOpened] = useState<OpenedSourceSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const sources = state.sources.filter((source): source is LinkedSource =>
     source.kind === "linkedSource" && source.workspaceId === workspace.id
   );
-  const run = async (action: () => Promise<LearningApplicationState>) => {
+  const runIndexMutation = async (label: string, action: () => Promise<LearningApplicationState>) => {
     setError(null);
+    setBusy(label);
     try {
       const nextState = await action();
       onState(nextState);
@@ -185,24 +187,32 @@ function SourceIndexPanel({ workspace, state, onState }: {
       setOpened(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Source Index could not be updated.");
+    } finally {
+      setBusy(null);
     }
   };
   const search = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
     setOpened(null);
+    setBusy("Searching indexed source content…");
     try {
       setResults(await window.quickStudy.searchSourceIndex(workspace.id, query));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Source Index could not be searched.");
+    } finally {
+      setBusy(null);
     }
   };
   const openResult = async (resultId: string) => {
     setError(null);
+    setBusy("Opening the indexed source location…");
     try {
       setOpened(await window.quickStudy.openSourceSearchResult(resultId));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Source Index result could not be opened.");
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -217,7 +227,7 @@ function SourceIndexPanel({ workspace, state, onState }: {
           {sources.map((source) => {
             const status = state.sourceIndexes.find((candidate) => candidate.sourceId === source.id);
             const label = status?.status === "ready"
-              ? `Ready · ${status.pageCount} ${status.pageCount === 1 ? "page" : "pages"}`
+              ? `Ready · ${status.pageCount} ${status.pageCount === 1 ? "page" : "pages"} · ${status.equationCount} ${status.equationCount === 1 ? "equation region" : "equation regions"}`
               : status?.status === "cleared" ? "Search data unavailable · rebuild required"
                 : status?.status === "unavailable" ? "Search data unavailable" : "Not indexed";
             const shouldRebuild = status?.status === "ready" || status?.status === "cleared";
@@ -227,14 +237,15 @@ function SourceIndexPanel({ workspace, state, onState }: {
                 {status?.error && <p className="failure-message">{status.error}</p>}
                 <div className="source-actions">
                   <button className="secondary" aria-label={`${shouldRebuild ? "Rebuild" : "Build"} Source Index for ${source.name}`}
-                    onClick={() => void run(() => shouldRebuild
+                    disabled={Boolean(busy)}
+                    onClick={() => void runIndexMutation(shouldRebuild ? "Rebuilding the Source Index…" : "Building the Source Index…", () => shouldRebuild
                       ? window.quickStudy.rebuildSourceIndex(source.id)
                       : window.quickStudy.indexSource(source.id))}>
                     {shouldRebuild ? "Rebuild index" : "Build index"}
                   </button>
                   <button className="text-button" aria-label={`Clear Source Index for ${source.name}`}
-                    disabled={!status || status.status === "cleared"}
-                    onClick={() => void run(() => window.quickStudy.clearSourceIndex(source.id))}>Clear index</button>
+                    disabled={Boolean(busy) || !status || status.status === "cleared"}
+                    onClick={() => void runIndexMutation("Clearing the Source Index…", () => window.quickStudy.clearSourceIndex(source.id))}>Clear index</button>
                 </div>
               </li>
             );
@@ -244,9 +255,9 @@ function SourceIndexPanel({ workspace, state, onState }: {
       <form className="source-index-search" onSubmit={(event) => void search(event)}>
         <label htmlFor={`source-index-search-${workspace.id}`}>Search indexed source content</label>
         <div>
-          <input id={`source-index-search-${workspace.id}`} type="search" value={query}
+          <input id={`source-index-search-${workspace.id}`} type="search" value={query} disabled={Boolean(busy)}
             onChange={(event) => setQuery(event.target.value)} />
-          <button className="primary" type="submit">Search sources</button>
+          <button className="primary" type="submit" disabled={Boolean(busy)}>Search sources</button>
         </div>
       </form>
       {results.length > 0 && (
@@ -254,7 +265,8 @@ function SourceIndexPanel({ workspace, state, onState }: {
           {results.map((result) => (
             <li key={result.id}>
               <img src={result.thumbnailDataUrl} alt="" />
-              <button className="text-button" aria-label={`Open source result ${result.sourceName}, ${result.locationLabel}`}
+              <button className="text-button" aria-label={`Open source result ${result.sourceName}, ${result.locationLabel}: ${result.preview}`}
+                disabled={Boolean(busy)}
                 onClick={() => void openResult(result.id)}>
                 <strong>{result.sourceName} · {result.locationLabel}</strong>
                 <span>{result.preview}</span>
@@ -264,6 +276,7 @@ function SourceIndexPanel({ workspace, state, onState }: {
         </ul>
       )}
       {results.length === 0 && query.trim() && <p className="subtle" role="status">No indexed source matches.</p>}
+      {busy && <p className="subtle" role="status" aria-live="polite">{busy}</p>}
       {opened?.status === "available" && (
         <section className="source-index-opened" aria-label="Opened Source Index result">
           <h4>Source location</h4>
@@ -277,9 +290,20 @@ function SourceIndexPanel({ workspace, state, onState }: {
                     exactText: opened.highlight.exactText
                   }}
               onChooseAction={() => undefined} />
-          ) : opened.mediaType === "image/png" || opened.mediaType === "image/jpeg"
-            ? <img src={opened.content} alt="Opened indexed source" />
-            : <object data={opened.content} type={opened.mediaType} aria-label="Opened indexed source document" />}
+          ) : opened.highlight ? (
+            <figure className="indexed-visual-match">
+              <div>
+                <img src={opened.highlight.thumbnailDataUrl} alt={`Indexed source page ${opened.highlight.pageNumber}`} />
+                <span aria-label="Opened Source Index visual match" style={{
+                  left: `${opened.highlight.bounds.x * 100}%`,
+                  top: `${opened.highlight.bounds.y * 100}%`,
+                  width: `${opened.highlight.bounds.width * 100}%`,
+                  height: `${opened.highlight.bounds.height * 100}%`
+                }} />
+              </div>
+              <figcaption>Page {opened.highlight.pageNumber}: {opened.highlight.exactText}</figcaption>
+            </figure>
+          ) : <p className="failure-message">The indexed source location is unavailable.</p>}
         </section>
       )}
       {opened?.status === "unavailable" && <p className="failure-message" role="alert">{opened.error}</p>}

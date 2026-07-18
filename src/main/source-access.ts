@@ -30,8 +30,7 @@ interface SourceAccessDependencies {
   readFile(path: string): Promise<Buffer>;
   readdir(path: string): Promise<string[]>;
   startAccessingSecurityScopedResource(bookmarkData: string): () => void;
-  extractText?(path: string): Promise<string>;
-  createThumbnail?(path: string): Promise<string>;
+  extractDocument?(path: string): Promise<SourceIndexExtraction>;
 }
 
 export class MacOsSourceAccess implements LocalSourceAccess {
@@ -91,22 +90,11 @@ export class MacOsSourceAccess implements LocalSourceAccess {
             ? "ocr"
             : null;
       if (!extractionMethod) throw new Error("This source type does not have indexable mathematical content.");
-      const extractedText = view.mediaType === "text/plain"
-        ? view.content
-        : await this.dependencies.extractText?.(source.link.lastKnownPath);
-      if (!extractedText?.trim() || extractedText.trim() === "(null)") {
-        throw new Error(view.mediaType === "application/pdf"
-          ? "No searchable text could be extracted from this PDF."
-          : "No text could be recognized in this image.");
+      if (view.mediaType !== "text/plain") {
+        if (!this.dependencies.extractDocument) throw new Error("Native document indexing is unavailable.");
+        return this.dependencies.extractDocument(source.link.lastKnownPath);
       }
-      let thumbnailDataUrl = EMPTY_THUMBNAIL_DATA_URL;
-      try {
-        thumbnailDataUrl = await this.dependencies.createThumbnail?.(source.link.lastKnownPath)
-          ?? EMPTY_THUMBNAIL_DATA_URL;
-      } catch {
-        // Search remains useful when Quick Look cannot thumbnail a supported text source.
-      }
-      return sourceIndexExtraction(extractedText, extractionMethod, thumbnailDataUrl);
+      return textSourceIndexExtraction(view.content, EMPTY_THUMBNAIL_DATA_URL);
     } finally {
       stopAccess?.();
     }
@@ -168,14 +156,13 @@ export class MacOsSourceAccess implements LocalSourceAccess {
 
 const EMPTY_THUMBNAIL_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X2NDWQAAAABJRU5ErkJggg==";
 
-function sourceIndexExtraction(
+function textSourceIndexExtraction(
   content: string,
-  extractionMethod: SourceIndexExtraction["extractionMethod"],
   thumbnailDataUrl: string
 ): SourceIndexExtraction {
   let pageStartOffset = 0;
   return {
-    extractionMethod,
+    extractionMethod: "embeddedText",
     pages: content.split("\f").map((pageText, pageIndex) => {
       const lines = [...pageText.matchAll(/[^\r\n]+/g)];
       const lineHeight = 1 / Math.max(lines.length, 1);
@@ -191,9 +178,7 @@ function sourceIndexExtraction(
           width: 0.9,
           height: Math.min(lineHeight, 0.08)
         };
-        const offsets = extractionMethod === "embeddedText"
-          ? { sourceStartOffset: startOffset, sourceEndOffset: startOffset + trimmed.length }
-          : {};
+        const offsets = { sourceStartOffset: startOffset, sourceEndOffset: startOffset + trimmed.length };
         const textRegion = { kind: "text" as const, text: trimmed, bounds, ...offsets };
         const equations = [...trimmed.matchAll(/\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\$[^$\n]+?\$|\\\([\s\S]+?\\\)/g)].map((match) => {
           const equationStart = match.index;
@@ -207,10 +192,10 @@ function sourceIndexExtraction(
               width: equationWidth,
               height: bounds.height
             },
-            ...(extractionMethod === "embeddedText" ? {
+            ...({
               sourceStartOffset: startOffset + equationStart,
               sourceEndOffset: startOffset + equationStart + match[0].length
-            } : {})
+            })
           };
         });
         return [textRegion, ...equations];
