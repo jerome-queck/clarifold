@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   isSourceAnchorPaletteAction,
   isSourceAnchorSelection,
+  isTrailItemKind,
   LearningApplication,
   type LearnerAction
 } from "../shared/learning-application";
@@ -98,6 +99,20 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "restoreLearningArtifactRevision":
       return "artifactId" in action && typeof action.artifactId === "string"
         && "revisionId" in action && typeof action.revisionId === "string";
+    case "addTrailItem":
+      return "kind" in action && isTrailItemKind(action.kind)
+        && "content" in action && typeof action.content === "string";
+    case "editTrailItem":
+      return "trailItemId" in action && typeof action.trailItemId === "string"
+        && "content" in action && typeof action.content === "string";
+    case "removeTrailItem":
+      return "trailItemId" in action && typeof action.trailItemId === "string";
+    case "moveTrailItem":
+      return "trailItemId" in action && typeof action.trailItemId === "string"
+        && "direction" in action && ["up", "down"].includes(String(action.direction));
+    case "setTrailItemRequired":
+      return "trailItemId" in action && typeof action.trailItemId === "string"
+        && "required" in action && typeof action.required === "boolean";
     case "loginWithApiKey":
       return "apiKey" in action && typeof action.apiKey === "string";
     case "reviseSessionProposal":

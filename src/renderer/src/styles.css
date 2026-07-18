@@ -89,7 +89,7 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .primary, .secondary, .text-button { border: 0; border-radius: 10px; padding: 11px 15px; font-weight: 750; }
 .primary { color: white; background: #1d5548; box-shadow: 0 7px 18px rgba(29,85,72,.18); }
 .secondary { color: #294d43; background: #e2e9e2; }
-.primary:disabled, .secondary:disabled { cursor: default; opacity: .45; }
+.primary:disabled, .secondary:disabled, .text-button:disabled { cursor: default; opacity: .45; }
 .text-button { color: #1d5548; background: transparent; }
 .compact-form { margin-top: 16px; }
 .compact-form .secondary { width: 100%; margin-top: 7px; }
@@ -291,6 +291,25 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .math-canvas > .model-access { margin-top: 4px; }
 .learning-artifact { margin: 6px 0 18px; padding: 24px; border: 2px solid #b8cfbd; border-radius: 16px; background: #f7fbf4; }
 .learning-artifact h2 { font-size: 25px; }
+.trail-draft { margin: 6px 0 18px; padding: 24px; border: 1px solid #c9d8cd; border-radius: 16px; background: #f7f4e9; }
+.trail-draft h2 { font-size: 25px; }
+.trail-items { display: grid; gap: 12px; margin: 20px 0; padding: 0; list-style: none; }
+.trail-item { padding: 16px; border: 1px solid #d5d4ca; border-radius: 12px; background: #fffdf7; }
+.trail-item-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.trail-item .field { min-height: 72px; margin-bottom: 10px; }
+.trail-links { margin: 4px 0 14px; padding-left: 20px; color: #557069; font-size: 12px; }
+.trail-links li + li { margin-top: 4px; }
+.trail-links .text-button { padding: 0; font-size: inherit; }
+.trail-links a { color: #1d5548; font-weight: 750; }
+.trail-required { display: flex; align-items: center; gap: 8px; width: fit-content; margin: 8px 0; }
+.trail-required input { width: auto; min-height: auto; }
+.trail-item-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.trail-add { display: grid; grid-template-columns: minmax(150px, .35fr) minmax(0, 1fr) auto; gap: 8px 12px; align-items: end; margin-top: 18px; padding-top: 18px; border-top: 1px solid #d5d4ca; }
+.trail-add label { margin: 0; }
+.trail-add label:nth-of-type(2) { grid-column: 2; grid-row: 1; }
+.trail-add select, .trail-add textarea { margin: 0; }
+.trail-add textarea { min-height: 64px; }
+.trail-add .primary { grid-column: 3; grid-row: 2; }
 .artifact-content { width: 100%; min-height: 150px; padding: 14px; resize: vertical; border: 1px solid #b8cfbd; border-radius: 10px; color: #1c332f; background: #fff; white-space: pre-wrap; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; }
 .artifact-evidence { display: grid; gap: 6px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid #d4dfd3; }
 .artifact-evidence div { display: grid; grid-template-columns: 140px 1fr; gap: 12px; }
@@ -348,4 +367,6 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
   .organize-forms { grid-template-columns: 1fr; }
   .card-heading { flex-direction: column; }
   .authentication-card { align-items: stretch; flex-direction: column; }
+  .trail-add { grid-template-columns: 1fr; }
+  .trail-add label:nth-of-type(2), .trail-add .primary { grid-column: 1; grid-row: auto; }
 }
