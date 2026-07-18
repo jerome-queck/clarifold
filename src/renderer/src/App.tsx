@@ -549,7 +549,7 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
   }
   if (!modelAvailable && card.status === "idle") {
     return (
-      <section className="teaching-card unavailable" aria-labelledby="teaching-card-title">
+      <section className="teaching-card unavailable" aria-label="Current Teaching Card">
         <p className="eyebrow">Model-dependent action</p>
         <h2 id="teaching-card-title">Model teaching unavailable</h2>
         <p className="subtle">No Teaching Card will be fabricated in Local Working Mode.</p>
@@ -557,7 +557,7 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
     );
   }
   return (
-    <section className={`teaching-card ${card.status}`} aria-live="polite" aria-labelledby="teaching-card-title">
+    <section className={`teaching-card ${card.status}`} aria-live="polite" aria-label="Current Teaching Card">
       <div className="card-heading">
         <div><p className="eyebrow">Teaching Card</p><h2 id="teaching-card-title">{session.learningGoal}</h2></div>
         <span className="saved">{teachingStatusLabel(card.status)}</span>
