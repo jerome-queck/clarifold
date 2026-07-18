@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   ModelAccessError,
   type AuthenticationState,
@@ -78,6 +78,7 @@ export interface SelectedLocalSource {
   name: string;
   resourceType: "file" | "folder";
   lastKnownPath: string;
+  canonicalPath: string;
   accessGrant: LocalSourceAccessGrant;
   fingerprint: SourceFingerprint;
 }
@@ -91,6 +92,7 @@ export interface LinkedSource {
   resourceType: "file" | "folder";
   link: {
     lastKnownPath: string;
+    canonicalPath: string;
     accessGrant: LocalSourceAccessGrant;
     fingerprint: SourceFingerprint;
     accessStatus: "available" | "unavailable";
@@ -347,7 +349,7 @@ export class LearningApplication {
     const workspace = this.requireWorkspace(workspaceId);
     if (selection.resourceType !== "folder") throw new Error("Choose a folder for the Primary Folder.");
     if (workspace.context.primaryFolderSourceId) throw new Error("This Study Workspace already has a Primary Folder.");
-    this.requireSourcePlacement(workspace, "primaryFolder", selection.lastKnownPath);
+    this.requireSourcePlacement(workspace, "primaryFolder", selection.canonicalPath);
     const source = linkedSource(workspaceId, "primaryFolder", selection);
     this.state.sources.push(source);
     workspace.context.primaryFolderSourceId = source.id;
@@ -361,7 +363,7 @@ export class LearningApplication {
   ): Promise<LearningApplicationState> {
     const workspace = this.requireWorkspace(workspaceId);
     if (selection.resourceType !== "file") throw new Error("Choose a file for an External Attachment.");
-    this.requireSourcePlacement(workspace, "externalAttachment", selection.lastKnownPath);
+    this.requireSourcePlacement(workspace, "externalAttachment", selection.canonicalPath);
     const source = linkedSource(workspaceId, "externalAttachment", selection);
     this.state.sources.push(source);
     workspace.context.sourceIds.push(source.id);
@@ -376,6 +378,13 @@ export class LearningApplication {
     if (!this.sourceAccess) throw new Error("Local source access is unavailable.");
     try {
       const view = await this.sourceAccess.read(source);
+      if (!sameFingerprint(source.link.fingerprint, view.fingerprint)) {
+        const message = "This source has changed since it was linked. Its original association is retained, but changed-source recovery is not available yet.";
+        source.link.accessStatus = "unavailable";
+        source.link.error = message;
+        await this.publishAndPersist();
+        return { status: "unavailable", sourceId, error: message };
+      }
       source.link.accessStatus = "available";
       source.link.error = null;
       await this.publishAndPersist();
@@ -940,12 +949,12 @@ export class LearningApplication {
     );
     if (role === "externalAttachment") {
       const primaryFolder = linkedSources.find((source) => source.role === "primaryFolder");
-      if (primaryFolder && pathIsInside(path, primaryFolder.link.lastKnownPath)) {
+      if (primaryFolder && pathIsInside(path, primaryFolder.link.canonicalPath)) {
         throw new Error("This file is already covered by the Primary Folder.");
       }
       return;
     }
-    if (linkedSources.some((source) => source.role === "externalAttachment" && pathIsInside(source.link.lastKnownPath, path))) {
+    if (linkedSources.some((source) => source.role === "externalAttachment" && pathIsInside(source.link.canonicalPath, path))) {
       throw new Error("An existing External Attachment is already inside this Primary Folder.");
     }
   }
@@ -1021,9 +1030,13 @@ function usefulSourceError(error: unknown): string {
     : "The source is missing or access is no longer available.";
 }
 
+function sameFingerprint(left: SourceFingerprint, right: SourceFingerprint): boolean {
+  return left.size === right.size && left.modifiedAtMs === right.modifiedAtMs;
+}
+
 function pathIsInside(path: string, folderPath: string): boolean {
   const relation = relative(folderPath, path);
-  return relation !== "" && !relation.startsWith("..") && !isAbsolute(relation);
+  return relation !== "" && relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation);
 }
 
 function mostRecentSessionId(sessions: LearningSession[]): string | null {
@@ -1151,6 +1164,7 @@ function linkedSource(
     resourceType: selection.resourceType,
     link: {
       lastKnownPath: selection.lastKnownPath,
+      canonicalPath: selection.canonicalPath,
       accessGrant: selection.accessGrant,
       fingerprint: selection.fingerprint,
       accessStatus: "available",
@@ -1176,12 +1190,18 @@ function migrateWorkspaceSources(value: unknown): WorkspaceSource[] {
     if (candidate.kind !== "linkedSource" || !["primaryFolder", "externalAttachment"].includes(String(candidate.role))
       || !["file", "folder"].includes(String(candidate.resourceType)) || !isRecord(candidate.link)
       || typeof candidate.link.lastKnownPath !== "string" || !isAbsolute(candidate.link.lastKnownPath)
+      || !(candidate.link.canonicalPath === undefined
+        || (typeof candidate.link.canonicalPath === "string" && isAbsolute(candidate.link.canonicalPath)))
       || !validAccessGrant(candidate.link.accessGrant) || !validFingerprint(candidate.link.fingerprint)
       || !["available", "unavailable"].includes(String(candidate.link.accessStatus))
       || !(candidate.link.error === null || typeof candidate.link.error === "string")) {
       throw new Error("Stored Linked Source is invalid.");
     }
-    return candidate as unknown as LinkedSource;
+    const source = candidate as unknown as LinkedSource;
+    source.link.canonicalPath = typeof candidate.link.canonicalPath === "string"
+      ? candidate.link.canonicalPath
+      : candidate.link.lastKnownPath as string;
+    return source;
   });
 }
 

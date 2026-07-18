@@ -24,6 +24,7 @@ interface SourceAccessDependencies {
     buttonLabel: string;
   }): Promise<{ canceled: boolean; filePaths: string[]; bookmarks?: string[] }>;
   stat(path: string): Promise<FileStat>;
+  realpath(path: string): Promise<string>;
   readFile(path: string): Promise<Buffer>;
   readdir(path: string): Promise<string[]>;
   startAccessingSecurityScopedResource(bookmarkData: string): () => void;
@@ -85,6 +86,7 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       name: basename(path),
       resourceType,
       lastKnownPath: path,
+      canonicalPath: await this.dependencies.realpath(path),
       accessGrant: bookmarkData
         ? { kind: "securityScopedBookmark", bookmarkData }
         : null,

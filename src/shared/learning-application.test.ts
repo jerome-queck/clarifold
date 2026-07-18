@@ -57,6 +57,7 @@ describe("Learning Application", () => {
       name: "algebra-notes",
       resourceType: "folder",
       lastKnownPath: "/Users/learner/Documents/algebra-notes",
+      canonicalPath: "/Users/learner/Documents/algebra-notes",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
       fingerprint: { size: 96, modifiedAtMs: 1_726_000_000_000 }
     };
@@ -92,6 +93,7 @@ describe("Learning Application", () => {
       name: "lecture-3.pdf",
       resourceType: "file",
       lastKnownPath: "/Users/learner/Downloads/lecture-3.pdf",
+      canonicalPath: "/Users/learner/Downloads/lecture-3.pdf",
       accessGrant: null,
       fingerprint: { size: 4_096, modifiedAtMs: 1_726_000_100_000 }
     });
@@ -124,6 +126,7 @@ describe("Learning Application", () => {
       name: "quick-notes",
       resourceType: "folder",
       lastKnownPath: "/Users/learner/quick-notes",
+      canonicalPath: "/Users/learner/quick-notes",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "folder-bookmark" },
       fingerprint: { size: 64, modifiedAtMs: 1234 }
     });
@@ -133,8 +136,25 @@ describe("Learning Application", () => {
       name: "inside.txt",
       resourceType: "file",
       lastKnownPath: "/Users/learner/quick-notes/inside.txt",
+      canonicalPath: "/Users/learner/quick-notes/inside.txt",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "file-bookmark" },
       fingerprint: { size: 12, modifiedAtMs: 1235 }
+    })).rejects.toThrow("already covered by the Primary Folder");
+    await expect(application.linkExternalAttachment("quick-study-workspace", {
+      name: "..notes.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/quick-notes/..notes.txt",
+      canonicalPath: "/Users/learner/quick-notes/..notes.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "dot-file-bookmark" },
+      fingerprint: { size: 13, modifiedAtMs: 1236 }
+    })).rejects.toThrow("already covered by the Primary Folder");
+    await expect(application.linkExternalAttachment("quick-study-workspace", {
+      name: "notes-alias.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/Desktop/notes-alias.txt",
+      canonicalPath: "/Users/learner/quick-notes/notes.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "alias-bookmark" },
+      fingerprint: { size: 14, modifiedAtMs: 1237 }
     })).rejects.toThrow("already covered by the Primary Folder");
 
     const { application: reverseOrder } = await launch();
@@ -142,6 +162,7 @@ describe("Learning Application", () => {
       name: "inside.txt",
       resourceType: "file",
       lastKnownPath: "/Users/learner/quick-notes/inside.txt",
+      canonicalPath: "/Users/learner/quick-notes/inside.txt",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "file-bookmark" },
       fingerprint: { size: 12, modifiedAtMs: 1235 }
     });
@@ -149,6 +170,7 @@ describe("Learning Application", () => {
       name: "quick-notes",
       resourceType: "folder",
       lastKnownPath: "/Users/learner/quick-notes",
+      canonicalPath: "/Users/learner/quick-notes",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "folder-bookmark" },
       fingerprint: { size: 64, modifiedAtMs: 1234 }
     })).rejects.toThrow("External Attachment is already inside this Primary Folder");
@@ -163,6 +185,7 @@ describe("Learning Application", () => {
       name: "compactness.txt",
       resourceType: "file",
       lastKnownPath: "/Users/learner/compactness.txt",
+      canonicalPath: "/Users/learner/compactness.txt",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
       fingerprint: { size: 64, modifiedAtMs: 1234 }
     });
@@ -175,6 +198,17 @@ describe("Learning Application", () => {
       content: "Every open cover has a finite subcover."
     });
     expect(sourceAccess.openedSourceIds).toEqual([source.id]);
+
+    sourceAccess.fingerprint = { size: 65, modifiedAtMs: 4321 };
+    const changed = await application.openLinkedSource(source.id);
+    expect(changed).toEqual({
+      status: "unavailable",
+      sourceId: source.id,
+      error: "This source has changed since it was linked. Its original association is retained, but changed-source recovery is not available yet."
+    });
+    expect(application.getState().sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      link: { fingerprint: { size: 64, modifiedAtMs: 1234 } }
+    });
 
     sourceAccess.error = new Error("The source is missing or access is no longer available.");
     const unavailable = await application.openLinkedSource(source.id);
@@ -913,6 +947,7 @@ describe("Learning Application", () => {
       name: "notes.txt",
       resourceType: "file",
       lastKnownPath: "/Users/learner/notes.txt",
+      canonicalPath: "/Users/learner/notes.txt",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
       fingerprint: { size: 12, modifiedAtMs: 1234 }
     });
@@ -946,7 +981,7 @@ describe("Learning Application", () => {
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
   error: Error | null = null;
-  readonly fingerprint = { size: 64, modifiedAtMs: 1234 };
+  fingerprint = { size: 64, modifiedAtMs: 1234 };
 
   async read(source: LinkedSource) {
     this.openedSourceIds.push(source.id);

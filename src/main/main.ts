@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LearningApplication, type LearnerAction } from "../shared/learning-application";
@@ -12,6 +12,7 @@ let modelRuntime: ModelRuntime | null = null;
 const sourceAccess = new MacOsSourceAccess({
   showOpenDialog: (options) => dialog.showOpenDialog(options),
   stat,
+  realpath,
   readFile,
   readdir,
   startAccessingSecurityScopedResource: (bookmarkData) => {

@@ -4,6 +4,8 @@ The macOS app will keep every existing disk-backed source at its original local 
 
 Stale bookmarks will be refreshed when they still resolve. A missing, unavailable, or inaccessible source will retain its association and Session Record while presenting Retry and Locate again recovery actions; re-selection replaces the failed bookmark. Managed Assets are reserved for inputs with no existing backing file, such as pasted images and captures, or for a copy the learner explicitly requests.
 
+Delivery is staged. The initial linking slice retains an unavailable association and offers Retry; if its fingerprint changed, it refuses to display the changed content rather than silently replacing the recorded fingerprint. Stale-bookmark refresh, Locate again, explicit Source Revisions, index rebuilds, and snapshots are delivered together by issue #20 so this slice does not install a partial recovery model.
+
 The app may retain a rebuildable Source Index containing extracted text, OCR, equation and page geometry, small thumbnails, and search metadata needed for fast retrieval and stable Source Anchors. This derived cache is not the canonical source or a duplicate PDF. It remains local, can be cleared and rebuilt, and must not be required to reconstruct source content that no longer exists.
 
 When exact reproducibility matters, the learner may explicitly invoke `Preserve source snapshot`. This creates a Source Snapshot as a Managed Asset for the selected Source Revision and keeps its relationship to the Linked Source visible. The app never creates such a duplicate automatically, and the snapshot neither replaces nor modifies the external file.

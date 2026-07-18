@@ -12,6 +12,7 @@ describe("macOS source access", () => {
     const access = new MacOsSourceAccess({
       showOpenDialog,
       stat: vi.fn().mockResolvedValue(fileStat()),
+      realpath: vi.fn().mockImplementation(async (path) => path),
       readFile: vi.fn(),
       readdir: vi.fn(),
       startAccessingSecurityScopedResource: vi.fn()
@@ -27,6 +28,7 @@ describe("macOS source access", () => {
       name: "lecture.pdf",
       resourceType: "file",
       lastKnownPath: "/Users/learner/notes/lecture.pdf",
+      canonicalPath: "/Users/learner/notes/lecture.pdf",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
       fingerprint: { size: 128, modifiedAtMs: 1234 }
     });
@@ -39,6 +41,7 @@ describe("macOS source access", () => {
     const access = new MacOsSourceAccess({
       showOpenDialog: vi.fn(),
       stat: vi.fn().mockResolvedValue(fileStat()),
+      realpath: vi.fn().mockImplementation(async (path) => path),
       readFile,
       readdir: vi.fn(),
       startAccessingSecurityScopedResource: startAccess
@@ -96,6 +99,7 @@ describe("macOS source access", () => {
     const access = new MacOsSourceAccess({
       showOpenDialog: vi.fn(),
       stat: vi.fn().mockResolvedValue(fileStat()),
+      realpath: vi.fn().mockImplementation(async (path) => path),
       readFile: vi.fn().mockRejectedValue(new Error("volume unavailable")),
       readdir: vi.fn(),
       startAccessingSecurityScopedResource: vi.fn().mockReturnValue(stopAccess)
@@ -114,6 +118,7 @@ function dependencies() {
   return {
     showOpenDialog: vi.fn(),
     stat: vi.fn().mockResolvedValue(fileStat()),
+    realpath: vi.fn().mockImplementation(async (path) => path),
     readFile: vi.fn(),
     readdir: vi.fn(),
     startAccessingSecurityScopedResource: vi.fn()
@@ -130,6 +135,7 @@ function linkedFile(): LinkedSource {
     resourceType: "file",
     link: {
       lastKnownPath: "/Users/learner/notes/lecture.txt",
+      canonicalPath: "/Users/learner/notes/lecture.txt",
       accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
       fingerprint: { size: 128, modifiedAtMs: 1234 },
       accessStatus: "available",
