@@ -748,6 +748,27 @@ function WorkspaceEditor({ workspace, mission, state, onState }: {
   );
 }
 
+function ModelStopConfirmationNotice({ session, onState, onError }: {
+  session: LearningSession;
+  onState: StateHandler;
+  onError(message: string): void;
+}) {
+  const confirmation = session.modelStopConfirmation;
+  if (!confirmation) return null;
+  return (
+    <div className="model-stop-confirmation" role={confirmation.status === "unconfirmed" ? "alert" : "status"}>
+      <span>{confirmation.message}</span>
+      {confirmation.status === "unconfirmed" && (
+        <button className="secondary" aria-label={`Retry Codex interruption for ${session.learningGoal}`}
+          onClick={() => void window.quickStudy.submit({ type: "retrySessionModelStop", sessionId: session.id })
+            .then(onState).catch((cause: unknown) => onError(
+              cause instanceof Error ? cause.message : "Codex interruption could not be retried."
+            ))}>Retry interruption</button>
+      )}
+    </div>
+  );
+}
+
 function MissionHistory({ workspace, mission, state, onState }: {
   workspace: StudyWorkspace;
   mission: StudyMission | null;
@@ -785,18 +806,7 @@ function MissionHistory({ workspace, mission, state, onState }: {
                     type: "resumeSession", sessionId: session.id
                   }).then(onState)}>Resume</button>}
               </div>
-              {session.modelStopConfirmation && (
-                <div className="model-stop-confirmation" role={session.modelStopConfirmation.status === "unconfirmed" ? "alert" : "status"}>
-                  <span>{session.modelStopConfirmation.message}</span>
-                  {session.modelStopConfirmation.status === "unconfirmed" && (
-                    <button className="secondary" aria-label={`Retry Codex interruption for ${session.learningGoal}`}
-                      onClick={() => void window.quickStudy.submit({ type: "retrySessionModelStop", sessionId: session.id })
-                        .then(onState).catch((cause: unknown) => setModelWorkError(
-                          cause instanceof Error ? cause.message : "Codex interruption could not be retried."
-                        ))}>Retry interruption</button>
-                  )}
-                </div>
-              )}
+              <ModelStopConfirmationNotice session={session} onState={onState} onError={setModelWorkError} />
               {session.consolidatedOutcome && <ConsolidatedOutcome session={session} onState={onState} />}
             </li>
           ))}
@@ -893,18 +903,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             <button className="primary" disabled={Boolean(session.consolidationDraft)} onClick={() => void beginConsolidation()}>
               {session.consolidationDraft ? "Consolidation review open" : "Finish & consolidate"}
             </button>
-            {session.modelStopConfirmation && (
-              <div className="model-stop-confirmation" role={session.modelStopConfirmation.status === "unconfirmed" ? "alert" : "status"}>
-                <span>{session.modelStopConfirmation.message}</span>
-                {session.modelStopConfirmation.status === "unconfirmed" && (
-                  <button className="secondary" aria-label={`Retry Codex interruption for ${session.learningGoal}`}
-                    onClick={() => void window.quickStudy.submit({ type: "retrySessionModelStop", sessionId: session.id })
-                      .then(onState).catch((cause: unknown) => setWorkbenchError(
-                        cause instanceof Error ? cause.message : "Codex interruption could not be retried."
-                      ))}>Retry interruption</button>
-                )}
-              </div>
-            )}
+            <ModelStopConfirmationNotice session={session} onState={onState} onError={setWorkbenchError} />
           </aside>
           <section className="math-canvas">
             <ContinuationContext state={state} session={session} />
