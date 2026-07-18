@@ -2,12 +2,14 @@ import { useEffect, useState, type FormEvent } from "react";
 import type {
   LearningApplicationState,
   LearningSession,
+  LearnerAction,
   LinkedSource,
   LinkedSourceView,
   SessionSearchResult,
   StudyMission,
   StudyWorkspace
 } from "../../shared/learning-application";
+import { sessionAccessPolicyLabel } from "../../shared/session-access";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -483,11 +485,18 @@ function SessionSearch({ onState }: { onState: StateHandler }) {
 function Intake({ state, onState }: { state: LearningApplicationState; onState: StateHandler }) {
   const [mathematics, setMathematics] = useState("");
   const modelAvailable = state.modelAccess.status === "available";
+  const workspace = state.workspaces.find((candidate) => candidate.id === state.navigation.workspaceId)!;
+  const mission = state.missions.find((candidate) => candidate.id === state.navigation.missionId) ?? null;
+  const location = workspace.kind === "named" && mission
+    ? { workspaceId: workspace.id, missionId: mission.id }
+    : undefined;
+  const initialAccess = location ? "Workspace Access" : "Focused Access";
   const start = async (event: FormEvent) => {
     event.preventDefault();
     onState(await window.quickStudy.submit({
       type: modelAvailable ? "submitSessionIntake" : "startQuickStudy",
-      mathematics
+      mathematics,
+      ...(location ? { location } : {})
     }));
   };
   return (
@@ -504,7 +513,7 @@ function Intake({ state, onState }: { state: LearningApplicationState; onState: 
           placeholder="What would you like to understand?"
         />
         <div className="intake-actions">
-          <span>{modelAvailable ? "Focused Access · no workspace setup required" : "Local Working Mode · local study remains available"}</span>
+          <span>{modelAvailable ? `${initialAccess} · ${location ? `${workspace.name} · ${mission!.name}` : "no workspace setup required"}` : `Local Working Mode · ${initialAccess}`}</span>
           <button className="primary" disabled={!mathematics.trim()}>{modelAvailable ? "Propose Learning Session" : "Start local Learning Session"}</button>
         </div>
         {state.intakeError && <p className="failure-message" role="alert">{state.intakeError}</p>}
@@ -658,7 +667,7 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
               <span className="saved">Saved locally</span>
             </div>
             <article>{session.mathematics}</article>
-            <p className="access-policy"><strong>Session Access Policy:</strong> Focused Access · only the mathematics pasted into this session</p>
+            <SessionAccessPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
             <TeachingCard session={session} modelAvailable={state.modelAccess.status === "available"} onState={onState} />
@@ -668,6 +677,116 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
       </div>
     </main>
   );
+}
+
+function SessionAccessPanel({ state, session, onState }: {
+  state: LearningApplicationState;
+  session: LearningSession;
+  onState: StateHandler;
+}) {
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const pendingRequest = session.accessRequests.find((request) => request.status === "pending") ?? null;
+  const submitAccessAction = async (action: LearnerAction) => {
+    setAccessError(null);
+    try {
+      onState(await window.quickStudy.submit(action));
+    } catch (error) {
+      setAccessError(error instanceof Error ? error.message : "Could not update the Session Access Policy.");
+    }
+  };
+  const choosePolicy = (policy: LearningSession["accessPolicy"]) => {
+    void submitAccessAction({ type: "selectSessionAccessPolicy", policy });
+  };
+  const decide = (decision: "approve" | "deny" | "narrow") => {
+    if (!pendingRequest) return;
+    void submitAccessAction({
+      type: "decideAccessRequest",
+      requestId: pendingRequest.id,
+      decision,
+      ...(decision === "narrow" ? { narrowedPolicy: "workspace" as const } : {})
+    });
+  };
+  return (
+    <section className="access-policy" aria-labelledby="session-access-title">
+      <div className="access-heading">
+        <div>
+          <p className="eyebrow">Session Access Policy</p>
+          <h2 id="session-access-title">{sessionAccessPolicyLabel(session.accessPolicy)}</h2>
+          <p>{accessPolicyDescription(session.accessPolicy)}</p>
+        </div>
+        <span className="saved" role="status">Current session only</span>
+      </div>
+      <fieldset disabled={Boolean(pendingRequest) || session.pendingFullAccessConfirmation}>
+        <legend>Choose Session Access Policy</legend>
+        {(["focused", "workspace", "full"] as const).map((policy) => (
+          <label key={policy}>
+            <input
+              type="radio"
+              name="session-access-policy"
+              value={policy}
+              checked={session.accessPolicy === policy}
+              onChange={() => choosePolicy(policy)}
+            />
+            {sessionAccessPolicyLabel(policy)}
+          </label>
+        ))}
+      </fieldset>
+      <label className="confirmation-preference">
+        <input
+          type="checkbox"
+          checked={state.accessConfirmationPreference.confirmFullAccess}
+          onChange={(event) => void submitAccessAction({
+            type: "setFullAccessConfirmation",
+            enabled: event.target.checked
+          })}
+        />
+        Confirm before Full Access
+      </label>
+      <small>Full Access never permits arbitrary source modification or deletion.</small>
+      {session.pendingFullAccessConfirmation && (
+        <section className="access-request" aria-labelledby="full-access-confirmation-title">
+          <p className="eyebrow">Additional confirmation</p>
+          <h3 id="full-access-confirmation-title">Full Access confirmation</h3>
+          <p>Allow broader read-only local-file and agent-tool access for this Learning Session only?</p>
+          <div className="teaching-actions">
+            <button className="primary" onClick={() => void submitAccessAction({
+              type: "decideFullAccessConfirmation", decision: "confirm"
+            })}>Confirm Full Access</button>
+            <button className="secondary" onClick={() => void submitAccessAction({
+              type: "decideFullAccessConfirmation", decision: "cancel"
+            })}>Cancel Full Access</button>
+          </div>
+        </section>
+      )}
+      {pendingRequest && (
+        <section className="access-request" aria-labelledby="access-request-title">
+          <p className="eyebrow">Access Request</p>
+          <h3 id="access-request-title">Request {sessionAccessPolicyLabel(pendingRequest.requestedPolicy)}</h3>
+          <dl>
+            <div><dt>Reason</dt><dd>{pendingRequest.reason}</dd></div>
+            <div><dt>Exact requested scope</dt><dd>{pendingRequest.exactScope}</dd></div>
+            <div><dt>Intended action</dt><dd>{pendingRequest.intendedAction}</dd></div>
+          </dl>
+          <div className="teaching-actions">
+            <button className="primary" onClick={() => decide("approve")}>Approve Access Request</button>
+            {session.accessPolicy === "focused" && pendingRequest.requestedPolicy === "full" && (
+              <button className="secondary" onClick={() => decide("narrow")}>Narrow to Workspace Access</button>
+            )}
+            <button className="secondary" onClick={() => decide("deny")}>Deny Access Request</button>
+          </div>
+        </section>
+      )}
+      {accessError && <p className="failure-message" role="alert">{accessError}</p>}
+    </section>
+  );
+}
+
+function accessPolicyDescription(policy: LearningSession["accessPolicy"]): string {
+  return {
+    focused: "Only material explicitly attached, pasted, highlighted, or selected for this Learning Session.",
+    workspace: "Current session material and supported sources owned by this Study Workspace; unrelated workspaces and device content stay excluded.",
+    full: "Broader local-file and agent-tool access for this Learning Session only."
+  }[policy];
 }
 
 function TeachingCard({ session, modelAvailable, onState }: { session: LearningSession; modelAvailable: boolean; onState: StateHandler }) {

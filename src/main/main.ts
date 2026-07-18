@@ -48,7 +48,8 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "sessionId" in action && typeof action.sessionId === "string";
     case "startQuickStudy":
     case "submitSessionIntake":
-      return "mathematics" in action && typeof action.mathematics === "string";
+      return "mathematics" in action && typeof action.mathematics === "string"
+        && (!("location" in action) || action.location === undefined || isStudyLocation(action.location));
     case "savePendingQuestion":
     case "editPendingQuestion":
       return "text" in action && typeof action.text === "string";
@@ -62,6 +63,17 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "editLearningGoal":
     case "editSessionTarget":
       return "value" in action && typeof action.value === "string";
+    case "selectSessionAccessPolicy":
+      return "policy" in action && ["focused", "workspace", "full"].includes(String(action.policy));
+    case "setFullAccessConfirmation":
+      return "enabled" in action && typeof action.enabled === "boolean";
+    case "decideFullAccessConfirmation":
+      return "decision" in action && ["confirm", "cancel"].includes(String(action.decision));
+    case "decideAccessRequest":
+      return "requestId" in action && typeof action.requestId === "string"
+        && "decision" in action && ["approve", "deny", "narrow"].includes(String(action.decision))
+        && (!("narrowedPolicy" in action) || action.narrowedPolicy === undefined
+          || ["focused", "workspace", "full"].includes(String(action.narrowedPolicy)));
     case "createWorkspace":
       return "name" in action && typeof action.name === "string";
     case "renameWorkspace":
@@ -79,6 +91,12 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     default:
       return false;
   }
+}
+
+function isStudyLocation(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const location = value as Record<string, unknown>;
+  return typeof location.workspaceId === "string" && typeof location.missionId === "string";
 }
 
 function registerLearningApplicationHandlers(): void {

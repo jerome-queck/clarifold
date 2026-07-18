@@ -1,4 +1,5 @@
-import { basename, extname } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, extname, join, relative, sep } from "node:path";
 import type {
   AvailableLinkedSourceView,
   LinkedSource,
@@ -57,20 +58,52 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       if (source.resourceType === "file" && stat.size > MAX_SOURCE_VIEW_BYTES) {
         throw new Error("This source is too large for the read-only preview.");
       }
-      const mediaType = source.resourceType === "folder" ? "inode/directory" : sourceMediaType(source.name);
+      const mediaType = source.resourceType === "folder" ? "text/plain" : sourceMediaType(source.name);
       const content = source.resourceType === "folder"
-        ? (await this.dependencies.readdir(source.link.lastKnownPath)).sort().join("\n")
+        ? await this.readSupportedFolder(source.link.lastKnownPath)
         : sourceContent(await this.dependencies.readFile(source.link.lastKnownPath), mediaType);
       return {
         sourceId: source.id,
         resourceType: source.resourceType,
         content,
         mediaType,
-        fingerprint: fingerprint(stat)
+        fingerprint: fingerprint(stat, source.resourceType === "folder" ? content : undefined)
       };
     } finally {
       stopAccess?.();
     }
+  }
+
+  private async readSupportedFolder(rootPath: string): Promise<string> {
+    const canonicalRoot = await this.dependencies.realpath(rootPath);
+    const sections: string[] = [];
+    const visitedDirectories = new Set<string>();
+    let totalBytes = 0;
+    const visit = async (directoryPath: string): Promise<void> => {
+      const canonicalDirectory = await this.dependencies.realpath(directoryPath);
+      if (visitedDirectories.has(canonicalDirectory)) return;
+      visitedDirectories.add(canonicalDirectory);
+      for (const name of (await this.dependencies.readdir(directoryPath)).sort()) {
+        const candidatePath = join(directoryPath, name);
+        const canonicalPath = await this.dependencies.realpath(candidatePath);
+        const relativePath = relative(canonicalRoot, canonicalPath);
+        if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${sep}`)) continue;
+        const stat = await this.dependencies.stat(canonicalPath);
+        if (stat.isDirectory()) {
+          await visit(canonicalPath);
+          continue;
+        }
+        if (!stat.isFile() || sourceMediaType(name) !== "text/plain") continue;
+        totalBytes += stat.size;
+        if (totalBytes > MAX_SOURCE_VIEW_BYTES) {
+          throw new Error("This folder's supported files are too large for the read-only preview.");
+        }
+        const content = await this.dependencies.readFile(canonicalPath);
+        sections.push(`--- ${relativePath} ---\n${content.toString("utf8")}`);
+      }
+    };
+    await visit(canonicalRoot);
+    return sections.join("\n\n");
   }
 
   private async describePath(
@@ -90,13 +123,17 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       accessGrant: bookmarkData
         ? { kind: "securityScopedBookmark", bookmarkData }
         : null,
-      fingerprint: fingerprint(stat)
+      fingerprint: fingerprint(stat, resourceType === "folder" ? await this.readSupportedFolder(path) : undefined)
     };
   }
 }
 
-function fingerprint(stat: FileStat): SourceFingerprint {
-  return { size: stat.size, modifiedAtMs: stat.mtimeMs };
+function fingerprint(stat: FileStat, content?: string): SourceFingerprint {
+  return {
+    size: stat.size,
+    modifiedAtMs: stat.mtimeMs,
+    ...(content === undefined ? {} : { contentHash: createHash("sha256").update(content).digest("hex") })
+  };
 }
 
 function sourceMediaType(name: string): AvailableLinkedSourceView["mediaType"] {

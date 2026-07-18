@@ -164,7 +164,20 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .ask-bar label { margin-top: 18px; }
 .ask-bar textarea { width: 100%; min-height: 92px; padding: 12px; resize: vertical; border: 1px solid #c8d0c8; border-radius: 10px; color: #17332e; background: #fbfaf6; line-height: 1.4; }
 .ask-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
-.access-policy { margin: 0 0 14px; padding: 11px 14px; border: 1px solid #d5d4ca; border-radius: 10px; color: #506861; background: rgba(255,255,255,.55); font-size: 12px; }
+.access-policy { margin: 0 0 14px; padding: 18px; border: 1px solid #d5d4ca; border-radius: 12px; color: #506861; background: rgba(255,255,255,.55); }
+.access-policy h2 { margin: 3px 0 6px; font-size: 21px; }
+.access-policy p { margin: 4px 0; }
+.access-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.access-policy fieldset { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 14px 0 10px; padding: 12px; border: 1px solid #d5d4ca; border-radius: 10px; }
+.access-policy legend { padding: 0 6px; font-weight: 700; }
+.access-policy fieldset label, .confirmation-preference { display: flex; align-items: center; gap: 7px; }
+.confirmation-preference { margin: 10px 0 5px; font-weight: 650; }
+.access-request { margin-top: 16px; padding: 16px; border: 1px solid #c89b77; border-radius: 10px; background: #fff8ed; }
+.access-request h3 { margin: 3px 0 10px; }
+.access-request dl { display: grid; gap: 8px; margin: 0 0 12px; }
+.access-request dl div { display: grid; grid-template-columns: minmax(130px, .4fr) 1fr; gap: 12px; }
+.access-request dt { font-weight: 700; }
+.access-request dd { margin: 0; }
 .loading { display: grid; min-height: 100vh; place-items: center; color: #49665e; background: #f4efe5; }
 
 @media (max-width: 1000px) {

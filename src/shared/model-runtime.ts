@@ -1,3 +1,5 @@
+import type { SessionAccessScope } from "./learning-application";
+
 export type AuthenticationMethod = "chatgpt" | "apiKey";
 export type ModelAccessCause = "network" | "authentication" | "subscriptionCapacity" | "quota" | "runtime";
 
@@ -27,12 +29,34 @@ export interface SessionProposal {
   confirmationReason: string | null;
 }
 
+export interface RuntimeAccessRequest {
+  requestedPolicy: "workspace" | "full";
+  reason: string;
+  exactScope: string;
+  intendedAction: string;
+}
+
+export interface RuntimeAccessDecision {
+  status: "approved" | "narrowed" | "denied";
+  policy: "focused" | "workspace" | "full";
+}
+
+export interface TeachingSourceContext {
+  sourceId: string;
+  name: string;
+  mediaType: string;
+  content: string;
+}
+
 export interface TeachingRequest {
   sessionId: string;
   mathematics: string;
   learningGoal: string;
   scope: string;
   initialTeachingDirection: string;
+  accessScope: SessionAccessScope;
+  sourceContext: TeachingSourceContext[];
+  onAccessRequest(request: RuntimeAccessRequest): Promise<RuntimeAccessDecision>;
   onDelta(delta: string): void;
   onRuntimeEvent?(event: ModelRuntimeEvent): void;
   signal: AbortSignal;
