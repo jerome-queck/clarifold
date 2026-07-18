@@ -1,12 +1,25 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LearningApplication, type LearnerAction } from "../shared/learning-application";
 import { CodexAppServerRuntime } from "./codex-app-server";
 import type { ModelRuntime } from "../shared/model-runtime";
+import { MacOsSourceAccess } from "./source-access";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
+const sourceAccess = new MacOsSourceAccess({
+  showOpenDialog: (options) => dialog.showOpenDialog(options),
+  stat,
+  realpath,
+  readFile,
+  readdir,
+  startAccessingSecurityScopedResource: (bookmarkData) => {
+    const stopAccess = app.startAccessingSecurityScopedResource(bookmarkData);
+    return () => stopAccess();
+  }
+});
 
 function isTrustedSender(frameUrl: string | undefined): boolean {
   if (!frameUrl) return false;
@@ -95,6 +108,29 @@ function registerLearningApplicationHandlers(): void {
     if (typeof query !== "string") throw new Error("Invalid search query.");
     return learningApplication.searchSessions(query);
   });
+  ipcMain.handle("source:linkPrimaryFolder", async (event, workspaceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof workspaceId !== "string") throw new Error("Invalid Study Workspace.");
+    const fixturePath = process.env.QUICK_STUDY_TEST_PRIMARY_FOLDER;
+    const selection = fixturePath
+      ? await sourceAccess.selectDirectPath(fixturePath, "folder")
+      : await sourceAccess.select("folder");
+    return selection ? learningApplication.linkPrimaryFolder(workspaceId, selection) : learningApplication.getState();
+  });
+  ipcMain.handle("source:linkExternalAttachment", async (event, workspaceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof workspaceId !== "string") throw new Error("Invalid Study Workspace.");
+    const fixturePath = process.env.QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT;
+    const selection = fixturePath
+      ? await sourceAccess.selectDirectPath(fixturePath, "file")
+      : await sourceAccess.select("file");
+    return selection ? learningApplication.linkExternalAttachment(workspaceId, selection) : learningApplication.getState();
+  });
+  ipcMain.handle("source:open", async (event, sourceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
+    return learningApplication.openLinkedSource(sourceId);
+  });
   ipcMain.handle("authentication:openExternal", async (event, url: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (typeof url !== "string" || new URL(url).protocol !== "https:") throw new Error("Invalid authentication URL.");
@@ -137,7 +173,7 @@ void app.whenReady().then(async () => {
   } catch (error) {
     console.error("Codex app-server is unavailable:", error);
   }
-  learningApplication = await LearningApplication.launch(dataDirectory, modelRuntime);
+  learningApplication = await LearningApplication.launch(dataDirectory, modelRuntime, sourceAccess);
   registerLearningApplicationHandlers();
   createWindow();
 

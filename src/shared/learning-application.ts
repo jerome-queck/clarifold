@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   ModelAccessError,
   type AuthenticationState,
@@ -64,7 +64,68 @@ export interface StudyWorkspace {
 export interface WorkspaceContext {
   sourceIds: string[];
   learnerContextIds: string[];
+  primaryFolderSourceId: string | null;
 }
+
+export interface SourceFingerprint {
+  size: number;
+  modifiedAtMs: number;
+}
+
+export type LocalSourceAccessGrant = { kind: "securityScopedBookmark"; bookmarkData: string } | null;
+
+export interface SelectedLocalSource {
+  name: string;
+  resourceType: "file" | "folder";
+  lastKnownPath: string;
+  canonicalPath: string;
+  accessGrant: LocalSourceAccessGrant;
+  fingerprint: SourceFingerprint;
+}
+
+export interface LinkedSource {
+  id: string;
+  kind: "linkedSource";
+  role: "primaryFolder" | "externalAttachment";
+  workspaceId: string;
+  name: string;
+  resourceType: "file" | "folder";
+  link: {
+    lastKnownPath: string;
+    canonicalPath: string;
+    accessGrant: LocalSourceAccessGrant;
+    fingerprint: SourceFingerprint;
+    accessStatus: "available" | "unavailable";
+    error: string | null;
+  };
+}
+
+export interface ManagedAsset {
+  id: string;
+  kind: "managedAsset";
+  workspaceId: string;
+  name: string;
+  mediaType: "text/plain";
+  content: string;
+}
+
+export type WorkspaceSource = LinkedSource | ManagedAsset;
+
+export interface AvailableLinkedSourceView {
+  sourceId: string;
+  resourceType: "file" | "folder";
+  content: string;
+  mediaType: "text/plain" | "application/pdf" | "image/png" | "image/jpeg" | "inode/directory" | "application/octet-stream";
+  fingerprint: SourceFingerprint;
+}
+
+export interface LocalSourceAccess {
+  read(source: LinkedSource): Promise<AvailableLinkedSourceView>;
+}
+
+export type LinkedSourceView =
+  | ({ status: "available" } & AvailableLinkedSourceView)
+  | { status: "unavailable"; sourceId: string; error: string };
 
 export interface StudyMission {
   id: string;
@@ -83,6 +144,7 @@ export interface LearningSession {
   workspaceId: string;
   missionId: string;
   mathematics: string;
+  sourceIds: string[];
   learningGoal: string;
   sessionTarget: string;
   status: SessionStatus;
@@ -111,6 +173,7 @@ export interface LearningApplicationState {
   workspaces: StudyWorkspace[];
   missions: StudyMission[];
   sessions: LearningSession[];
+  sources: WorkspaceSource[];
   activeSessionId: string | null;
   resumeSessionId: string | null;
   navigation: {
@@ -176,13 +239,21 @@ export class LearningApplication {
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
   private agentWorkLogs: Record<string, Array<ModelRuntimeEvent & { sequence: number }>> = {};
 
-  private constructor(dataDirectory: string, modelRuntime: ModelRuntime | null) {
+  private constructor(
+    dataDirectory: string,
+    modelRuntime: ModelRuntime | null,
+    private readonly sourceAccess: LocalSourceAccess | null
+  ) {
     this.statePath = join(dataDirectory, "learning-application.json");
     this.modelRuntime = modelRuntime;
   }
 
-  static async launch(dataDirectory: string, modelRuntime: ModelRuntime | null = null): Promise<LearningApplication> {
-    const application = new LearningApplication(dataDirectory, modelRuntime);
+  static async launch(
+    dataDirectory: string,
+    modelRuntime: ModelRuntime | null = null,
+    sourceAccess: LocalSourceAccess | null = null
+  ): Promise<LearningApplication> {
+    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess);
     try {
       const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
       const { agentWorkLogs, ...storedState } = stored;
@@ -271,6 +342,62 @@ export class LearningApplication {
     return this.publishAndPersist();
   }
 
+  async linkPrimaryFolder(
+    workspaceId: string,
+    selection: SelectedLocalSource
+  ): Promise<LearningApplicationState> {
+    const workspace = this.requireWorkspace(workspaceId);
+    if (selection.resourceType !== "folder") throw new Error("Choose a folder for the Primary Folder.");
+    if (workspace.context.primaryFolderSourceId) throw new Error("This Study Workspace already has a Primary Folder.");
+    this.requireSourcePlacement(workspace, "primaryFolder", selection.canonicalPath);
+    const source = linkedSource(workspaceId, "primaryFolder", selection);
+    this.state.sources.push(source);
+    workspace.context.primaryFolderSourceId = source.id;
+    workspace.context.sourceIds.push(source.id);
+    return this.publishAndPersist();
+  }
+
+  async linkExternalAttachment(
+    workspaceId: string,
+    selection: SelectedLocalSource
+  ): Promise<LearningApplicationState> {
+    const workspace = this.requireWorkspace(workspaceId);
+    if (selection.resourceType !== "file") throw new Error("Choose a file for an External Attachment.");
+    this.requireSourcePlacement(workspace, "externalAttachment", selection.canonicalPath);
+    const source = linkedSource(workspaceId, "externalAttachment", selection);
+    this.state.sources.push(source);
+    workspace.context.sourceIds.push(source.id);
+    return this.publishAndPersist();
+  }
+
+  async openLinkedSource(sourceId: string): Promise<LinkedSourceView> {
+    const source = this.state.sources.find(
+      (candidate): candidate is LinkedSource => candidate.id === sourceId && candidate.kind === "linkedSource"
+    );
+    if (!source) throw new Error("Choose an existing Linked Source.");
+    if (!this.sourceAccess) throw new Error("Local source access is unavailable.");
+    try {
+      const view = await this.sourceAccess.read(source);
+      if (!sameFingerprint(source.link.fingerprint, view.fingerprint)) {
+        const message = "This source has changed since it was linked. Its original association is retained, but changed-source recovery is not available yet.";
+        source.link.accessStatus = "unavailable";
+        source.link.error = message;
+        await this.publishAndPersist();
+        return { status: "unavailable", sourceId, error: message };
+      }
+      source.link.accessStatus = "available";
+      source.link.error = null;
+      await this.publishAndPersist();
+      return { status: "available", ...view };
+    } catch (error) {
+      const message = usefulSourceError(error);
+      source.link.accessStatus = "unavailable";
+      source.link.error = message;
+      await this.publishAndPersist();
+      return { status: "unavailable", sourceId, error: message };
+    }
+  }
+
   async waitForModelWork(): Promise<void> {
     await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
     await this.persistence;
@@ -350,11 +477,13 @@ export class LearningApplication {
         const mathematics = action.mathematics.trim();
         if (!mathematics) throw new Error("Typed mathematics is required to start Quick Study.");
         this.pauseActiveSession();
+        const managedAsset = this.createManagedTextAsset(this.state.quickStudy.workspace.id, mathematics);
         const session: LearningSession = {
           id: crypto.randomUUID(),
           workspaceId: this.state.quickStudy.workspace.id,
           missionId: this.state.quickStudy.mission.id,
           mathematics,
+          sourceIds: [managedAsset.id],
           learningGoal: `Understand ${mathematics}`,
           sessionTarget: "Work through the key mathematical idea",
           status: "active",
@@ -406,11 +535,13 @@ export class LearningApplication {
           break;
         }
         this.pauseActiveSession();
+        const managedAsset = this.createManagedTextAsset(this.state.quickStudy.workspace.id, mathematics);
         const session: LearningSession = {
           id: crypto.randomUUID(),
           workspaceId: this.state.quickStudy.workspace.id,
           missionId: this.state.quickStudy.mission.id,
           mathematics,
+          sourceIds: [managedAsset.id],
           learningGoal: proposal.learningGoal,
           sessionTarget: proposal.scope,
           status: "active",
@@ -596,6 +727,15 @@ export class LearningApplication {
         if (session.workspaceId !== this.state.quickStudy.workspace.id) {
           throw new Error("Only Quick Study sessions can be filed.");
         }
+        const originalWorkspace = this.requireWorkspace(session.workspaceId);
+        const destinationWorkspace = this.requireWorkspace(action.workspaceId);
+        for (const sourceId of session.sourceIds) {
+          const source = this.state.sources.find((candidate) => candidate.id === sourceId);
+          if (!source || source.workspaceId !== originalWorkspace.id) continue;
+          source.workspaceId = destinationWorkspace.id;
+          originalWorkspace.context.sourceIds = originalWorkspace.context.sourceIds.filter((id) => id !== sourceId);
+          if (!destinationWorkspace.context.sourceIds.includes(sourceId)) destinationWorkspace.context.sourceIds.push(sourceId);
+        }
         session.workspaceId = action.workspaceId;
         session.missionId = action.missionId;
         session.activityOrder = this.nextActivityOrder();
@@ -609,7 +749,7 @@ export class LearningApplication {
     this.emitState(state);
     this.persistence = this.persistence.catch(() => undefined).then(() => this.persist(state));
     await this.persistence;
-    return state;
+    return this.getState();
   }
 
   private async persist(state: LearningApplicationState): Promise<void> {
@@ -793,6 +933,47 @@ export class LearningApplication {
     return workspace;
   }
 
+  private requireWorkspace(workspaceId: string): StudyWorkspace {
+    const workspace = this.state.workspaces.find((candidate) => candidate.id === workspaceId);
+    if (!workspace) throw new Error("Choose an existing Study Workspace.");
+    return workspace;
+  }
+
+  private requireSourcePlacement(
+    workspace: StudyWorkspace,
+    role: LinkedSource["role"],
+    path: string
+  ): void {
+    const linkedSources = this.state.sources.filter(
+      (candidate): candidate is LinkedSource => candidate.workspaceId === workspace.id && candidate.kind === "linkedSource"
+    );
+    if (role === "externalAttachment") {
+      const primaryFolder = linkedSources.find((source) => source.role === "primaryFolder");
+      if (primaryFolder && pathIsInside(path, primaryFolder.link.canonicalPath)) {
+        throw new Error("This file is already covered by the Primary Folder.");
+      }
+      return;
+    }
+    if (linkedSources.some((source) => source.role === "externalAttachment" && pathIsInside(source.link.canonicalPath, path))) {
+      throw new Error("An existing External Attachment is already inside this Primary Folder.");
+    }
+  }
+
+  private createManagedTextAsset(workspaceId: string, content: string): ManagedAsset {
+    const workspace = this.requireWorkspace(workspaceId);
+    const asset: ManagedAsset = {
+      id: crypto.randomUUID(),
+      kind: "managedAsset",
+      workspaceId,
+      name: "Typed mathematics",
+      mediaType: "text/plain",
+      content
+    };
+    this.state.sources.push(asset);
+    workspace.context.sourceIds.push(asset.id);
+    return asset;
+  }
+
   private requireMission(workspaceId: string, missionId: string): StudyMission {
     const mission = this.state.missions.find(
       (candidate) => candidate.id === missionId && candidate.workspaceId === workspaceId
@@ -843,6 +1024,21 @@ function usefulRuntimeError(error: unknown): string {
     : "Codex could not complete this Teaching Card. Check authentication and try again.";
 }
 
+function usefulSourceError(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "The source is missing or access is no longer available.";
+}
+
+function sameFingerprint(left: SourceFingerprint, right: SourceFingerprint): boolean {
+  return left.size === right.size && left.modifiedAtMs === right.modifiedAtMs;
+}
+
+function pathIsInside(path: string, folderPath: string): boolean {
+  const relation = relative(folderPath, path);
+  return relation !== "" && relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation);
+}
+
 function mostRecentSessionId(sessions: LearningSession[]): string | null {
   return sessions.reduce<LearningSession | null>(
     (latest, session) => (!latest || session.activityOrder > latest.activityOrder ? session : latest),
@@ -857,8 +1053,12 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     const current = value as LearningApplicationState;
     current.workspaces = current.workspaces.map((workspace) => ({
       ...workspace,
-      context: workspace.context ?? emptyWorkspaceContext()
+      context: {
+        ...(workspace.context ?? emptyWorkspaceContext()),
+        primaryFolderSourceId: workspace.context?.primaryFolderSourceId ?? null
+      }
     }));
+    current.sources = migrateWorkspaceSources(current.sources);
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -869,6 +1069,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     };
     current.sessions = current.sessions.map((session) => ({
       ...session,
+      sourceIds: session.sourceIds ?? [],
       proposal: session.proposal ?? defaultAcceptedProposal(),
       teachingCard: session.teachingCard ?? emptyTeachingCard(),
       teachingCardHistory: session.teachingCardHistory ?? [],
@@ -888,6 +1089,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
   if (legacy.session) {
     const session: LearningSession = {
       ...legacy.session,
+      sourceIds: [],
       status: "paused",
       activityOrder: 1,
       proposal: defaultAcceptedProposal(),
@@ -945,7 +1147,76 @@ function replaceTeachingCard(session: LearningSession, teachingCard: TeachingCar
 }
 
 function emptyWorkspaceContext(): WorkspaceContext {
-  return { sourceIds: [], learnerContextIds: [] };
+  return { sourceIds: [], learnerContextIds: [], primaryFolderSourceId: null };
+}
+
+function linkedSource(
+  workspaceId: string,
+  role: LinkedSource["role"],
+  selection: SelectedLocalSource
+): LinkedSource {
+  return {
+    id: crypto.randomUUID(),
+    kind: "linkedSource",
+    role,
+    workspaceId,
+    name: selection.name,
+    resourceType: selection.resourceType,
+    link: {
+      lastKnownPath: selection.lastKnownPath,
+      canonicalPath: selection.canonicalPath,
+      accessGrant: selection.accessGrant,
+      fingerprint: selection.fingerprint,
+      accessStatus: "available",
+      error: null
+    }
+  };
+}
+
+function migrateWorkspaceSources(value: unknown): WorkspaceSource[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored sources are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.workspaceId !== "string"
+      || typeof candidate.name !== "string" || !candidate.name.trim()) {
+      throw new Error("Stored source is invalid.");
+    }
+    if (candidate.kind === "managedAsset") {
+      if (candidate.mediaType !== "text/plain" || typeof candidate.content !== "string") {
+        throw new Error("Stored Managed Asset is invalid.");
+      }
+      return candidate as unknown as ManagedAsset;
+    }
+    if (candidate.kind !== "linkedSource" || !["primaryFolder", "externalAttachment"].includes(String(candidate.role))
+      || !["file", "folder"].includes(String(candidate.resourceType)) || !isRecord(candidate.link)
+      || typeof candidate.link.lastKnownPath !== "string" || !isAbsolute(candidate.link.lastKnownPath)
+      || !(candidate.link.canonicalPath === undefined
+        || (typeof candidate.link.canonicalPath === "string" && isAbsolute(candidate.link.canonicalPath)))
+      || !validAccessGrant(candidate.link.accessGrant) || !validFingerprint(candidate.link.fingerprint)
+      || !["available", "unavailable"].includes(String(candidate.link.accessStatus))
+      || !(candidate.link.error === null || typeof candidate.link.error === "string")) {
+      throw new Error("Stored Linked Source is invalid.");
+    }
+    const source = candidate as unknown as LinkedSource;
+    source.link.canonicalPath = typeof candidate.link.canonicalPath === "string"
+      ? candidate.link.canonicalPath
+      : candidate.link.lastKnownPath as string;
+    return source;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validAccessGrant(value: unknown): value is LocalSourceAccessGrant {
+  return value === null || (isRecord(value) && value.kind === "securityScopedBookmark"
+    && typeof value.bookmarkData === "string" && Boolean(value.bookmarkData));
+}
+
+function validFingerprint(value: unknown): value is SourceFingerprint {
+  return isRecord(value) && typeof value.size === "number" && Number.isFinite(value.size) && value.size >= 0
+    && typeof value.modifiedAtMs === "number" && Number.isFinite(value.modifiedAtMs) && value.modifiedAtMs >= 0;
 }
 
 function initialState(): LearningApplicationState {
@@ -974,6 +1245,7 @@ function initialState(): LearningApplicationState {
       }
     ],
     sessions: [],
+    sources: [],
     activeSessionId: null,
     resumeSessionId: null,
     navigation: {
