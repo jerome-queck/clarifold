@@ -97,6 +97,7 @@ describe("Codex app-server contract", () => {
               initialTeachingDirection: "Inspect the absolute values first",
               requiresConfirmation: false,
               confirmationReason: null,
+              materialScope: "focused",
               argumentRoadmap: null
             })
           });
@@ -128,6 +129,7 @@ describe("Codex app-server contract", () => {
       initialTeachingDirection: "Inspect the absolute values first",
       requiresConfirmation: false,
       confirmationReason: null,
+      materialScope: "focused",
       argumentRoadmap: null
     });
     const proposalTurn = transport.messages.find((message) => message.method === "turn/start");
@@ -395,7 +397,7 @@ describe("Codex app-server contract", () => {
             threadId: "thread-roadmap", turnId: "turn-roadmap", itemId: "proposal",
             delta: JSON.stringify({
               learningGoal: "Study a proof", scope: "Study stage one", initialTeachingDirection: "Begin",
-              requiresConfirmation: false, confirmationReason: null,
+              requiresConfirmation: false, confirmationReason: null, materialScope: "longOrMultiStage",
               argumentRoadmap: {
                 title: "Invalid dependencies", proposedStage: 0,
                 stages: [

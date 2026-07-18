@@ -27,6 +27,7 @@ export interface SessionProposal {
   initialTeachingDirection: string;
   requiresConfirmation: boolean;
   confirmationReason: string | null;
+  materialScope?: "focused" | "longOrMultiStage";
   argumentRoadmap?: ArgumentRoadmapProposal | null;
 }
 

@@ -301,7 +301,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
           "Interpret this mathematics intake for an adaptive learning session.",
           "Return only the requested JSON. Make the proposal concise and editable.",
           "Pause for confirmation only when ambiguity or likely cost makes a wrong start materially wasteful.",
-          "If the intake contains long or multi-stage material, return a compact Argument Roadmap with major claims, stages, dependencies, and an exact verbatim sourceExcerpt for each stage. Propose one coherent stage as the current Learning Slice, including only its immediate prerequisites. Do not expand or teach every step. Otherwise return argumentRoadmap as null.",
+          "Classify materialScope as focused or longOrMultiStage by mathematical coherence, not arbitrary length. If it is longOrMultiStage, return a compact Argument Roadmap with major claims, stages, dependencies, and an exact verbatim sourceExcerpt for each stage. Propose one coherent stage as the current Learning Slice, including only its immediate prerequisites. Do not expand or teach every step. For focused material, return argumentRoadmap as null.",
           "Mathematics intake:",
           mathematics
         ].join("\n\n"),
@@ -763,6 +763,7 @@ const SESSION_PROPOSAL_SCHEMA = {
     "initialTeachingDirection",
     "requiresConfirmation",
     "confirmationReason",
+    "materialScope",
     "argumentRoadmap"
   ],
   properties: {
@@ -771,6 +772,7 @@ const SESSION_PROPOSAL_SCHEMA = {
     initialTeachingDirection: { type: "string" },
     requiresConfirmation: { type: "boolean" },
     confirmationReason: { type: ["string", "null"] },
+    materialScope: { type: "string", enum: ["focused", "longOrMultiStage"] },
     argumentRoadmap: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -819,6 +821,9 @@ function parseSessionProposal(content: string): SessionProposal {
     || typeof proposal.initialTeachingDirection !== "string"
     || typeof proposal.requiresConfirmation !== "boolean"
     || !(proposal.confirmationReason === null || typeof proposal.confirmationReason === "string")
+    || (proposal.materialScope !== "focused" && proposal.materialScope !== "longOrMultiStage")
+    || (proposal.materialScope === "focused" && proposal.argumentRoadmap !== null)
+    || (proposal.materialScope === "longOrMultiStage" && proposal.argumentRoadmap === null)
     || !validArgumentRoadmapProposal(proposal.argumentRoadmap)
   ) {
     throw new Error("Codex returned a malformed Session Proposal. Retry to request a fresh proposal.");

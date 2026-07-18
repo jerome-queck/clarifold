@@ -109,6 +109,10 @@ describe("anchored teaching workbench", () => {
     expect(window.quickStudy.submit).toHaveBeenCalledWith({
       type: "selectRoadmapStage", roadmapId: "roadmap-1", stageId: "stage-2"
     });
+
+    vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The roadmap Source Anchor is stale."));
+    await user.click(screen.getByRole("button", { name: "Show Source Anchor for Compact subsets are closed" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("The roadmap Source Anchor is stale.");
   });
 });
 

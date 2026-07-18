@@ -1293,8 +1293,12 @@ export class LearningApplication {
           proposal = await runtime.proposeSession(mathematics, (event) => {
             pendingLog.push({ ...event, sequence: pendingLog.length + 1 });
           });
+          const materialScope = proposal.materialScope ?? (proposal.argumentRoadmap ? "longOrMultiStage" : "focused");
+          if (proposal.argumentRoadmap && materialScope !== "longOrMultiStage") {
+            throw new Error("Codex returned an inconsistent Argument Roadmap. Retry to request a fresh proposal.");
+          }
           if (proposal.argumentRoadmap) validateProposedArgumentRoadmap(proposal.argumentRoadmap, mathematics);
-          else if (materialRequiresArgumentRoadmap(mathematics)) {
+          else if (materialScope === "longOrMultiStage") {
             throw new Error("Long or multi-stage material requires an Argument Roadmap. Retry to request a fresh proposal.");
           }
           this.state.intakeError = null;
@@ -2563,11 +2567,6 @@ function validateProposedArgumentRoadmap(proposed: ArgumentRoadmapProposal, math
   if (invalid) throw new Error("Codex returned an invalid Argument Roadmap. Retry to request a fresh proposal.");
 }
 
-function materialRequiresArgumentRoadmap(mathematics: string): boolean {
-  const nonemptyLines = mathematics.split(/\r?\n/).filter((line) => Boolean(line.trim()));
-  const paragraphs = mathematics.split(/(?:\r?\n){2,}/).filter((paragraph) => Boolean(paragraph.trim()));
-  return nonemptyLines.length >= 3 || paragraphs.length >= 3 || mathematics.length >= 2_000;
-}
 
 function migratePersistedState(value: unknown): LearningApplicationState {
   if (!value || typeof value !== "object") throw new Error("Stored Learning Application state is invalid.");

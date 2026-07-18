@@ -1733,13 +1733,14 @@ describe("Learning Application", () => {
       initialTeachingDirection: "Start explaining",
       requiresConfirmation: false,
       confirmationReason: null,
+      materialScope: "longOrMultiStage",
       argumentRoadmap: null
     });
     const { application } = await launchWithRuntime(runtime);
 
     const state = await application.submit({
       type: "submitSessionIntake",
-      mathematics: "First prove the lemma.\nThen prove the theorem.\nFinally derive the corollary."
+      mathematics: "First prove the lemma.\nThen derive the theorem."
     });
 
     expect(state.intakeError).toBe("Long or multi-stage material requires an Argument Roadmap. Retry to request a fresh proposal.");

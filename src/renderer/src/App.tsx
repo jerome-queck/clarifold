@@ -938,6 +938,14 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
       setError(cause instanceof Error ? cause.message : "The Learning Slice could not be selected.");
     }
   };
+  const showAnchor = async (sourceAnchorId: string) => {
+    setError(null);
+    try {
+      onState(await window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Source Anchor could not be shown.");
+    }
+  };
   return (
     <section className="argument-roadmap" aria-label="Argument Roadmap">
       <div className="card-heading">
@@ -963,7 +971,7 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
               </div>
               {selected ? <div className="roadmap-stage-actions"><span className="saved">Current Learning Slice</span>
                 <button className="text-button" aria-label={`Show Source Anchor for ${stage.title}`}
-                  onClick={() => void window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId: stage.sourceAnchorId }).then(onState)}>
+                  onClick={() => void showAnchor(stage.sourceAnchorId)}>
                   Show Source Anchor
                 </button></div> : (
                 <button className="secondary" disabled={!editable}

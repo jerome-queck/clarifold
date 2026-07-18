@@ -99,6 +99,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
                 initialTeachingDirection: "Identify the key definition and first inference",
                 requiresConfirmation: false,
                 confirmationReason: null,
+                materialScope: "focused",
                 argumentRoadmap: null
               })
             }
