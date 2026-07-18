@@ -965,7 +965,9 @@ function PinnedLearningArtifact({ artifact, onState }: { artifact: LearningArtif
       <button className="secondary" disabled={!content.trim() || content === artifact.currentRevision.content}
         onClick={() => void save()}>Save Learning Artifact revision</button>
       <dl className="artifact-evidence">
-        <div><dt>Claim Origin</dt><dd>{artifact.currentRevision.claimOrigin === "learner" ? "Learner" : "Model-generated"}</dd></div>
+        <div><dt>Claim Origin</dt><dd>{artifact.currentRevision.claimOrigin === "learner"
+          ? "Learner"
+          : artifact.currentRevision.claimOrigin === "mixed" ? "Mixed learner and model" : "Model-generated"}</dd></div>
         <div><dt>Verification Level</dt><dd>Not independently checked</dd></div>
         <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor</dd></div>
       </dl>
@@ -1198,7 +1200,7 @@ function AgentWorkLogLink({ reference }: {
       <button className="text-button" aria-expanded={events !== null}
         onClick={() => void inspect()}>Inspect Agent Work Log events {reference.fromSequence}–{reference.toSequence}</button>
       {events && <ol aria-label="Agent Work Log evidence">
-        {events.map((event) => <li key={event.sequence}><strong>{event.type}</strong>: {event.detail}</li>)}
+        {events.map((event) => <li key={event.sequence}><strong>{event.type}</strong>: {event.summary}</li>)}
       </ol>}
       {error && <p className="failure-message" role="alert">{error}</p>}
     </div>

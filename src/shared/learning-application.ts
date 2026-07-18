@@ -142,12 +142,16 @@ export interface LearningArtifact {
 export interface LearningArtifactRevision {
   id: string;
   content: string;
-  claimOrigin: "modelGenerated" | "learner";
+  claimOrigin: "modelGenerated" | "learner" | "mixed";
   verificationLevel: "notIndependentlyChecked";
   verificationCurrency: "current";
 }
 
-export type AgentWorkLogEvidence = ModelRuntimeEvent & { sequence: number };
+export interface AgentWorkLogEvidence {
+  sequence: number;
+  type: ModelRuntimeEvent["type"];
+  summary: string;
+}
 
 interface ModelTeachingTarget {
   start(sourceContext: TeachingSourceContext[], nextLogSequence: number): void;
@@ -565,9 +569,13 @@ export class LearningApplication {
     if (!Number.isInteger(fromSequence) || !Number.isInteger(toSequence) || fromSequence < 1 || toSequence < fromSequence) {
       throw new Error("Choose a valid Agent Work Log evidence range.");
     }
-    return structuredClone((this.agentWorkLogs[sessionId] ?? []).filter(
+    return (this.agentWorkLogs[sessionId] ?? []).filter(
       (event) => event.sequence >= fromSequence && event.sequence <= toSequence
-    ));
+    ).map((event) => ({
+      sequence: event.sequence,
+      type: event.type,
+      summary: agentWorkEvidenceSummary(event.type)
+    }));
   }
 
   getSessionAccessScope(sessionId: string): SessionAccessScope {
@@ -1100,7 +1108,7 @@ export class LearningApplication {
         artifact.currentRevision = {
           id: crypto.randomUUID(),
           content,
-          claimOrigin: "learner",
+          claimOrigin: artifact.currentRevision.claimOrigin === "learner" ? "learner" : "mixed",
           verificationLevel: "notIndependentlyChecked",
           verificationCurrency: "current"
         };
@@ -2054,6 +2062,17 @@ function usefulRuntimeError(error: unknown): string {
     : "Codex could not complete this Teaching Card. Check authentication and try again.";
 }
 
+function agentWorkEvidenceSummary(type: ModelRuntimeEvent["type"]): string {
+  return {
+    threadStarted: "Teaching runtime thread started.",
+    turnStarted: "Teaching runtime turn started.",
+    inputSubmitted: "Bounded teaching input submitted.",
+    outputDelta: "Learner-facing output advanced.",
+    turnCompleted: "Teaching runtime turn completed.",
+    turnFailed: "Teaching runtime turn failed."
+  }[type];
+}
+
 function usefulSourceError(error: unknown): string {
   return error instanceof Error && error.message.trim()
     ? error.message
@@ -2591,7 +2610,7 @@ function validTeachingCardRevision(value: unknown): value is TeachingCardRevisio
 
 function validLearningArtifactRevision(value: unknown): boolean {
   return isRecord(value) && typeof value.id === "string" && typeof value.content === "string"
-    && (value.claimOrigin === "modelGenerated" || value.claimOrigin === "learner")
+    && (value.claimOrigin === "modelGenerated" || value.claimOrigin === "learner" || value.claimOrigin === "mixed")
     && value.verificationLevel === "notIndependentlyChecked" && value.verificationCurrency === "current";
 }
 

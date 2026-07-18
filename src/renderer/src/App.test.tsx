@@ -18,9 +18,7 @@ describe("anchored teaching workbench", () => {
       getAgentWorkLogEvidence: vi.fn().mockResolvedValue([{
         sequence: 1,
         type: "turnStarted",
-        threadId: "thread-1",
-        turnId: "turn-1",
-        detail: "Anchored teaching turn started."
+        summary: "Teaching runtime turn started."
       }]),
       searchSessions: vi.fn().mockResolvedValue([]),
       linkPrimaryFolder: vi.fn(),
@@ -43,7 +41,7 @@ describe("anchored teaching workbench", () => {
       "Pinned on the main canvas"
     );
     await user.click(screen.getByRole("button", { name: "Inspect Agent Work Log events 1–2" }));
-    expect(screen.getByRole("list", { name: "Agent Work Log evidence" }).textContent).toContain("Anchored teaching turn started.");
+    expect(screen.getByRole("list", { name: "Agent Work Log evidence" }).textContent).toContain("Teaching runtime turn started.");
     expect(screen.queryByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeNull();
 
     await user.click(marker);

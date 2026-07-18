@@ -373,26 +373,29 @@ export class CodexAppServerRuntime implements ModelRuntime {
     teachingRequest?: TeachingRequest
   ): Promise<string> {
     const accessPolicy = teachingRequest?.accessScope.policy ?? "focused";
-    const fullAccess = accessPolicy === "full";
+    const anchoredFocus = Boolean(teachingRequest?.focus);
+    const fullAccessTools = accessPolicy === "full" && !anchoredFocus;
     const threadResponse = await this.client.request("thread/start", {
       cwd: this.cwd,
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
-      dynamicTools: teachingRequest ? [SESSION_ACCESS_REQUEST_TOOL] : [],
+      dynamicTools: teachingRequest && !anchoredFocus ? [SESSION_ACCESS_REQUEST_TOOL] : [],
       config: {
         features: {
           apps: false,
           hooks: false,
           multi_agent: false,
           remote_plugin: false,
-          shell_tool: fullAccess,
-          unified_exec: fullAccess
+          shell_tool: fullAccessTools,
+          unified_exec: fullAccessTools
         },
         mcp_servers: {},
         web_search: "disabled"
       },
-      baseInstructions: fullAccess
+      baseInstructions: anchoredFocus
+        ? "You are the bounded teaching runtime for an anchored Teaching Card. Use only the supplied authorized source context so the Context Used Receipt remains complete. Do not request or inspect additional local material. Produce only learner-facing mathematical teaching output."
+        : fullAccessTools
         ? "You are the bounded teaching runtime for Quick Study. Full Access permits read-only local inspection for this Learning Session. Never modify or delete source files. Produce only learner-facing mathematical teaching output."
         : "You are the bounded teaching runtime for Quick Study. Use only supplied authorized context. If broader local context is necessary, call request_session_access with the reason, exact scope, and intended action. Do not execute commands or modify files. Produce only learner-facing mathematical teaching output."
     }) as { thread: { id: string } };
@@ -400,7 +403,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
       type: "threadStarted",
       threadId: threadResponse.thread.id,
       turnId: null,
-      detail: `Codex teaching thread started with ${sessionAccessPolicyLabel(accessPolicy)}${fullAccess ? " read-only tools enabled" : " tools disabled"}.`
+      detail: `Codex teaching thread started with ${sessionAccessPolicyLabel(accessPolicy)}${fullAccessTools ? " read-only tools enabled" : " supplied context only"}.`
     });
     const turnResponse = await this.client.request("turn/start", {
       threadId: threadResponse.thread.id,

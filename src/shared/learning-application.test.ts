@@ -474,7 +474,7 @@ describe("Learning Application", () => {
       content: "Learner-edited finite-subcover proof."
     });
     expect(edited.sessions[0].learningArtifacts[0]).toMatchObject({
-      currentRevision: { content: "Learner-edited finite-subcover proof.", claimOrigin: "learner" },
+      currentRevision: { content: "Learner-edited finite-subcover proof.", claimOrigin: "mixed" },
       revisions: [{ id: originalArtifactRevisionId, content: "Use a finite subcover to prove the complement is open." }]
     });
     const restoredArtifact = await application.submit({
