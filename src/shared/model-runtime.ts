@@ -1,4 +1,4 @@
-import type { SessionAccessScope, SourceAnchorSelection } from "./learning-application";
+import type { QuestionContextItem, SessionAccessScope, SourceAnchorSelection } from "./learning-application";
 
 export type AuthenticationMethod = "chatgpt" | "apiKey";
 export type ModelAccessCause = "network" | "authentication" | "subscriptionCapacity" | "quota" | "runtime";
@@ -56,6 +56,8 @@ export interface TeachingRequest {
   initialTeachingDirection: string;
   accessScope: SessionAccessScope;
   sourceContext: TeachingSourceContext[];
+  questionContext?: QuestionContextItem[];
+  questionRevision?: { previousQuestion: string; previousContent: string };
   focus?: {
     kind: "sourceAnchor";
     sourceAnchorId: string;

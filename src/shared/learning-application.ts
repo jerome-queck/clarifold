@@ -44,6 +44,39 @@ export type ModelAccessState =
 export interface PendingQuestion {
   id: string;
   text: string;
+  contextIds: string[];
+}
+
+export type QuestionContextKind = "sourceAnchor" | "learningGoal" | "sessionContext" | "source";
+
+export interface QuestionContextItem {
+  id: string;
+  kind: QuestionContextKind;
+  typeLabel: string;
+  identity: string;
+  location: string;
+  preview: string;
+  sourceId: string | null;
+  sourceAnchorId: string | null;
+}
+
+export interface AskBarContext {
+  items: QuestionContextItem[];
+  includedIds: string[];
+  customized: boolean;
+}
+
+export interface QuestionCardRevision extends TeachingCardState {
+  id: string;
+  contextUsed: QuestionContextItem[];
+  agentWorkLogReference: TeachingCardRevision["agentWorkLogReference"];
+}
+
+export interface QuestionCard {
+  id: string;
+  question: string;
+  currentRevision: QuestionCardRevision;
+  revisions: QuestionCardRevision[];
 }
 
 export type SourceAnchorPaletteAction = "explain" | "question" | "annotate" | "addToLearningTrail";
@@ -379,6 +412,9 @@ export interface LearningSession {
   submittedPendingQuestions: SubmittedPendingQuestion[];
   currentTeachingInput: { kind: "sessionIntake"; text: string } | { kind: "pendingQuestion"; submissionId: string; text: string };
   pendingQuestion: PendingQuestion | null;
+  askBarContext: AskBarContext;
+  questionCards: QuestionCard[];
+  activeQuestionCardId: string | null;
   accessPolicy: SessionAccessPolicy;
   accessRequests: SessionAccessRequest[];
   pendingFullAccessConfirmation: boolean;
@@ -434,6 +470,10 @@ export type LearnerAction =
   | { type: "editPendingQuestion"; text: string }
   | { type: "discardPendingQuestion" }
   | { type: "submitPendingQuestion" }
+  | { type: "setAskBarContextItem"; contextId: string; included: boolean }
+  | { type: "submitQuestion"; text: string }
+  | { type: "startNewQuestion" }
+  | { type: "retryQuestionCard"; cardId: string }
   | { type: "addSourceToSession"; sourceId: string }
   | {
       type: "createSourceAnchor";
@@ -534,6 +574,9 @@ export class LearningApplication {
           interruptTeachingCardRevision(card.currentRevision);
           for (const variant of card.variants) interruptTeachingCardRevision(variant.revision);
         }
+        const activeQuestionCard = session.questionCards.find((card) => card.id === session.activeQuestionCardId);
+        if (activeQuestionCard) interruptQuestionCardRevision(activeQuestionCard.currentRevision);
+        refreshAskBarContext(persisted, session);
       }
       persisted.activeSessionId = null;
       persisted.resumeSessionId = mostRecentSessionId(persisted.sessions);
@@ -972,6 +1015,7 @@ export class LearningApplication {
           action: action.paletteAction
         });
         session.activeSourceAnchorId = anchor.id;
+        refreshAskBarContext(this.state, session, true);
         if (action.paletteAction === "explain" || action.paletteAction === "question") {
           const isExplanation = action.paletteAction === "explain";
           const card: AnchoredTeachingCard = {
@@ -1130,6 +1174,7 @@ export class LearningApplication {
           throw new Error("Choose a Linked Source file in the active Study Workspace.");
         }
         if (!session.sourceIds.includes(source.id)) session.sourceIds.push(source.id);
+        refreshAskBarContext(this.state, session);
         break;
       }
       case "navigateToWorkspace": {
@@ -1180,6 +1225,9 @@ export class LearningApplication {
           submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: mathematics },
           pendingQuestion: null,
+          askBarContext: emptyAskBarContext(),
+          questionCards: [],
+          activeQuestionCardId: null,
           accessPolicy: location.accessPolicy,
           accessRequests: [],
           pendingFullAccessConfirmation: false,
@@ -1190,6 +1238,7 @@ export class LearningApplication {
           activeTeachingCardId: null,
           learningArtifacts: []
         };
+        refreshAskBarContext(this.state, session);
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
         this.state.resumeSessionId = session.id;
@@ -1252,6 +1301,9 @@ export class LearningApplication {
           submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: mathematics },
           pendingQuestion: null,
+          askBarContext: emptyAskBarContext(),
+          questionCards: [],
+          activeQuestionCardId: null,
           accessPolicy: location.accessPolicy,
           accessRequests: [],
           pendingFullAccessConfirmation: false,
@@ -1262,6 +1314,7 @@ export class LearningApplication {
           activeTeachingCardId: null,
           learningArtifacts: []
         };
+        refreshAskBarContext(this.state, session);
         this.agentWorkLogs[session.id] = pendingLog;
         delete this.agentWorkLogs[proposalAttemptId];
         this.state.sessions.push(session);
@@ -1356,7 +1409,11 @@ export class LearningApplication {
           throw new Error("Submit the Ask Bar question while model access is available.");
         }
         const session = this.requireActiveSession();
-        session.pendingQuestion = { id: crypto.randomUUID(), text: requiredText(action.text, "Pending Question") };
+        session.pendingQuestion = {
+          id: crypto.randomUUID(),
+          text: requiredText(action.text, "Pending Question"),
+          contextIds: [...session.askBarContext.includedIds]
+        };
         session.activityOrder = this.nextActivityOrder();
         this.state.resumeSessionId = session.id;
         break;
@@ -1380,12 +1437,47 @@ export class LearningApplication {
         const session = this.requireActiveSession();
         if (!session.pendingQuestion) throw new Error("There is no Pending Question to submit.");
         const question = { ...session.pendingQuestion };
-        const submission: SubmittedPendingQuestion = {
-          ...question,
-          teachingCard: emptyTeachingCard()
-        };
-        await this.beginTeaching(session, question.text, submission);
+        await this.submitQuestionCard(session, question.text, question.contextIds);
         session.pendingQuestion = null;
+        break;
+      }
+      case "setAskBarContextItem": {
+        const session = this.requireActiveSession();
+        refreshAskBarContext(this.state, session);
+        if (!session.askBarContext.items.some((item) => item.id === action.contextId)) {
+          throw new Error("Choose context available to this Learning Session.");
+        }
+        const included = new Set(session.askBarContext.includedIds);
+        if (action.included) included.add(action.contextId);
+        else included.delete(action.contextId);
+        session.askBarContext.includedIds = session.askBarContext.items
+          .map((item) => item.id)
+          .filter((id) => included.has(id));
+        session.askBarContext.customized = true;
+        if (session.pendingQuestion) session.pendingQuestion.contextIds = [...session.askBarContext.includedIds];
+        break;
+      }
+      case "submitQuestion": {
+        const session = this.requireActiveSession();
+        await this.submitQuestionCard(session, action.text);
+        break;
+      }
+      case "startNewQuestion": {
+        const session = this.requireActiveSession();
+        if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model teaching to finish before starting another question.");
+        session.activeQuestionCardId = null;
+        refreshAskBarContext(this.state, session, true);
+        break;
+      }
+      case "retryQuestionCard": {
+        const session = this.requireActiveSession();
+        this.requireModelAccess();
+        if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model teaching to finish before retrying this Question Card.");
+        const card = session.questionCards.find((candidate) => candidate.id === action.cardId);
+        if (!card) throw new Error("Choose a Question Card in the active Learning Session.");
+        if (!card.currentRevision.retryable) throw new Error("This Question Card is not ready to retry.");
+        session.activeQuestionCardId = card.id;
+        await this.beginQuestionTeaching(session, card);
         break;
       }
       case "setFullAccessConfirmation": {
@@ -1443,6 +1535,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
+        refreshAskBarContext(this.state, session);
         break;
       }
       case "leaveSession": {
@@ -1454,6 +1547,7 @@ export class LearningApplication {
       case "editLearningGoal": {
         const session = this.requireActiveSession();
         session.learningGoal = action.value;
+        refreshAskBarContext(this.state, session);
         session.activityOrder = this.nextActivityOrder();
         this.state.resumeSessionId = session.id;
         break;
@@ -1461,6 +1555,7 @@ export class LearningApplication {
       case "editSessionTarget": {
         const session = this.requireActiveSession();
         session.sessionTarget = action.value;
+        refreshAskBarContext(this.state, session);
         session.activityOrder = this.nextActivityOrder();
         this.state.resumeSessionId = session.id;
         break;
@@ -1486,6 +1581,7 @@ export class LearningApplication {
         session.activityOrder = this.nextActivityOrder();
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: action.workspaceId, missionId: action.missionId };
+        refreshAskBarContext(this.state, session);
         break;
       }
     }
@@ -1678,14 +1774,75 @@ export class LearningApplication {
     }, () => this.beginAnchoredTeaching(session, anchor, revision, previousContent, variantName));
   }
 
+  private async submitQuestionCard(session: LearningSession, text: string, savedContextIds?: string[]): Promise<void> {
+    this.requireModelAccess();
+    if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model teaching to finish before asking a question.");
+    refreshAskBarContext(this.state, session);
+    const includedIds = new Set(savedContextIds?.length ? savedContextIds : session.askBarContext.includedIds);
+    const context = session.askBarContext.items.filter((item) => includedIds.has(item.id));
+    if (context.length === 0) throw new Error("Include at least one Ask Bar context item.");
+    const question = requiredText(text, "Question Card question");
+    let card = session.questionCards.find((candidate) => candidate.id === session.activeQuestionCardId) ?? null;
+    let previous: { previousQuestion: string; previousContent: string } | undefined;
+    if (card) {
+      if (card.currentRevision.status === "streaming") throw new Error("Wait for the current Question Card revision to finish.");
+      previous = { previousQuestion: card.question, previousContent: card.currentRevision.content };
+      card.revisions.push(structuredClone(card.currentRevision));
+      card.question = question;
+      card.currentRevision = questionCardRevision(context);
+    } else {
+      card = {
+        id: crypto.randomUUID(),
+        question,
+        currentRevision: questionCardRevision(context),
+        revisions: []
+      };
+      session.questionCards.push(card);
+      session.activeQuestionCardId = card.id;
+    }
+    await this.beginQuestionTeaching(session, card, previous);
+  }
+
+  private async beginQuestionTeaching(
+    session: LearningSession,
+    card: QuestionCard,
+    previous?: { previousQuestion: string; previousContent: string }
+  ): Promise<void> {
+    const revision = card.currentRevision;
+    const context = structuredClone(revision.contextUsed);
+    await this.runModelTeaching(session, card.question, undefined, {
+      start: (_sourceContext, nextLogSequence) => {
+        revision.agentWorkLogReference = {
+          sessionId: session.id,
+          fromSequence: nextLogSequence,
+          toSequence: nextLogSequence
+        };
+        Object.assign(revision, { status: "streaming", content: "", error: null, retryable: false });
+      },
+      isStreaming: () => revision.status === "streaming",
+      append: (delta) => { revision.content += delta; },
+      complete: () => { revision.status = "completed"; },
+      fail: (error) => Object.assign(revision, { status: "failed", error: usefulRuntimeError(error), retryable: true }),
+      stop: () => interruptQuestionCardRevision(revision),
+      markUnconfirmed: () => {
+        revision.error = "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
+      },
+      recordRuntimeSequence: (sequence) => {
+        if (revision.agentWorkLogReference) revision.agentWorkLogReference.toSequence = sequence;
+      }
+    }, () => this.beginQuestionTeaching(session, card, previous), context, previous);
+  }
+
   private async runModelTeaching(
     session: LearningSession,
     mathematics: string,
     focus: TeachingRequest["focus"],
     target: ModelTeachingTarget,
-    restart: () => Promise<void>
+    restart: () => Promise<void>,
+    questionContext?: QuestionContextItem[],
+    questionRevision?: TeachingRequest["questionRevision"]
   ): Promise<void> {
-    const sourceContext = await this.buildTeachingSourceContext(session);
+    const sourceContext = await this.buildTeachingSourceContext(session, undefined, questionContext);
     const log = this.agentWorkLogs[session.id] ??= [];
     target.start(sourceContext, log.length + 1);
     const controller = new AbortController();
@@ -1698,6 +1855,8 @@ export class LearningApplication {
       initialTeachingDirection: session.proposal.initialTeachingDirection,
       accessScope: this.getSessionAccessScope(session.id),
       sourceContext,
+      ...(questionContext ? { questionContext } : {}),
+      ...(questionRevision ? { questionRevision } : {}),
       ...(focus ? { focus } : {}),
       onAccessRequest: (request) => controller.signal.aborted
         ? Promise.resolve({ status: "denied", policy: session.accessPolicy })
@@ -1756,7 +1915,11 @@ export class LearningApplication {
     return validated;
   }
 
-  private async buildTeachingSourceContext(session: LearningSession): Promise<TeachingSourceContext[]> {
+  private async buildTeachingSourceContext(
+    session: LearningSession,
+    selectedSourceIds?: string[],
+    questionContext?: QuestionContextItem[]
+  ): Promise<TeachingSourceContext[]> {
     const contexts: TeachingSourceContext[] = [];
     let remainingCharacters = MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS;
     const addContext = (context: TeachingSourceContext) => {
@@ -1765,7 +1928,26 @@ export class LearningApplication {
       contexts.push({ ...context, content });
       remainingCharacters -= content.length;
     };
-    for (const sourceId of this.getSessionAccessScope(session.id).sourceIds) {
+    const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
+    const wholeSourceIds = new Set(questionContext?.filter((item) => item.kind === "source")
+      .flatMap((item) => item.sourceId ? [item.sourceId] : []) ?? []);
+    if (questionContext) {
+      for (const item of questionContext) {
+        if (item.kind !== "sourceAnchor" || !item.sourceId || !authorizedSourceIds.has(item.sourceId)
+          || wholeSourceIds.has(item.sourceId)) continue;
+        const source = this.state.sources.find((candidate) => candidate.id === item.sourceId);
+        if (!source) continue;
+        addContext({
+          sourceId: item.sourceId,
+          name: source.name,
+          mediaType: "text/plain",
+          content: item.preview
+        });
+      }
+    }
+    const sourceIds = selectedSourceIds ?? (questionContext ? [...wholeSourceIds] : [...authorizedSourceIds]);
+    for (const sourceId of sourceIds) {
+      if (!authorizedSourceIds.has(sourceId)) continue;
       const source = this.state.sources.find((candidate) => candidate.id === sourceId);
       if (!source) continue;
       if (source.kind === "managedAsset") {
@@ -1845,6 +2027,7 @@ export class LearningApplication {
       throw new Error(`Codex did not confirm interruption. ${sessionAccessPolicyLabel(session.accessPolicy)} remains active.`);
     }
     session.accessPolicy = policy;
+    refreshAskBarContext(this.state, session);
     if (work) await work.restart();
   }
 
@@ -1879,6 +2062,7 @@ export class LearningApplication {
     session.proposal.scope = scope;
     session.proposal.initialTeachingDirection = initialTeachingDirection;
     session.returnContext.nextAction = initialTeachingDirection;
+    refreshAskBarContext(this.state, session);
     session.activityOrder = this.nextActivityOrder();
     this.state.resumeSessionId = session.id;
     return changed;
@@ -2132,7 +2316,10 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       teachingCardHistory: session.teachingCardHistory ?? [],
       submittedPendingQuestions: session.submittedPendingQuestions ?? [],
       currentTeachingInput: session.currentTeachingInput ?? { kind: "sessionIntake", text: session.mathematics },
-      pendingQuestion: session.pendingQuestion ?? null,
+      pendingQuestion: migratePendingQuestion(session.pendingQuestion),
+      askBarContext: migrateAskBarContext(session.askBarContext),
+      questionCards: migrateQuestionCards(session.questionCards),
+      activeQuestionCardId: typeof session.activeQuestionCardId === "string" ? session.activeQuestionCardId : null,
       accessPolicy: migrateSessionAccessPolicy(session.accessPolicy),
       accessRequests: migrateAccessRequests(session.accessRequests),
       pendingFullAccessConfirmation: false,
@@ -2144,7 +2331,11 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       learningArtifacts: migrateLearningArtifacts(session.learningArtifacts)
     }));
     attachManagedSourcesToLegacySessions(current);
-    for (const session of current.sessions) validateSessionSourceAnchorReferences(current, session);
+    for (const session of current.sessions) {
+      validateSessionSourceAnchorReferences(current, session);
+      validateQuestionCardReferences(current, session);
+      refreshAskBarContext(current, session);
+    }
     return current;
   }
 
@@ -2165,6 +2356,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       submittedPendingQuestions: [],
       currentTeachingInput: { kind: "sessionIntake", text: legacy.session.mathematics },
       pendingQuestion: null,
+      askBarContext: emptyAskBarContext(),
+      questionCards: [],
+      activeQuestionCardId: null,
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,
@@ -2178,6 +2372,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     migrated.sessions.push(session);
     attachManagedSourcesToLegacySessions(migrated);
     validateSessionSourceAnchorReferences(migrated, session);
+    refreshAskBarContext(migrated, session);
     migrated.resumeSessionId = session.id;
     migrated.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
     migrated.activityOrder = 1;
@@ -2197,6 +2392,95 @@ function migrateAccessConfirmationPreference(value: unknown): LearningApplicatio
     throw new Error("Stored Access Confirmation Preference is invalid.");
   }
   return { confirmFullAccess: value.confirmFullAccess };
+}
+
+function migratePendingQuestion(value: unknown): PendingQuestion | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.text !== "string" || !value.text.trim()) {
+    throw new Error("Stored Pending Question is invalid.");
+  }
+  return {
+    id: value.id,
+    text: value.text,
+    contextIds: Array.isArray(value.contextIds) && value.contextIds.every((id) => typeof id === "string")
+      ? value.contextIds
+      : []
+  };
+}
+
+function migrateAskBarContext(value: unknown): AskBarContext {
+  if (value === undefined) return emptyAskBarContext();
+  if (!isRecord(value) || !Array.isArray(value.includedIds)
+    || !value.includedIds.every((id) => typeof id === "string") || typeof value.customized !== "boolean") {
+    throw new Error("Stored Ask Bar context is invalid.");
+  }
+  return { items: [], includedIds: value.includedIds, customized: value.customized };
+}
+
+function migrateQuestionCards(value: unknown): QuestionCard[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Question Cards are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.question !== "string"
+      || !candidate.question.trim() || !Array.isArray(candidate.revisions)) {
+      throw new Error("Stored Question Cards are invalid.");
+    }
+    return {
+      id: candidate.id,
+      question: candidate.question,
+      currentRevision: migrateQuestionCardRevision(candidate.currentRevision),
+      revisions: candidate.revisions.map(migrateQuestionCardRevision)
+    };
+  });
+}
+
+function migrateQuestionCardRevision(value: unknown): QuestionCardRevision {
+  if (!isRecord(value) || typeof value.id !== "string"
+    || !["idle", "streaming", "completed", "stopped", "failed"].includes(String(value.status))
+    || typeof value.content !== "string" || !(value.error === null || typeof value.error === "string")
+    || typeof value.retryable !== "boolean" || !Array.isArray(value.contextUsed)) {
+    throw new Error("Stored Question Cards are invalid.");
+  }
+  const contextUsed = value.contextUsed.map((item) => {
+    if (!isQuestionContextItem(item)) throw new Error("Stored Question Cards are invalid.");
+    return item;
+  });
+  const reference = value.agentWorkLogReference;
+  if (!(reference === null || (isRecord(reference) && typeof reference.sessionId === "string"
+    && Number.isInteger(reference.fromSequence) && Number.isInteger(reference.toSequence)))) {
+    throw new Error("Stored Question Cards are invalid.");
+  }
+  return { ...value, contextUsed, agentWorkLogReference: reference } as QuestionCardRevision;
+}
+
+function isQuestionContextItem(value: unknown): value is QuestionContextItem {
+  return isRecord(value) && typeof value.id === "string"
+    && ["sourceAnchor", "learningGoal", "sessionContext", "source"].includes(String(value.kind))
+    && typeof value.typeLabel === "string" && typeof value.identity === "string"
+    && typeof value.location === "string" && typeof value.preview === "string"
+    && (value.sourceId === null || typeof value.sourceId === "string")
+    && (value.sourceAnchorId === null || typeof value.sourceAnchorId === "string");
+}
+
+function validateQuestionCardReferences(state: LearningApplicationState, session: LearningSession): void {
+  const identifiersAreUnique = new Set(session.questionCards.map((card) => card.id)).size === session.questionCards.length;
+  const activeIsValid = session.activeQuestionCardId === null
+    || session.questionCards.some((card) => card.id === session.activeQuestionCardId);
+  const workspace = state.workspaces.find((candidate) => candidate.id === session.workspaceId);
+  const authorizedSourceIds = new Set(session.accessPolicy === "focused"
+    ? session.sourceIds
+    : session.accessPolicy === "workspace"
+      ? [...session.sourceIds, ...(workspace?.context.sourceIds ?? [])]
+      : state.sources.map((source) => source.id));
+  const contextsAreAuthorized = session.questionCards.every((card) => [card.currentRevision, ...card.revisions]
+    .every((revision) => revision.contextUsed.every((item) => {
+      if (item.sourceId !== null && !authorizedSourceIds.has(item.sourceId)) return false;
+      if (item.sourceAnchorId === null) return true;
+      return session.sourceAnchors.some((anchor) => anchor.id === item.sourceAnchorId && anchor.sourceId === item.sourceId);
+    })));
+  if (!identifiersAreUnique || !activeIsValid || !contextsAreAuthorized) {
+    throw new Error("Stored Question Card references are invalid.");
+  }
 }
 
 function migrateSessionAccessPolicy(value: unknown): SessionAccessPolicy {
@@ -2250,6 +2534,95 @@ function teachingCardRevision(instruction: string): TeachingCardRevision {
   };
 }
 
+function questionCardRevision(contextUsed: QuestionContextItem[]): QuestionCardRevision {
+  return {
+    id: crypto.randomUUID(),
+    status: "idle",
+    content: "",
+    error: null,
+    retryable: false,
+    contextUsed: structuredClone(contextUsed),
+    agentWorkLogReference: null
+  };
+}
+
+function emptyAskBarContext(): AskBarContext {
+  return { items: [], includedIds: [], customized: false };
+}
+
+function refreshAskBarContext(state: LearningApplicationState, session: LearningSession, reset = false): void {
+  const items: QuestionContextItem[] = [];
+  const activeAnchor = session.sourceAnchors.find((anchor) => anchor.id === session.activeSourceAnchorId) ?? null;
+  if (activeAnchor) {
+    items.push({
+      id: `source-anchor:${activeAnchor.id}`,
+      kind: "sourceAnchor",
+      typeLabel: "Source Anchor",
+      identity: activeAnchor.selection.kind === "diagramRegion" ? "Selected diagram region" : activeAnchor.selection.exactText,
+      location: sourceAnchorLocation(activeAnchor),
+      preview: sourceAnchorMathematics(activeAnchor),
+      sourceId: activeAnchor.sourceId,
+      sourceAnchorId: activeAnchor.id
+    });
+  }
+  items.push({
+    id: "learning-goal",
+    kind: "learningGoal",
+    typeLabel: "Goal",
+    identity: session.learningGoal,
+    location: "Visible Learning Goal",
+    preview: session.learningGoal,
+    sourceId: null,
+    sourceAnchorId: null
+  }, {
+    id: "session-target",
+    kind: "sessionContext",
+    typeLabel: "Session context",
+    identity: session.sessionTarget,
+    location: "Visible Session Target",
+    preview: session.sessionTarget,
+    sourceId: null,
+    sourceAnchorId: null
+  });
+  const workspace = state.workspaces.find((candidate) => candidate.id === session.workspaceId);
+  const availableSourceIds = session.accessPolicy === "focused"
+    ? session.sourceIds
+    : session.accessPolicy === "workspace"
+      ? [...session.sourceIds, ...(workspace?.context.sourceIds ?? [])]
+      : state.sources.map((source) => source.id);
+  for (const sourceId of new Set(availableSourceIds)) {
+    const source = state.sources.find((candidate) => candidate.id === sourceId);
+    if (!source) continue;
+    items.push({
+      id: `source:${source.id}`,
+      kind: "source",
+      typeLabel: "Source",
+      identity: source.name,
+      location: source.kind === "managedAsset"
+        ? "Managed Asset in this Learning Session"
+        : `${source.role === "primaryFolder" ? "Primary Folder" : "External Attachment"} in this Study Workspace`,
+      preview: source.kind === "managedAsset" ? source.content.slice(0, 120) : source.name,
+      sourceId: source.id,
+      sourceAnchorId: null
+    });
+  }
+  const availableIds = new Set(items.map((item) => item.id));
+  const shouldUseDefaults = reset || !session.askBarContext.customized;
+  const includedIds = shouldUseDefaults
+    ? activeAnchor ? [`source-anchor:${activeAnchor.id}`, "learning-goal"] : ["learning-goal", "session-target"]
+    : session.askBarContext.includedIds.filter((id) => availableIds.has(id));
+  session.askBarContext = {
+    items,
+    includedIds,
+    customized: shouldUseDefaults ? false : session.askBarContext.customized
+  };
+}
+
+function selectedAskBarContext(session: LearningSession): QuestionContextItem[] {
+  const included = new Set(session.askBarContext.includedIds);
+  return session.askBarContext.items.filter((item) => included.has(item.id));
+}
+
 function sourceAnchorTeachingTitle(selection: SourceAnchorSelection, action: "Explain" | "Question about"): string {
   if (selection.kind === "diagramRegion") return `${action} selected diagram region`;
   const excerpt = selection.exactText.trim().replace(/\s+/g, " ");
@@ -2300,6 +2673,11 @@ function interruptedTeachingCard(content: string): LearningSession["teachingCard
 }
 
 function interruptTeachingCardRevision(revision: TeachingCardRevision): void {
+  if (revision.status !== "streaming") return;
+  Object.assign(revision, interruptedTeachingCard(revision.content));
+}
+
+function interruptQuestionCardRevision(revision: QuestionCardRevision): void {
   if (revision.status !== "streaming") return;
   Object.assign(revision, interruptedTeachingCard(revision.content));
 }

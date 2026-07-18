@@ -347,6 +347,160 @@ describe("Learning Application", () => {
     await application.waitForModelWork();
   });
 
+  it("creates and revises one Question Card from editable Ask Bar context", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Locate the separation step",
+      initialTeachingDirection: "Use the selected source",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    const sourceId = state.sessions[0].sourceIds[0];
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "text",
+        startOffset: 6,
+        endOffset: 20,
+        exactText: "compact subset",
+        prefix: "Every ",
+        suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "annotate"
+    });
+
+    const session = state.sessions[0];
+    expect(session.askBarContext.items.map(({ kind }) => kind)).toEqual([
+      "sourceAnchor",
+      "learningGoal",
+      "sessionContext",
+      "source"
+    ]);
+    expect(session.askBarContext.includedIds).toEqual([
+      `source-anchor:${session.sourceAnchors[0].id}`,
+      "learning-goal"
+    ]);
+
+    state = await application.submit({
+      type: "setAskBarContextItem",
+      contextId: "learning-goal",
+      included: false
+    });
+    state = await application.submit({
+      type: "setAskBarContextItem",
+      contextId: `source:${sourceId}`,
+      included: true
+    });
+    state = await application.submit({
+      type: "submitQuestion",
+      text: "Where is Hausdorff used?"
+    });
+
+    const questionCard = state.sessions[0].questionCards[0];
+    expect(questionCard).toMatchObject({
+      question: "Where is Hausdorff used?",
+      currentRevision: {
+        status: "streaming",
+        contextUsed: [
+          expect.objectContaining({ kind: "sourceAnchor", identity: "compact subset" }),
+          expect.objectContaining({ kind: "source", identity: "Typed mathematics" })
+        ]
+      },
+      revisions: []
+    });
+    expect(runtime.teachingRequests.at(-1)).toMatchObject({
+      mathematics: "Where is Hausdorff used?",
+      questionContext: [
+        expect.objectContaining({ kind: "sourceAnchor", identity: "compact subset" }),
+        expect.objectContaining({ kind: "source", identity: "Typed mathematics" })
+      ]
+    });
+    expect(runtime.teachingRequests.at(-1)?.sourceContext.map(({ sourceId: id }) => id)).toEqual([sourceId]);
+
+    runtime.emitTeaching("Hausdorffness separates the outside point from each point of the compact set.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "submitQuestion",
+      text: "Make the neighbourhood choice explicit."
+    });
+
+    expect(state.sessions[0].questionCards).toHaveLength(1);
+    expect(state.sessions[0].questionCards[0]).toMatchObject({
+      question: "Make the neighbourhood choice explicit.",
+      currentRevision: { status: "streaming" },
+      revisions: [{
+        status: "completed",
+        content: "Hausdorffness separates the outside point from each point of the compact set."
+      }]
+    });
+    expect(runtime.teachingRequests.at(-1)?.questionRevision).toEqual({
+      previousQuestion: "Where is Hausdorff used?",
+      previousContent: "Hausdorffness separates the outside point from each point of the compact set."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].questionCards[0].revisions).toHaveLength(1);
+  });
+
+  it("supplies only selected Ask Bar excerpts within the active Session Access Policy", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Locate the separation step",
+      initialTeachingDirection: "Use the selected phrase",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "annotate"
+    });
+
+    await expect(application.submit({
+      type: "setAskBarContextItem",
+      contextId: "source:outside-active-policy",
+      included: true
+    })).rejects.toThrow("context available to this Learning Session");
+    await application.submit({ type: "submitQuestion", text: "Why is compactness enough?" });
+
+    expect(runtime.teachingRequests.at(-1)?.sourceContext).toEqual([{
+      sourceId: state.sessions[0].sourceIds[0],
+      name: "Typed mathematics",
+      mediaType: "text/plain",
+      content: "compact subset"
+    }]);
+    expect(runtime.teachingRequests.at(-1)?.questionContext).toEqual([
+      expect.objectContaining({ kind: "sourceAnchor", preview: "compact subset" }),
+      expect.objectContaining({ kind: "learningGoal", identity: "Understand compactness" })
+    ]);
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+  });
+
   it("revises one anchored Teaching Card coherently and restores an earlier revision", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness",
@@ -1391,7 +1545,7 @@ describe("Learning Application", () => {
     expect(runtime.teachingRequests).toHaveLength(0);
   });
 
-  it("bundles a submitted Pending Question with its Teaching Card and retries the same input", async () => {
+  it("turns a submitted Pending Question into a retryable Question Card without replacing earlier teaching", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness",
       scope: "Use an open cover",
@@ -1413,26 +1567,24 @@ describe("Learning Application", () => {
     await application.submit({ type: "refreshAuthentication" });
     let state = await application.submit({ type: "submitPendingQuestion" });
 
-    expect(state.sessions[0].submittedPendingQuestions).toEqual([
+    expect(state.sessions[0].questionCards).toEqual([
       expect.objectContaining({
-        text: "Why finite?",
-        teachingCard: expect.objectContaining({ status: "streaming" })
+        question: "Why finite?",
+        currentRevision: expect.objectContaining({ status: "streaming" })
       })
     ]);
-    expect(state.sessions[0].teachingCardHistory).toEqual([
-      expect.objectContaining({ status: "completed", content: "First explanation" })
-    ]);
+    expect(state.sessions[0].teachingCard).toMatchObject({ status: "completed", content: "First explanation" });
     runtime.failTeaching(new ModelAccessError("network", "Network connection is unavailable."));
     await application.waitForModelWork();
 
     state = application.getState();
-    expect(state.sessions[0].submittedPendingQuestions[0]).toMatchObject({
-      text: "Why finite?",
-      teachingCard: { status: "failed" }
+    expect(state.sessions[0].questionCards[0]).toMatchObject({
+      question: "Why finite?",
+      currentRevision: { status: "failed" }
     });
 
     await application.submit({ type: "refreshAuthentication" });
-    await application.submit({ type: "retryModelWork" });
+    await application.submit({ type: "retryQuestionCard", cardId: state.sessions[0].questionCards[0].id });
     expect(runtime.teachingRequests.at(-1)?.mathematics).toBe("Why finite?");
     runtime.completeTeaching();
     await application.waitForModelWork();

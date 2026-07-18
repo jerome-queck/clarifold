@@ -96,6 +96,13 @@ function workbenchState(): LearningApplicationState {
       submittedPendingQuestions: [],
       currentTeachingInput: { kind: "sessionIntake", text: "Every compact subset is closed." },
       pendingQuestion: null,
+      askBarContext: {
+        items: [],
+        includedIds: [],
+        customized: false
+      },
+      questionCards: [],
+      activeQuestionCardId: null,
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,

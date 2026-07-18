@@ -16,6 +16,7 @@ import type {
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
 import { ContextualInspector } from "./ContextualInspector";
+import { AskBar } from "./AskBar";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -840,7 +841,29 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
             <TeachingCard session={session} modelAvailable={state.modelAccess.status === "available"} onState={onState} />
-            <AskBar session={session} modelAvailable={state.modelAccess.status === "available"} onState={onState} />
+            <AskBar
+              session={session}
+              modelAvailable={state.modelAccess.status === "available"}
+              onSetContext={async (contextId, included) => onState(await window.quickStudy.submit({
+                type: "setAskBarContextItem", contextId, included
+              }))}
+              onSubmit={async (text) => {
+                if (session.pendingQuestion) {
+                  if (text !== session.pendingQuestion.text) {
+                    await window.quickStudy.submit({ type: "editPendingQuestion", text });
+                  }
+                  onState(await window.quickStudy.submit({ type: "submitPendingQuestion" }));
+                  return;
+                }
+                onState(await window.quickStudy.submit({ type: "submitQuestion", text }));
+              }}
+              onSavePending={async (text) => onState(await window.quickStudy.submit({
+                type: session.pendingQuestion ? "editPendingQuestion" : "savePendingQuestion", text
+              }))}
+              onDiscardPending={async () => onState(await window.quickStudy.submit({ type: "discardPendingQuestion" }))}
+              onStartNewQuestion={async () => onState(await window.quickStudy.submit({ type: "startNewQuestion" }))}
+              onRetry={async (cardId) => onState(await window.quickStudy.submit({ type: "retryQuestionCard", cardId }))}
+            />
           </section>
           {inspectorCard && <ContextualInspector
             card={inspectorCard}
@@ -1133,7 +1156,8 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
 
 function SessionRecord({ session }: { session: LearningSession }) {
   if (session.submittedPendingQuestions.length === 0 && session.teachingCardHistory.length === 0
-    && session.anchoredTeachingCards.length === 0 && session.learningArtifacts.length === 0) return null;
+    && session.questionCards.length === 0 && session.anchoredTeachingCards.length === 0
+    && session.learningArtifacts.length === 0) return null;
   return (
     <section className="session-record" aria-labelledby="session-record-title">
       <p className="eyebrow">Session Record</p>
@@ -1152,6 +1176,18 @@ function SessionRecord({ session }: { session: LearningSession }) {
             <summary>Teaching Card · {teachingStatusLabel(submission.teachingCard.status)}</summary>
             <p>{submission.teachingCard.content || submission.teachingCard.error || "Teaching has not produced content."}</p>
           </details>
+        </article>
+      ))}
+      {session.questionCards.map((card) => (
+        <article key={card.id}>
+          <h3>Question Card · {card.question}</h3>
+          <p>{card.currentRevision.content || card.currentRevision.error || "Teaching has not produced content."}</p>
+          <p className="record-link">Context Used Receipt: {card.currentRevision.contextUsed.length} items</p>
+          {card.currentRevision.agentWorkLogReference && <AgentWorkLogLink reference={card.currentRevision.agentWorkLogReference} />}
+          {card.revisions.length > 0 && <details>
+            <summary>{card.revisions.length} prior Question Card revisions</summary>
+            {card.revisions.map((revision, index) => <p key={revision.id}>Revision {index + 1}: {revision.content || revision.error}</p>)}
+          </details>}
         </article>
       ))}
       {session.anchoredTeachingCards.map((card) => (
@@ -1204,53 +1240,6 @@ function AgentWorkLogLink({ reference }: {
       </ol>}
       {error && <p className="failure-message" role="alert">{error}</p>}
     </div>
-  );
-}
-
-function AskBar({ session, modelAvailable, onState }: {
-  session: LearningSession;
-  modelAvailable: boolean;
-  onState: StateHandler;
-}) {
-  const pending = session.pendingQuestion;
-  const [text, setText] = useState(pending?.text ?? "");
-  useEffect(() => setText(pending?.text ?? ""), [pending?.id, pending?.text]);
-
-  const save = () => window.quickStudy.submit({
-    type: pending ? "editPendingQuestion" : "savePendingQuestion",
-    text
-  }).then(onState);
-  const submitPending = async () => {
-    if (text.trim() !== pending?.text) await window.quickStudy.submit({ type: "editPendingQuestion", text });
-    onState(await window.quickStudy.submit({ type: "submitPendingQuestion" }));
-  };
-  const ask = async (event: FormEvent) => {
-    event.preventDefault();
-    if (pending) {
-      if (modelAvailable) await submitPending();
-      else await save();
-      return;
-    }
-    await save();
-  };
-
-  if (!pending && modelAvailable) return null;
-
-  return (
-    <section className="ask-bar" aria-labelledby="ask-bar-title">
-      <p className="eyebrow">Ask Bar</p>
-      <h2 id="ask-bar-title">{pending ? "Pending Question" : "Ask from this session context"}</h2>
-      <form onSubmit={(event) => void ask(event)}>
-        <label htmlFor="ask-bar-question">{pending ? "Pending Question text" : "Ask Bar question"}</label>
-        <textarea id="ask-bar-question" value={text} onChange={(event) => setText(event.target.value)} />
-        <div className="ask-actions">
-          {pending && <button type="button" className="text-button" onClick={() => void window.quickStudy.submit({ type: "discardPendingQuestion" }).then(onState)}>Discard Pending Question</button>}
-          <button className="primary" disabled={!text.trim()}>
-            {pending ? (modelAvailable ? "Submit Pending Question" : "Save Pending Question changes") : "Save Pending Question"}
-          </button>
-        </div>
-      </form>
-    </section>
   );
 }
 
