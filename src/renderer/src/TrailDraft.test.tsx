@@ -117,7 +117,7 @@ function trailSession(): LearningSession {
       id: "trail-2", kind: "nextStep", content: "next step", required: false, origin: "teachingAgent", curationKey: "session-next-step",
       links: { sourceAnchorIds: [], teachingCardIds: [], learningArtifactIds: [], understandingEvidenceIds: [] }
     }] },
-    consolidationDraft: null, consolidatedOutcome: null, continuationOf: null,
+    consolidationDraft: null, consolidatedOutcome: null, continuationOf: null, modelStopConfirmation: null,
     learningSlice: null, conceptPeeks: [], pendingConceptPeek: null, prerequisiteBranchProposals: [], prerequisiteBranch: null
   };
 }

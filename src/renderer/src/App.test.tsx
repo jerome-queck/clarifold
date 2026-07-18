@@ -349,10 +349,10 @@ describe("anchored teaching workbench", () => {
     await user.click(screen.getByText("Expand complete outcome details"));
     expect(outcome.textContent).toContain("Use the finite subcover. · Required Trail Item");
     expect(outcome.textContent).toContain("Explain compact subset");
-    const artifactContent = screen.getByLabelText("Learning Artifact content");
+    const artifactContent = screen.getByLabelText("Learning Artifact content for Explain compact subset");
     await user.clear(artifactContent);
     await user.type(artifactContent, "A learner revision retained after consolidation.");
-    await user.click(screen.getByRole("button", { name: "Save Learning Artifact revision" }));
+    await user.click(screen.getByRole("button", { name: "Save Learning Artifact revision for Explain compact subset" }));
     expect(api.submit).toHaveBeenCalledWith({
       type: "editLearningArtifact",
       sessionId: "session-1",
@@ -360,7 +360,7 @@ describe("anchored teaching workbench", () => {
       content: "A learner revision retained after consolidation."
     });
     vi.mocked(api.submit).mockRejectedValueOnce(new Error("Codex did not confirm interruption."));
-    await user.click(screen.getByRole("button", { name: "Continue this work" }));
+    await user.click(screen.getByRole("button", { name: "Continue this work from Understand compactness" }));
     expect(api.submit).toHaveBeenCalledWith({ type: "continueSession", sessionId: "session-1" });
     expect(await screen.findByText("Codex did not confirm interruption.")).toBeTruthy();
   });
@@ -494,6 +494,7 @@ function workbenchState(): LearningApplicationState {
       consolidationDraft: null,
       consolidatedOutcome: null,
       continuationOf: null,
+      modelStopConfirmation: null,
       learningSlice: null
     }],
     sources: [{

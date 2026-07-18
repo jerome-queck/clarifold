@@ -776,7 +776,7 @@ function MissionHistory({ workspace, mission, state, onState }: {
                   cause instanceof Error ? cause.message : "The model work could not be stopped."
                 ))}>{session.pendingConceptPeek ? "Stop Concept Peek" : "Stop"}</button>}
                 {session.status === "consolidated" ? (
-                  <button className="primary" onClick={() => void window.quickStudy.submit({
+                  <button className="primary" aria-label={`Continue this work from ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
                     type: "continueSession", sessionId: session.id
                   }).then(onState).catch((cause: unknown) => setModelWorkError(
                     cause instanceof Error ? cause.message : "The Continuation Session could not be started."
@@ -785,6 +785,18 @@ function MissionHistory({ workspace, mission, state, onState }: {
                     type: "resumeSession", sessionId: session.id
                   }).then(onState)}>Resume</button>}
               </div>
+              {session.modelStopConfirmation && (
+                <div className="model-stop-confirmation" role={session.modelStopConfirmation.status === "unconfirmed" ? "alert" : "status"}>
+                  <span>{session.modelStopConfirmation.message}</span>
+                  {session.modelStopConfirmation.status === "unconfirmed" && (
+                    <button className="secondary" aria-label={`Retry Codex interruption for ${session.learningGoal}`}
+                      onClick={() => void window.quickStudy.submit({ type: "retrySessionModelStop", sessionId: session.id })
+                        .then(onState).catch((cause: unknown) => setModelWorkError(
+                          cause instanceof Error ? cause.message : "Codex interruption could not be retried."
+                        ))}>Retry interruption</button>
+                  )}
+                </div>
+              )}
               {session.consolidatedOutcome && <ConsolidatedOutcome session={session} onState={onState} />}
             </li>
           ))}
@@ -1485,10 +1497,11 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
         <div><p className="eyebrow">Learning Artifact</p><h2>{artifact.title}</h2></div>
         <span className="saved">{statusLabel}</span>
       </div>
-      <label htmlFor={`artifact-content-${artifact.id}`}>Learning Artifact content</label>
+      <label htmlFor={`artifact-content-${artifact.id}`}>Learning Artifact content for {artifact.title}</label>
       <textarea id={`artifact-content-${artifact.id}`} className="artifact-content" value={content}
         onChange={(event) => setContent(event.target.value)} />
-      <button className="secondary" disabled={!content.trim() || content === artifact.currentRevision.content}
+      <button className="secondary" aria-label={`Save Learning Artifact revision for ${artifact.title}`}
+        disabled={!content.trim() || content === artifact.currentRevision.content}
         onClick={() => void save()}>Save Learning Artifact revision</button>
       <dl className="artifact-evidence">
         <div><dt>Claim Origin</dt><dd>{artifact.currentRevision.claimOrigin === "learner"
@@ -1501,7 +1514,7 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
         <summary>Learning Artifact revision history</summary>
         <ol>{artifact.revisions.map((revision, index) => <li key={revision.id}>
           <p>Revision {index + 1}: {revision.content}</p>
-          <button className="text-button" aria-label={`Restore Learning Artifact revision ${index + 1}`}
+          <button className="text-button" aria-label={`Restore ${artifact.title} revision ${index + 1}`}
             onClick={() => void window.quickStudy.submit({
               type: "restoreLearningArtifactRevision",
               ...(sessionId ? { sessionId } : {}),

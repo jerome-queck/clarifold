@@ -309,6 +309,7 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .consolidated-outcome dt { font-weight: 750; }
 .consolidated-outcome dd { margin: 0; }
 .consolidated-outcome details { margin-top: 14px; }
+.model-stop-confirmation { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 12px; border: 1px solid #c89b77; border-radius: 10px; background: #fff8ed; }
 .trail-items { display: grid; gap: 12px; margin: 20px 0; padding: 0; list-style: none; }
 .trail-item { padding: 16px; border: 1px solid #d5d4ca; border-radius: 12px; background: #fffdf7; }
 .trail-item-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }

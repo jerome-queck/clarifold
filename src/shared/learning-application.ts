@@ -230,6 +230,12 @@ export interface ContinuationLink {
   outcomeId: string;
 }
 
+export interface ModelStopConfirmation {
+  attemptId: string;
+  status: "pending" | "unconfirmed";
+  message: string;
+}
+
 export interface AgentWorkLogEvidence {
   sequence: number;
   type: ModelRuntimeEvent["type"];
@@ -533,6 +539,7 @@ export interface LearningSession {
   consolidationDraft: SessionConsolidationDraft | null;
   consolidatedOutcome: ConsolidatedSessionOutcome | null;
   continuationOf: ContinuationLink | null;
+  modelStopConfirmation: ModelStopConfirmation | null;
   learningSlice: LearningSlice | null;
   conceptPeeks: ConceptPeek[];
   pendingConceptPeek: { sourceAnchorId: string; prerequisite: string } | null;
@@ -613,6 +620,7 @@ export type LearnerAction =
   | ({ type: "reviseSessionConsolidation" } & SessionConsolidationDraft)
   | { type: "consolidateSession" }
   | { type: "continueSession"; sessionId: string }
+  | { type: "retrySessionModelStop"; sessionId: string }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
@@ -1463,6 +1471,12 @@ export class LearningApplication {
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
         refreshAskBarContext(this.state, session);
+        break;
+      }
+      case "retrySessionModelStop": {
+        const session = this.requireSession(action.sessionId);
+        if (!session.modelStopConfirmation) throw new Error("This Learning Session has no unconfirmed model interruption.");
+        this.requestModelStopConfirmation(session);
         break;
       }
       case "addSourceToSession": {
@@ -2600,7 +2614,30 @@ export class LearningApplication {
     work.stop();
     work.controller.abort();
     if (this.modelWorks.get(session.id) === work) this.modelWorks.delete(session.id);
-    void this.modelRuntime.cancelTeaching(session.id).catch(() => undefined);
+    this.requestModelStopConfirmation(session);
+  }
+
+  private requestModelStopConfirmation(session: LearningSession): void {
+    const attemptId = crypto.randomUUID();
+    session.modelStopConfirmation = {
+      attemptId,
+      status: "pending",
+      message: "Waiting for Codex to confirm interruption. Local model work is stopped."
+    };
+    if (!this.modelRuntime) {
+      session.modelStopConfirmation = unconfirmedModelStop(attemptId);
+      return;
+    }
+    void this.modelRuntime.cancelTeaching(session.id).then(() => {
+      if (session.modelStopConfirmation?.attemptId === attemptId) session.modelStopConfirmation = null;
+    }).catch(() => {
+      if (session.modelStopConfirmation?.attemptId === attemptId) {
+        session.modelStopConfirmation = unconfirmedModelStop(attemptId);
+      }
+    }).finally(() => {
+      this.queuePersistence();
+      this.emitState();
+    });
   }
 
   private reviseProposal(
@@ -3121,6 +3158,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       consolidationDraft: migrateSessionConsolidationDraft(session.consolidationDraft),
       consolidatedOutcome: migrateConsolidatedSessionOutcome(session.consolidatedOutcome),
       continuationOf: migrateContinuationLink(session.continuationOf),
+      modelStopConfirmation: migrateModelStopConfirmation(session.modelStopConfirmation),
       learningSlice: migrateLearningSlice(session.learningSlice),
       conceptPeeks: migrateConceptPeeks(session.conceptPeeks),
       pendingConceptPeek: migratePendingConceptPeek(session.pendingConceptPeek),
@@ -3735,8 +3773,10 @@ function createLearningSession(details: NewLearningSession): LearningSession {
   };
 }
 
-function emptySessionLifecycle(): Pick<LearningSession, "consolidationDraft" | "consolidatedOutcome" | "continuationOf"> {
-  return { consolidationDraft: null, consolidatedOutcome: null, continuationOf: null };
+function emptySessionLifecycle(): Pick<LearningSession,
+  "consolidationDraft" | "consolidatedOutcome" | "continuationOf" | "modelStopConfirmation"
+> {
+  return { consolidationDraft: null, consolidatedOutcome: null, continuationOf: null, modelStopConfirmation: null };
 }
 
 function suggestedSessionConsolidation(session: LearningSession): SessionConsolidationDraft {
@@ -4203,6 +4243,24 @@ function migrateContinuationLink(value: unknown): ContinuationLink | null {
     throw new Error("Stored Continuation Session link is invalid.");
   }
   return value as unknown as ContinuationLink;
+}
+
+function migrateModelStopConfirmation(value: unknown): ModelStopConfirmation | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.attemptId !== "string" || !value.attemptId
+    || (value.status !== "pending" && value.status !== "unconfirmed")
+    || typeof value.message !== "string" || !value.message.trim()) {
+    throw new Error("Stored model interruption confirmation is invalid.");
+  }
+  return value.status === "pending" ? unconfirmedModelStop(value.attemptId) : value as unknown as ModelStopConfirmation;
+}
+
+function unconfirmedModelStop(attemptId: string): ModelStopConfirmation {
+  return {
+    attemptId,
+    status: "unconfirmed",
+    message: "Codex did not confirm interruption. Retry interruption or restart Codex before further model work."
+  };
 }
 
 function validateSessionLifecycleReferences(state: LearningApplicationState): void {

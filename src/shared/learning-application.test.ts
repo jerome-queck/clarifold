@@ -604,6 +604,16 @@ describe("Learning Application", () => {
         teachingCard: { status: "stopped" },
         consolidationDraft: expect.objectContaining({ targetDisposition: null })
       });
+      await Promise.resolve();
+      expect(application.getState().sessions[0].modelStopConfirmation).toMatchObject({
+        status: "unconfirmed",
+        message: expect.stringContaining("Retry interruption")
+      });
+      runtime.cancelError = null;
+      await application.submit({ type: "retrySessionModelStop", sessionId });
+      await Promise.resolve();
+      expect(application.getState().sessions[0].modelStopConfirmation).toBeNull();
+      expect(runtime.canceledSessionIds).toEqual([sessionId, sessionId]);
     } finally {
       runtime.cancelError = null;
       runtime.completeTeaching(sessionId);
