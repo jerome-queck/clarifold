@@ -6,11 +6,17 @@ import {
   type ModelAccessCause,
   type ModelRuntime,
   type ModelRuntimeEvent,
+  type RuntimeAccessDecision,
+  type RuntimeAccessRequest,
+  type TeachingSourceContext,
   type SessionProposal
 } from "./model-runtime";
+import { type SessionAccessPolicy } from "./session-access";
+export type { SessionAccessPolicy } from "./session-access";
+
+const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
 
 export type SessionStatus = "active" | "paused";
-export type SessionAccessPolicy = "focused" | "workspace" | "full";
 
 export interface SessionAccessScope {
   policy: SessionAccessPolicy;
@@ -184,6 +190,7 @@ export interface LearningSession {
   pendingQuestion: PendingQuestion | null;
   accessPolicy: SessionAccessPolicy;
   accessRequests: SessionAccessRequest[];
+  pendingFullAccessConfirmation: boolean;
 }
 
 export interface LearningApplicationState {
@@ -231,6 +238,7 @@ export type LearnerAction =
   | { type: "submitPendingQuestion" }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
+  | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
   | {
       type: "decideAccessRequest";
       requestId: string;
@@ -266,6 +274,7 @@ export class LearningApplication {
   private modelRuntime: ModelRuntime | null;
   private persistence = Promise.resolve();
   private readonly modelWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+  private readonly accessDecisionWaiters = new Map<string, (decision: RuntimeAccessDecision) => void>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
   private agentWorkLogs: Record<string, Array<ModelRuntimeEvent & { sequence: number }>> = {};
 
@@ -291,6 +300,10 @@ export class LearningApplication {
       application.agentWorkLogs = migrateAgentWorkLogs(agentWorkLogs);
       for (const session of persisted.sessions) {
         if (session.status === "active") session.status = "paused";
+        session.pendingFullAccessConfirmation = false;
+        for (const request of session.accessRequests) {
+          if (request.status === "pending") request.status = "denied";
+        }
         if (session.teachingCard.status === "streaming") {
           replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content));
         }
@@ -344,21 +357,7 @@ export class LearningApplication {
     request: Pick<SessionAccessRequest, "requestedPolicy" | "reason" | "exactScope" | "intendedAction">
   ): Promise<LearningApplicationState> {
     const session = this.requireSession(sessionId);
-    if (accessPolicyRank(request.requestedPolicy) <= accessPolicyRank(session.accessPolicy)) {
-      throw new Error("An Access Request must ask for broader authority than the current Session Access Policy.");
-    }
-    if (session.accessRequests.some((candidate) => candidate.status === "pending")) {
-      throw new Error("Decide the current Access Request before requesting another elevation.");
-    }
-    session.accessRequests.push({
-      id: crypto.randomUUID(),
-      requestedPolicy: request.requestedPolicy,
-      reason: requiredText(request.reason, "Access Request reason"),
-      exactScope: requiredText(request.exactScope, "Access Request scope"),
-      intendedAction: requiredText(request.intendedAction, "Access Request intended action"),
-      status: "pending",
-      decidedPolicy: null
-    });
+    this.addAccessRequest(session, request);
     return this.publishAndPersist();
   }
 
@@ -473,6 +472,13 @@ export class LearningApplication {
   }
 
   async shutdown(): Promise<void> {
+    for (const session of this.state.sessions) {
+      for (const request of session.accessRequests) {
+        if (request.status !== "pending") continue;
+        request.status = "denied";
+        this.resolveAccessDecision(request.id, { status: "denied", policy: session.accessPolicy });
+      }
+    }
     const activeWorks = [...this.modelWorks.entries()];
     for (const [sessionId, work] of activeWorks) {
       const session = this.requireSession(sessionId);
@@ -569,7 +575,8 @@ export class LearningApplication {
           currentTeachingInput: { kind: "sessionIntake", text: mathematics },
           pendingQuestion: null,
           accessPolicy: location.accessPolicy,
-          accessRequests: []
+          accessRequests: [],
+          pendingFullAccessConfirmation: false
         };
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -634,7 +641,8 @@ export class LearningApplication {
           currentTeachingInput: { kind: "sessionIntake", text: mathematics },
           pendingQuestion: null,
           accessPolicy: location.accessPolicy,
-          accessRequests: []
+          accessRequests: [],
+          pendingFullAccessConfirmation: false
         };
         this.agentWorkLogs[session.id] = pendingLog;
         delete this.agentWorkLogs[proposalAttemptId];
@@ -643,7 +651,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
-        if (!proposal.requiresConfirmation) this.beginTeaching(session);
+        if (!proposal.requiresConfirmation) await this.beginTeaching(session);
         break;
       }
       case "reviseSessionProposal": {
@@ -655,7 +663,7 @@ export class LearningApplication {
         const session = this.requireActiveSession();
         const changed = this.reviseProposal(session, action);
         if (changed && this.modelWorks.has(session.id) && !await this.stopModelWork(session)) break;
-        if (changed) this.beginTeaching(session);
+        if (changed) await this.beginTeaching(session);
         break;
       }
       case "confirmSessionProposal": {
@@ -663,7 +671,7 @@ export class LearningApplication {
         if (session.proposal.status !== "awaitingConfirmation") {
           throw new Error("This Session Proposal does not need confirmation.");
         }
-        this.beginTeaching(session);
+        await this.beginTeaching(session);
         break;
       }
       case "cancelModelWork": {
@@ -684,7 +692,7 @@ export class LearningApplication {
         const submission = input.kind === "pendingQuestion"
           ? session.submittedPendingQuestions.find((candidate) => candidate.id === input.submissionId) ?? null
           : null;
-        this.beginTeaching(session, input.text, submission);
+        await this.beginTeaching(session, input.text, submission);
         break;
       }
       case "startChatGptLogin": {
@@ -758,7 +766,7 @@ export class LearningApplication {
           ...question,
           teachingCard: emptyTeachingCard()
         };
-        this.beginTeaching(session, question.text, submission);
+        await this.beginTeaching(session, question.text, submission);
         session.pendingQuestion = null;
         break;
       }
@@ -773,10 +781,17 @@ export class LearningApplication {
         }
         if (action.policy === session.accessPolicy) break;
         if (action.policy === "full" && this.state.accessConfirmationPreference.confirmFullAccess) {
-          session.accessRequests.push(fullAccessConfirmationRequest());
+          session.pendingFullAccessConfirmation = true;
           break;
         }
-        session.accessPolicy = action.policy;
+        await this.changeSessionAccessPolicy(session, action.policy);
+        break;
+      }
+      case "decideFullAccessConfirmation": {
+        const session = this.requireActiveSession();
+        if (!session.pendingFullAccessConfirmation) throw new Error("There is no pending Full Access confirmation.");
+        session.pendingFullAccessConfirmation = false;
+        if (action.decision === "confirm") await this.changeSessionAccessPolicy(session, "full");
         break;
       }
       case "decideAccessRequest": {
@@ -786,18 +801,19 @@ export class LearningApplication {
         if (action.decision === "deny") {
           request.status = "denied";
           request.decidedPolicy = null;
+          this.resolveAccessDecision(request.id, { status: "denied", policy: session.accessPolicy });
           break;
         }
         const decidedPolicy = action.decision === "approve" ? request.requestedPolicy : action.narrowedPolicy;
-        if (!decidedPolicy || accessPolicyRank(decidedPolicy) <= accessPolicyRank(session.accessPolicy)
-          || accessPolicyRank(decidedPolicy) >= accessPolicyRank(request.requestedPolicy)) {
-          if (action.decision === "narrow") {
-            throw new Error("A narrowed policy must be broader than the current policy and narrower than the request.");
-          }
+        if (!decidedPolicy) throw new Error("Choose the narrowed Session Access Policy.");
+        if (action.decision === "narrow" && (accessPolicyRank(decidedPolicy) <= accessPolicyRank(session.accessPolicy)
+          || accessPolicyRank(decidedPolicy) >= accessPolicyRank(request.requestedPolicy))) {
+          throw new Error("A narrowed policy must be broader than the current policy and narrower than the request.");
         }
-        session.accessPolicy = decidedPolicy!;
         request.status = action.decision === "approve" ? "approved" : "narrowed";
-        request.decidedPolicy = decidedPolicy!;
+        request.decidedPolicy = decidedPolicy;
+        this.resolveAccessDecision(request.id, { status: request.status, policy: decidedPolicy });
+        await this.changeSessionAccessPolicy(session, decidedPolicy);
         break;
       }
       case "resumeSession": {
@@ -871,13 +887,14 @@ export class LearningApplication {
     await rename(temporaryPath, this.statePath);
   }
 
-  private beginTeaching(
+  private async beginTeaching(
     session: LearningSession,
     mathematics = session.mathematics,
     submission: SubmittedPendingQuestion | null = null
-  ): void {
+  ): Promise<void> {
     this.requireModelAccess();
     if (this.modelWorks.has(session.id)) throw new Error("Model teaching is already active for this Learning Session.");
+    const sourceContext = await this.buildTeachingSourceContext(session);
     if (submission) {
       if (session.currentTeachingInput.kind === "sessionIntake" && session.teachingCard.status !== "idle") {
         session.teachingCardHistory.push(structuredClone(session.teachingCard));
@@ -900,6 +917,8 @@ export class LearningApplication {
       scope: session.proposal.scope,
       initialTeachingDirection: session.proposal.initialTeachingDirection,
       accessScope: this.getSessionAccessScope(session.id),
+      sourceContext,
+      onAccessRequest: (request) => this.handleRuntimeAccessRequest(session, request),
       signal: controller.signal,
       onDelta: (delta) => {
         if (session.teachingCard.status !== "streaming") return;
@@ -935,9 +954,99 @@ export class LearningApplication {
     this.modelWorks.set(session.id, { controller, promise });
   }
 
+  private async buildTeachingSourceContext(session: LearningSession): Promise<TeachingSourceContext[]> {
+    const contexts: TeachingSourceContext[] = [];
+    let remainingCharacters = MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS;
+    const addContext = (context: TeachingSourceContext) => {
+      if (remainingCharacters <= 0) return;
+      const content = context.content.slice(0, remainingCharacters);
+      contexts.push({ ...context, content });
+      remainingCharacters -= content.length;
+    };
+    for (const sourceId of this.getSessionAccessScope(session.id).sourceIds) {
+      const source = this.state.sources.find((candidate) => candidate.id === sourceId);
+      if (!source) continue;
+      if (source.kind === "managedAsset") {
+        addContext({ sourceId, name: source.name, mediaType: source.mediaType, content: source.content });
+        continue;
+      }
+      if (!this.sourceAccess) continue;
+      try {
+        const view = await this.sourceAccess.read(source);
+        if (!sameFingerprint(source.link.fingerprint, view.fingerprint)) continue;
+        addContext({ sourceId, name: source.name, mediaType: view.mediaType, content: view.content });
+      } catch {
+        // Unavailable Linked Sources remain associated but cannot enter model context.
+      }
+    }
+    return contexts;
+  }
+
+  private async handleRuntimeAccessRequest(
+    session: LearningSession,
+    details: RuntimeAccessRequest
+  ): Promise<RuntimeAccessDecision> {
+    const request = this.addAccessRequest(session, details);
+    const decision = new Promise<RuntimeAccessDecision>((resolve) => {
+      this.accessDecisionWaiters.set(request.id, resolve);
+    });
+    await this.publishAndPersist();
+    return decision;
+  }
+
+  private addAccessRequest(
+    session: LearningSession,
+    request: Pick<SessionAccessRequest, "requestedPolicy" | "reason" | "exactScope" | "intendedAction">
+  ): SessionAccessRequest {
+    if (accessPolicyRank(request.requestedPolicy) <= accessPolicyRank(session.accessPolicy)) {
+      throw new Error("An Access Request must ask for broader authority than the current Session Access Policy.");
+    }
+    if (session.accessRequests.some((candidate) => candidate.status === "pending")) {
+      throw new Error("Decide the current Access Request before requesting another elevation.");
+    }
+    const accessRequest: SessionAccessRequest = {
+      id: crypto.randomUUID(),
+      requestedPolicy: request.requestedPolicy,
+      reason: requiredText(request.reason, "Access Request reason"),
+      exactScope: requiredText(request.exactScope, "Access Request scope"),
+      intendedAction: requiredText(request.intendedAction, "Access Request intended action"),
+      status: "pending",
+      decidedPolicy: null
+    };
+    session.accessRequests.push(accessRequest);
+    return accessRequest;
+  }
+
+  private resolveAccessDecision(requestId: string, decision: RuntimeAccessDecision): void {
+    this.accessDecisionWaiters.get(requestId)?.(decision);
+    this.accessDecisionWaiters.delete(requestId);
+  }
+
+  private denyPendingAccessRequests(session: LearningSession): void {
+    for (const request of session.accessRequests) {
+      if (request.status !== "pending") continue;
+      request.status = "denied";
+      request.decidedPolicy = null;
+      this.resolveAccessDecision(request.id, { status: "denied", policy: session.accessPolicy });
+    }
+  }
+
+  private async changeSessionAccessPolicy(session: LearningSession, policy: SessionAccessPolicy): Promise<void> {
+    if (policy === session.accessPolicy) return;
+    const input = session.currentTeachingInput;
+    const submission = input.kind === "pendingQuestion"
+      ? session.submittedPendingQuestions.find((candidate) => candidate.id === input.submissionId) ?? null
+      : null;
+    const restartTeaching = this.modelWorks.has(session.id);
+    if (restartTeaching) await this.stopModelWork(session);
+    session.accessPolicy = policy;
+    if (restartTeaching) await this.beginTeaching(session, input.text, submission);
+  }
+
   private async stopModelWork(session: LearningSession): Promise<boolean> {
     const work = this.modelWorks.get(session.id);
     if (!this.modelRuntime || !work) throw new Error("There is no active model work to stop.");
+    this.denyPendingAccessRequests(session);
     replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content));
     work.controller.abort();
     try {
@@ -1196,7 +1305,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       cause: "runtime",
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     };
-    current.accessConfirmationPreference ??= { confirmFullAccess: true };
+    current.accessConfirmationPreference = migrateAccessConfirmationPreference(stored.accessConfirmationPreference);
     current.sessions = current.sessions.map((session) => ({
       ...session,
       sourceIds: session.sourceIds ?? [],
@@ -1206,8 +1315,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       submittedPendingQuestions: session.submittedPendingQuestions ?? [],
       currentTeachingInput: session.currentTeachingInput ?? { kind: "sessionIntake", text: session.mathematics },
       pendingQuestion: session.pendingQuestion ?? null,
-      accessPolicy: session.accessPolicy ?? "focused",
-      accessRequests: session.accessRequests ?? []
+      accessPolicy: migrateSessionAccessPolicy(session.accessPolicy),
+      accessRequests: migrateAccessRequests(session.accessRequests),
+      pendingFullAccessConfirmation: false
     }));
     return current;
   }
@@ -1230,7 +1340,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       currentTeachingInput: { kind: "sessionIntake", text: legacy.session.mathematics },
       pendingQuestion: null,
       accessPolicy: "focused",
-      accessRequests: []
+      accessRequests: [],
+      pendingFullAccessConfirmation: false
     };
     migrated.sessions.push(session);
     migrated.resumeSessionId = session.id;
@@ -1244,6 +1355,39 @@ function migrateAgentWorkLogs(value: unknown): Record<string, Array<ModelRuntime
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, Array<ModelRuntimeEvent & { sequence: number }>>
     : {};
+}
+
+function migrateAccessConfirmationPreference(value: unknown): LearningApplicationState["accessConfirmationPreference"] {
+  if (value === undefined) return { confirmFullAccess: true };
+  if (!isRecord(value) || typeof value.confirmFullAccess !== "boolean") {
+    throw new Error("Stored Access Confirmation Preference is invalid.");
+  }
+  return { confirmFullAccess: value.confirmFullAccess };
+}
+
+function migrateSessionAccessPolicy(value: unknown): SessionAccessPolicy {
+  if (value === undefined) return "focused";
+  if (value === "focused" || value === "workspace" || value === "full") return value;
+  throw new Error("Stored Session Access Policy is invalid.");
+}
+
+function migrateAccessRequests(value: unknown): SessionAccessRequest[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Access Request is invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string"
+      || (candidate.requestedPolicy !== "workspace" && candidate.requestedPolicy !== "full")
+      || typeof candidate.reason !== "string" || !candidate.reason.trim()
+      || typeof candidate.exactScope !== "string" || !candidate.exactScope.trim()
+      || typeof candidate.intendedAction !== "string" || !candidate.intendedAction.trim()
+      || !["pending", "approved", "denied", "narrowed"].includes(String(candidate.status))
+      || !(candidate.decidedPolicy === null || ["focused", "workspace", "full"].includes(String(candidate.decidedPolicy)))) {
+      throw new Error("Stored Access Request is invalid.");
+    }
+    const hasDecision = candidate.status === "approved" || candidate.status === "narrowed";
+    if (hasDecision !== (candidate.decidedPolicy !== null)) throw new Error("Stored Access Request is invalid.");
+    return candidate as unknown as SessionAccessRequest;
+  });
 }
 
 function defaultAcceptedProposal(): LearningSession["proposal"] {
@@ -1394,18 +1538,6 @@ function initialState(): LearningApplicationState {
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     },
     accessConfirmationPreference: { confirmFullAccess: true }
-  };
-}
-
-function fullAccessConfirmationRequest(): SessionAccessRequest {
-  return {
-    id: crypto.randomUUID(),
-    requestedPolicy: "full",
-    reason: "Full Access was selected for this Learning Session.",
-    exactScope: "Broader local-file and agent-tool access for this Learning Session only.",
-    intendedAction: "Read relevant local material without modifying or deleting source files.",
-    status: "pending",
-    decidedPolicy: null
   };
 }
 

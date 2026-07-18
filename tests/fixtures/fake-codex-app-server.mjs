@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { createInterface } from "node:readline";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 let threadNumber = 0;
+let serverRequestNumber = 1_000;
+const threadPolicies = new Map();
+const pendingAccessRequests = new Map();
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -19,6 +22,24 @@ const accessState = () => {
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (message.id === undefined) return;
+  if (!message.method && pendingAccessRequests.has(message.id)) {
+    const pending = pendingAccessRequests.get(message.id);
+    pendingAccessRequests.delete(message.id);
+    send({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        itemId: "teaching-card",
+        delta: message.result?.contentItems?.[0]?.text ?? "Continue within the learner's access decision."
+      }
+    });
+    send({
+      method: "turn/completed",
+      params: { threadId: pending.threadId, turn: { id: pending.turnId, status: "completed", error: null } }
+    });
+    return;
+  }
 
   switch (message.method) {
     case "initialize":
@@ -53,6 +74,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       break;
     case "thread/start":
       threadNumber += 1;
+      threadPolicies.set(
+        `fake-thread-${threadNumber}`,
+        message.params.baseInstructions.includes("Full Access permits") ? "full" : "bounded"
+      );
       send({ id: message.id, result: { thread: { id: `fake-thread-${threadNumber}` } } });
       break;
     case "turn/start": {
@@ -75,7 +100,35 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               })
             }
           });
+        } else if (message.params.input[0].text.includes("TRIGGER_ACCESS_REQUEST")
+          && threadPolicies.get(message.params.threadId) !== "full") {
+          writeFileSync(join(process.env.QUICK_STUDY_DATA_DIR, "fake-codex-last-teaching-input.json"), JSON.stringify({
+            prompt: message.params.input[0].text
+          }), "utf8");
+          const requestId = serverRequestNumber++;
+          pendingAccessRequests.set(requestId, { threadId: message.params.threadId, turnId });
+          send({
+            id: requestId,
+            method: "item/tool/call",
+            params: {
+              threadId: message.params.threadId,
+              turnId,
+              callId: `access-call-${requestId}`,
+              namespace: null,
+              tool: "request_session_access",
+              arguments: {
+                requestedPolicy: "full",
+                reason: "The proof cites a local lemma that is not available under the current policy.",
+                exactScope: "/Users/learner/reference/lemma.pdf",
+                intendedAction: "Read the cited lemma statement without modifying the source."
+              }
+            }
+          });
+          return;
         } else {
+          writeFileSync(join(process.env.QUICK_STUDY_DATA_DIR, "fake-codex-last-teaching-input.json"), JSON.stringify({
+            prompt: message.params.input[0].text
+          }), "utf8");
           send({
             method: "item/agentMessage/delta",
             params: {

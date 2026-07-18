@@ -8,7 +8,7 @@ import {
   type LocalSourceAccess,
   type SelectedLocalSource
 } from "./learning-application";
-import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type SessionProposal, type TeachingRequest } from "./model-runtime";
+import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type TeachingRequest } from "./model-runtime";
 
 describe("Learning Application", () => {
   const dataDirectories: string[] = [];
@@ -49,6 +49,14 @@ describe("Learning Application", () => {
     return { dataDirectory, application };
   }
 
+  async function launchWithRuntimeAndSourceAccess(runtime: ModelRuntime, sourceAccess: LocalSourceAccess) {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, runtime, sourceAccess);
+    applications.push(application);
+    return { dataDirectory, application };
+  }
+
   it("links one Primary Folder to a Study Workspace and restores the grant after relaunch", async () => {
     const { application, dataDirectory } = await launch();
     const created = await application.submit({ type: "createWorkspace", name: "Algebra" });
@@ -85,7 +93,7 @@ describe("Learning Application", () => {
   });
 
   it("keeps disk-backed attachments linked while retaining fileless intake as a Managed Asset", async () => {
-    const { application } = await launch();
+    const { application, dataDirectory } = await launch();
     const created = await application.submit({ type: "createWorkspace", name: "Analysis" });
     const workspaceId = created.navigation.workspaceId;
 
@@ -940,6 +948,50 @@ describe("Learning Application", () => {
     expect(runtime.teachingRequests.at(-1)?.accessScope).toEqual(application.getSessionAccessScope(workspaceSession.id));
   });
 
+  it("supplies only authorized source content to the Model Runtime", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the theorem",
+      scope: "Use the supplied sources",
+      initialTeachingDirection: "Compare the statements",
+      requiresConfirmation: false,
+      confirmationReason: null
+    });
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.contentBySourceName.set("group-actions.txt", "Orbit-stabilizer source content.");
+    sourceAccess.contentBySourceName.set("compactness.txt", "Unrelated topology source content.");
+    const { application } = await launchWithRuntimeAndSourceAccess(runtime, sourceAccess);
+
+    let state = await application.submit({ type: "createWorkspace", name: "Abstract Algebra" });
+    const algebraWorkspaceId = state.navigation.workspaceId;
+    state = await application.submit({ type: "createMission", workspaceId: algebraWorkspaceId, name: "Group actions" });
+    const algebraMissionId = state.navigation.missionId!;
+    await application.linkExternalAttachment(algebraWorkspaceId, {
+      name: "group-actions.txt", resourceType: "file",
+      lastKnownPath: "/Users/learner/algebra/group-actions.txt", canonicalPath: "/Users/learner/algebra/group-actions.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "algebra-bookmark" },
+      fingerprint: { size: 64, modifiedAtMs: 1234 }
+    });
+    state = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const topologyWorkspaceId = state.navigation.workspaceId;
+    await application.linkExternalAttachment(topologyWorkspaceId, {
+      name: "compactness.txt", resourceType: "file",
+      lastKnownPath: "/Users/learner/topology/compactness.txt", canonicalPath: "/Users/learner/topology/compactness.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "topology-bookmark" },
+      fingerprint: { size: 64, modifiedAtMs: 1234 }
+    });
+
+    await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Explain orbit-stabilizer.",
+      location: { workspaceId: algebraWorkspaceId, missionId: algebraMissionId }
+    });
+    expect(runtime.teachingRequests.at(-1)?.sourceContext).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "group-actions.txt", content: "Orbit-stabilizer source content." }),
+      expect.objectContaining({ name: "Typed mathematics", content: "Explain orbit-stabilizer." })
+    ]));
+    expect(runtime.teachingRequests.at(-1)?.sourceContext.map((source) => source.name)).not.toContain("compactness.txt");
+  });
+
   it("requires explicit learner decisions for Access Requests and never inherits Full Access", async () => {
     const { application, dataDirectory } = await launch();
     let state = await application.submit({ type: "startQuickStudy", mathematics: "Prove Fermat's little theorem." });
@@ -988,21 +1040,16 @@ describe("Learning Application", () => {
   });
 
   it("uses the Full Access preference only for the extra confirmation step", async () => {
-    const { application } = await launch();
+    const { application, dataDirectory } = await launch();
     let state = await application.submit({ type: "startQuickStudy", mathematics: "Study a local proof." });
     expect(state.accessConfirmationPreference.confirmFullAccess).toBe(true);
 
     state = await application.submit({ type: "selectSessionAccessPolicy", policy: "full" });
     expect(state.sessions[0].accessPolicy).toBe("focused");
-    expect(state.sessions[0].accessRequests.at(-1)).toMatchObject({
-      requestedPolicy: "full",
-      status: "pending"
-    });
-    state = await application.submit({
-      type: "decideAccessRequest",
-      requestId: state.sessions[0].accessRequests.at(-1)!.id,
-      decision: "deny"
-    });
+    expect(state.sessions[0].pendingFullAccessConfirmation).toBe(true);
+    expect(state.sessions[0].accessRequests).toEqual([]);
+    state = await application.submit({ type: "decideFullAccessConfirmation", decision: "cancel" });
+    expect(state.sessions[0].pendingFullAccessConfirmation).toBe(false);
 
     state = await application.submit({ type: "setFullAccessConfirmation", enabled: false });
     state = await application.submit({ type: "selectSessionAccessPolicy", policy: "full" });
@@ -1012,6 +1059,52 @@ describe("Learning Application", () => {
     state = await application.submit({ type: "selectSessionAccessPolicy", policy: "focused" });
     expect(state.sessions[0].accessPolicy).toBe("focused");
     expect(state.accessConfirmationPreference.confirmFullAccess).toBe(false);
+
+    const reloaded = await LearningApplication.launch(dataDirectory);
+    applications.push(reloaded);
+    expect(reloaded.getState().accessConfirmationPreference.confirmFullAccess).toBe(false);
+  });
+
+  it("handles a runtime Access Request and rebinds active teaching after approval", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the proof",
+      scope: "Use the attached statement",
+      initialTeachingDirection: "Inspect the hypotheses",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    let state = await application.submit({ type: "submitSessionIntake", mathematics: "Explain this theorem." });
+
+    const deniedDecision = runtime.requestAccess({
+      requestedPolicy: "full",
+      reason: "The theorem cites an unattached reference.",
+      exactScope: "/Users/learner/reference.pdf",
+      intendedAction: "Read the cited theorem statement."
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state = application.getState();
+    const deniedRequest = state.sessions[0].accessRequests.at(-1)!;
+    expect(deniedRequest).toMatchObject({ status: "pending", reason: "The theorem cites an unattached reference." });
+    await application.submit({ type: "decideAccessRequest", requestId: deniedRequest.id, decision: "deny" });
+    await expect(deniedDecision).resolves.toEqual({ status: "denied", policy: "focused" });
+    expect(runtime.teachingRequests).toHaveLength(1);
+
+    const approvedDecision = runtime.requestAccess({
+      requestedPolicy: "full",
+      reason: "The proof depends on a second local reference.",
+      exactScope: "/Users/learner/second-reference.pdf",
+      intendedAction: "Read the supporting lemma."
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const approvedRequest = application.getState().sessions[0].accessRequests.at(-1)!;
+    state = await application.submit({ type: "decideAccessRequest", requestId: approvedRequest.id, decision: "approve" });
+    await expect(approvedDecision).resolves.toEqual({ status: "approved", policy: "full" });
+    expect(state.sessions[0].accessPolicy).toBe("full");
+    expect(runtime.teachingRequests).toHaveLength(2);
+    expect(runtime.teachingRequests.at(-1)?.accessScope.policy).toBe("full");
+
+    runtime.completeTeaching(state.sessions[0].id);
   });
 
   it("files Quick Study work intact and orders the Resume Card by the most recently touched session", async () => {
@@ -1121,6 +1214,32 @@ describe("Learning Application", () => {
     await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow("Stored Linked Source is invalid");
   });
 
+  it("rejects malformed persisted Session Access Policy state", async () => {
+    const { application, dataDirectory } = await launch();
+    const started = await application.submit({ type: "startQuickStudy", mathematics: "Check a proof." });
+    await application.requestSessionAccess(started.activeSessionId!, {
+      requestedPolicy: "full",
+      reason: "A reference is missing.",
+      exactScope: "/Users/learner/reference.pdf",
+      intendedAction: "Read the reference."
+    });
+    const statePath = join(dataDirectory, "learning-application.json");
+    const valid = JSON.parse(await readFile(statePath, "utf8"));
+
+    await writeFile(statePath, JSON.stringify({ ...valid, accessConfirmationPreference: { confirmFullAccess: "no" } }), "utf8");
+    await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow("Stored Access Confirmation Preference is invalid");
+
+    const invalidPolicy = structuredClone(valid);
+    invalidPolicy.sessions[0].accessPolicy = "device";
+    await writeFile(statePath, JSON.stringify(invalidPolicy), "utf8");
+    await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow("Stored Session Access Policy is invalid");
+
+    const invalidRequest = structuredClone(valid);
+    invalidRequest.sessions[0].accessRequests[0].status = "silentlyApproved";
+    await writeFile(statePath, JSON.stringify(invalidRequest), "utf8");
+    await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow("Stored Access Request is invalid");
+  });
+
   it("pauses an active Learning Session when hierarchy navigation returns to the dashboard", async () => {
     const { application } = await launch();
     const started = await application.submit({ type: "startQuickStudy", mathematics: "Find the derivative of sine." });
@@ -1142,6 +1261,7 @@ describe("Learning Application", () => {
 
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
+  readonly contentBySourceName = new Map<string, string>();
   error: Error | null = null;
   fingerprint = { size: 64, modifiedAtMs: 1234 };
 
@@ -1151,7 +1271,7 @@ class DeterministicSourceAccess implements LocalSourceAccess {
     return {
       sourceId: source.id,
       resourceType: source.resourceType,
-      content: "Every open cover has a finite subcover.",
+      content: this.contentBySourceName.get(source.name) ?? "Every open cover has a finite subcover.",
       fingerprint: this.fingerprint,
       mediaType: "text/plain" as const
     };
@@ -1221,6 +1341,12 @@ class DeterministicModelRuntime implements ModelRuntime {
       turnId: `turn-${request.sessionId}`,
       detail: `Received ${delta.length} characters.`
     });
+  }
+
+  requestAccess(details: RuntimeAccessRequest) {
+    const request = this.teachingRequests.at(-1);
+    if (!request) throw new Error("Start teaching before requesting access.");
+    return request.onAccessRequest(details);
   }
 
   completeTeaching(sessionId = this.teachingRequests.at(-1)?.sessionId) {

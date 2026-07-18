@@ -67,6 +67,8 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "policy" in action && ["focused", "workspace", "full"].includes(String(action.policy));
     case "setFullAccessConfirmation":
       return "enabled" in action && typeof action.enabled === "boolean";
+    case "decideFullAccessConfirmation":
+      return "decision" in action && ["confirm", "cancel"].includes(String(action.decision));
     case "decideAccessRequest":
       return "requestId" in action && typeof action.requestId === "string"
         && "decision" in action && ["approve", "deny", "narrow"].includes(String(action.decision))

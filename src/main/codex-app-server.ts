@@ -8,6 +8,7 @@ import { ModelAccessError, type
 } from "../shared/model-runtime";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { sessionAccessPolicyLabel } from "../shared/session-access";
 
 type ProtocolId = number;
 
@@ -84,6 +85,7 @@ class AppServerClient {
   }>();
   private readonly notificationListeners = new Set<(message: ProtocolMessage) => void>();
   private readonly failureListeners = new Set<(error: Error) => void>();
+  private serverRequestHandler: ((method: string, params: unknown) => Promise<unknown>) | null = null;
   private failureError: Error | null = null;
 
   constructor(private readonly transport: AppServerTransport) {
@@ -143,6 +145,10 @@ class AppServerClient {
     return () => this.failureListeners.delete(listener);
   }
 
+  onServerRequest(handler: (method: string, params: unknown) => Promise<unknown>): void {
+    this.serverRequestHandler = handler;
+  }
+
   private send(message: ProtocolMessage): void {
     try {
       this.transport.write(`${JSON.stringify(message)}\n`);
@@ -162,6 +168,16 @@ class AppServerClient {
       return;
     }
     if (message.id !== undefined && message.method) {
+      if (message.method === "item/tool/call" && this.serverRequestHandler) {
+        void this.serverRequestHandler(message.method, message.params).then(
+          (result) => this.send({ id: message.id, result }),
+          (error: unknown) => this.send({
+            id: message.id,
+            result: dynamicToolFailure(error)
+          })
+        );
+        return;
+      }
       this.denyServerRequest(message.id, message.method);
       return;
     }
@@ -211,6 +227,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     reject(error: Error): void;
     timeout: ReturnType<typeof setTimeout>;
     onRuntimeEvent?: (event: ModelRuntimeEvent) => void;
+    onAccessRequest?: TeachingRequest["onAccessRequest"];
   }>();
   private readonly earlyTurnNotifications = new Map<string, ProtocolMessage[]>();
   private runtimeFailure: Error | null = null;
@@ -225,6 +242,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     private readonly turnTimeoutMs: number
   ) {
     client.onNotification((message) => this.receiveNotification(message));
+    client.onServerRequest((_method, params) => this.handleDynamicToolCall(params));
     client.onFailure((error) => {
       this.runtimeFailure = error;
       this.failActiveTurns(error);
@@ -310,7 +328,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
           `Learning Goal: ${request.learningGoal}`,
           `Scope: ${request.scope}`,
           `Initial teaching direction: ${request.initialTeachingDirection}`,
-          `Session Access Policy: ${accessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
+          `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
+          authorizedSourceContext(request),
           "Mathematics:",
           request.mathematics,
           "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
@@ -318,7 +337,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
         undefined,
         request.onDelta,
         request.sessionId,
-        request.onRuntimeEvent
+        request.onRuntimeEvent,
+        request
       );
     } catch (error) {
       resolveStart();
@@ -347,32 +367,38 @@ export class CodexAppServerRuntime implements ModelRuntime {
     outputSchema?: unknown,
     onDelta?: (delta: string) => void,
     sessionId?: string,
-    onRuntimeEvent?: (event: ModelRuntimeEvent) => void
+    onRuntimeEvent?: (event: ModelRuntimeEvent) => void,
+    teachingRequest?: TeachingRequest
   ): Promise<string> {
+    const accessPolicy = teachingRequest?.accessScope.policy ?? "focused";
+    const fullAccess = accessPolicy === "full";
     const threadResponse = await this.client.request("thread/start", {
       cwd: this.cwd,
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
+      dynamicTools: teachingRequest ? [SESSION_ACCESS_REQUEST_TOOL] : [],
       config: {
         features: {
           apps: false,
           hooks: false,
           multi_agent: false,
           remote_plugin: false,
-          shell_tool: false,
-          unified_exec: false
+          shell_tool: fullAccess,
+          unified_exec: fullAccess
         },
         mcp_servers: {},
         web_search: "disabled"
       },
-      baseInstructions: "You are the bounded teaching runtime for Quick Study. Do not use tools, execute commands, or modify files. Produce only learner-facing mathematical teaching output."
+      baseInstructions: fullAccess
+        ? "You are the bounded teaching runtime for Quick Study. Full Access permits read-only local inspection for this Learning Session. Never modify or delete source files. Produce only learner-facing mathematical teaching output."
+        : "You are the bounded teaching runtime for Quick Study. Use only supplied authorized context. If broader local context is necessary, call request_session_access with the reason, exact scope, and intended action. Do not execute commands or modify files. Produce only learner-facing mathematical teaching output."
     }) as { thread: { id: string } };
     onRuntimeEvent?.({
       type: "threadStarted",
       threadId: threadResponse.thread.id,
       turnId: null,
-      detail: "Codex teaching thread started with Focused Access tools disabled."
+      detail: `Codex teaching thread started with ${sessionAccessPolicyLabel(accessPolicy)}${fullAccess ? " read-only tools enabled" : " tools disabled"}.`
     });
     const turnResponse = await this.client.request("turn/start", {
       threadId: threadResponse.thread.id,
@@ -403,7 +429,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
         resolve,
         reject,
         timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), this.turnTimeoutMs),
-        onRuntimeEvent
+        onRuntimeEvent,
+        onAccessRequest: teachingRequest?.onAccessRequest
       });
       if (sessionId) this.activeTeachingTurns.set(sessionId, {
         threadId: threadResponse.thread.id,
@@ -418,6 +445,22 @@ export class CodexAppServerRuntime implements ModelRuntime {
   }
 
   private readonly activeTeachingTurns = new Map<string, { threadId: string; turnId: string }>();
+
+  private async handleDynamicToolCall(params: unknown): Promise<unknown> {
+    const call = parseAccessRequestToolCall(params);
+    const turn = this.turns.get(call.turnId);
+    if (!turn?.onAccessRequest) throw new Error("This turn cannot request Session Access elevation.");
+    const decision = await turn.onAccessRequest(call.request);
+    return {
+      success: true,
+      contentItems: [{
+        type: "inputText",
+        text: decision.status === "denied"
+          ? `Access denied. Continue within ${sessionAccessPolicyLabel(decision.policy)} or explain the limitation.`
+          : `Access ${decision.status}. The Learning Session now uses ${sessionAccessPolicyLabel(decision.policy)}.`
+      }]
+    };
+  }
 
   private receiveNotification(message: ProtocolMessage): void {
     if (message.method === "item/agentMessage/delta") {
@@ -521,8 +564,54 @@ export class CodexAppServerRuntime implements ModelRuntime {
   }
 }
 
-function accessPolicyLabel(policy: TeachingRequest["accessScope"]["policy"]): string {
-  return { focused: "Focused Access", workspace: "Workspace Access", full: "Full Access" }[policy];
+function authorizedSourceContext(request: TeachingRequest): string {
+  if (request.sourceContext.length === 0) return "Authorized source context: none beyond the mathematics intake.";
+  return [
+    "Authorized source context (do not infer access to any other local material):",
+    ...request.sourceContext.map((source) => JSON.stringify({
+      sourceId: source.sourceId,
+      name: source.name,
+      mediaType: source.mediaType,
+      content: source.content
+    }))
+  ].join("\n");
+}
+
+function parseAccessRequestToolCall(params: unknown): {
+  turnId: string;
+  request: Parameters<TeachingRequest["onAccessRequest"]>[0];
+} {
+  if (!isRecord(params) || params.tool !== "request_session_access" || typeof params.turnId !== "string"
+    || !isRecord(params.arguments)) {
+    throw new Error("Codex sent an invalid Session Access Request.");
+  }
+  const request = params.arguments;
+  if ((request.requestedPolicy !== "workspace" && request.requestedPolicy !== "full")
+    || typeof request.reason !== "string" || !request.reason.trim()
+    || typeof request.exactScope !== "string" || !request.exactScope.trim()
+    || typeof request.intendedAction !== "string" || !request.intendedAction.trim()) {
+    throw new Error("Codex sent an invalid Session Access Request.");
+  }
+  return {
+    turnId: params.turnId,
+    request: {
+      requestedPolicy: request.requestedPolicy,
+      reason: request.reason,
+      exactScope: request.exactScope,
+      intendedAction: request.intendedAction
+    }
+  };
+}
+
+function dynamicToolFailure(error: unknown): unknown {
+  return {
+    success: false,
+    contentItems: [{ type: "inputText", text: diagnosticMessage(error) }]
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isInitializeResponse(value: unknown): boolean {
@@ -560,6 +649,23 @@ function curatedProtocolError(message: string): Error {
 function diagnosticMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+const SESSION_ACCESS_REQUEST_TOOL = {
+  type: "function",
+  name: "request_session_access",
+  description: "Ask the learner to elevate this Learning Session's local access. Use only when the current policy cannot supply necessary context.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["requestedPolicy", "reason", "exactScope", "intendedAction"],
+    properties: {
+      requestedPolicy: { type: "string", enum: ["workspace", "full"] },
+      reason: { type: "string" },
+      exactScope: { type: "string" },
+      intendedAction: { type: "string" }
+    }
+  }
+} as const;
 
 const SESSION_PROPOSAL_SCHEMA = {
   type: "object",

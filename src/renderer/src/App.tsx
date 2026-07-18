@@ -8,6 +8,7 @@ import type {
   StudyMission,
   StudyWorkspace
 } from "../../shared/learning-application";
+import { sessionAccessPolicyLabel } from "../../shared/session-access";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -700,12 +701,12 @@ function SessionAccessPanel({ state, session, onState }: {
       <div className="access-heading">
         <div>
           <p className="eyebrow">Session Access Policy</p>
-          <h2 id="session-access-title">{accessPolicyLabel(session.accessPolicy)}</h2>
+          <h2 id="session-access-title">{sessionAccessPolicyLabel(session.accessPolicy)}</h2>
           <p>{accessPolicyDescription(session.accessPolicy)}</p>
         </div>
         <span className="saved" role="status">Current session only</span>
       </div>
-      <fieldset disabled={Boolean(pendingRequest)}>
+      <fieldset disabled={Boolean(pendingRequest) || session.pendingFullAccessConfirmation}>
         <legend>Choose Session Access Policy</legend>
         {(["focused", "workspace", "full"] as const).map((policy) => (
           <label key={policy}>
@@ -716,7 +717,7 @@ function SessionAccessPanel({ state, session, onState }: {
               checked={session.accessPolicy === policy}
               onChange={() => choosePolicy(policy)}
             />
-            {accessPolicyLabel(policy)}
+            {sessionAccessPolicyLabel(policy)}
           </label>
         ))}
       </fieldset>
@@ -732,10 +733,25 @@ function SessionAccessPanel({ state, session, onState }: {
         Confirm before Full Access
       </label>
       <small>Full Access never permits arbitrary source modification or deletion.</small>
+      {session.pendingFullAccessConfirmation && (
+        <section className="access-request" aria-labelledby="full-access-confirmation-title">
+          <p className="eyebrow">Additional confirmation</p>
+          <h3 id="full-access-confirmation-title">Full Access confirmation</h3>
+          <p>Allow broader read-only local-file and agent-tool access for this Learning Session only?</p>
+          <div className="teaching-actions">
+            <button className="primary" onClick={() => void window.quickStudy.submit({
+              type: "decideFullAccessConfirmation", decision: "confirm"
+            }).then(onState)}>Confirm Full Access</button>
+            <button className="secondary" onClick={() => void window.quickStudy.submit({
+              type: "decideFullAccessConfirmation", decision: "cancel"
+            }).then(onState)}>Cancel Full Access</button>
+          </div>
+        </section>
+      )}
       {pendingRequest && (
         <section className="access-request" aria-labelledby="access-request-title">
           <p className="eyebrow">Access Request</p>
-          <h3 id="access-request-title">Request {accessPolicyLabel(pendingRequest.requestedPolicy)}</h3>
+          <h3 id="access-request-title">Request {sessionAccessPolicyLabel(pendingRequest.requestedPolicy)}</h3>
           <dl>
             <div><dt>Reason</dt><dd>{pendingRequest.reason}</dd></div>
             <div><dt>Exact requested scope</dt><dd>{pendingRequest.exactScope}</dd></div>
@@ -752,10 +768,6 @@ function SessionAccessPanel({ state, session, onState }: {
       )}
     </section>
   );
-}
-
-function accessPolicyLabel(policy: LearningSession["accessPolicy"]): string {
-  return { focused: "Focused Access", workspace: "Workspace Access", full: "Full Access" }[policy];
 }
 
 function accessPolicyDescription(policy: LearningSession["accessPolicy"]): string {

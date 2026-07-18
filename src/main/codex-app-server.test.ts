@@ -156,7 +156,7 @@ describe("Codex app-server contract", () => {
       learningGoal: "Understand the alternating series test",
       scope: "Check decreasing magnitude and zero limit",
       initialTeachingDirection: "Inspect the absolute values first",
-      accessScope: focusedAccessScope(),
+      ...focusedTeachingAccess(),
       onDelta: (delta) => deltas.push(delta),
       signal: new AbortController().signal
     });
@@ -164,6 +164,33 @@ describe("Codex app-server contract", () => {
       "First check that the term magnitudes decrease. ",
       "Then check that they tend to zero."
     ]);
+
+    await runtime.streamTeaching({
+      sessionId: "learning-session-full",
+      mathematics: "Use the local reference.",
+      learningGoal: "Understand the referenced lemma",
+      scope: "Read the supporting source",
+      initialTeachingDirection: "Inspect the lemma statement",
+      accessScope: {
+        policy: "full",
+        sourceIds: ["source-1"],
+        allowsBroadLocalRead: true,
+        allowsSourceModification: false
+      },
+      sourceContext: [{ sourceId: "source-1", name: "lemma.txt", mediaType: "text/plain", content: "A bounded monotone sequence converges." }],
+      onAccessRequest: async () => ({ status: "denied", policy: "full" }),
+      onDelta: () => undefined,
+      signal: new AbortController().signal
+    });
+    const fullThreadStart = transport.messages.filter((message) => message.method === "thread/start").at(-1)!;
+    expect(fullThreadStart).toMatchObject({
+      params: {
+        sandbox: "read-only",
+        config: { features: { shell_tool: true, unified_exec: true } }
+      }
+    });
+    const fullTurnStart = transport.messages.filter((message) => message.method === "turn/start").at(-1)!;
+    expect(JSON.stringify(fullTurnStart.params)).toContain("A bounded monotone sequence converges.");
   });
 
   it("interrupts active teaching and shuts down the stdio transport", async () => {
@@ -198,7 +225,7 @@ describe("Codex app-server contract", () => {
       learningGoal: "Understand diagonalization",
       scope: "Construct the differing sequence",
       initialTeachingDirection: "Assume an enumeration",
-      accessScope: focusedAccessScope(),
+      ...focusedTeachingAccess(),
       onDelta: () => undefined,
       signal: new AbortController().signal
     });
@@ -289,7 +316,7 @@ describe("Codex app-server contract", () => {
       learningGoal: "Understand this",
       scope: "One claim",
       initialTeachingDirection: "Start",
-      accessScope: focusedAccessScope(),
+      ...focusedTeachingAccess(),
       onDelta: () => undefined,
       signal: new AbortController().signal
     });
@@ -352,6 +379,71 @@ describe("Codex app-server contract", () => {
     expect(transport.messages).toContainEqual({ id: 901, result: { decision: "decline" } });
     expect(transport.messages).toContainEqual({ id: 902, result: { decision: "denied" } });
   });
+
+  it("routes the request_session_access dynamic tool through the learner decision callback", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "thread-access" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "turn-access" } });
+        setTimeout(() => transport.request(700, "item/tool/call", {
+          threadId: "thread-access",
+          turnId: "turn-access",
+          callId: "call-access",
+          namespace: null,
+          tool: "request_session_access",
+          arguments: {
+            requestedPolicy: "full",
+            reason: "A cited local reference is unavailable.",
+            exactScope: "/Users/learner/reference.pdf",
+            intendedAction: "Read the cited theorem statement."
+          }
+        }), 0);
+      }
+      if (message.id === 700 && message.result) {
+        transport.notify("turn/completed", {
+          threadId: "thread-access",
+          turn: { id: "turn-access", status: "completed", error: null }
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const accessRequests: unknown[] = [];
+
+    await runtime.streamTeaching({
+      sessionId: "learning-session-access",
+      mathematics: "Explain the theorem.",
+      learningGoal: "Understand the theorem",
+      scope: "Use available context",
+      initialTeachingDirection: "Inspect the hypotheses",
+      accessScope: focusedAccessScope(),
+      sourceContext: [],
+      onAccessRequest: async (request) => {
+        accessRequests.push(request);
+        return { status: "denied", policy: "focused" };
+      },
+      onDelta: () => undefined,
+      signal: new AbortController().signal
+    });
+
+    expect(accessRequests).toEqual([{
+      requestedPolicy: "full",
+      reason: "A cited local reference is unavailable.",
+      exactScope: "/Users/learner/reference.pdf",
+      intendedAction: "Read the cited theorem statement."
+    }]);
+    expect(transport.messages).toContainEqual({
+      id: 700,
+      result: {
+        success: true,
+        contentItems: [{ type: "inputText", text: "Access denied. Continue within Focused Access or explain the limitation." }]
+      }
+    });
+  });
 });
 
 type ProtocolMessage = {
@@ -368,6 +460,14 @@ function focusedAccessScope() {
     sourceIds: [],
     allowsBroadLocalRead: false,
     allowsSourceModification: false as const
+  };
+}
+
+function focusedTeachingAccess() {
+  return {
+    accessScope: focusedAccessScope(),
+    sourceContext: [],
+    onAccessRequest: async () => ({ status: "denied" as const, policy: "focused" as const })
   };
 }
 
