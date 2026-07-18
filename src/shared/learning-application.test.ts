@@ -6,7 +6,8 @@ import {
   LearningApplication,
   type LinkedSource,
   type LocalSourceAccess,
-  type SelectedLocalSource
+  type SelectedLocalSource,
+  type SourceFingerprint
 } from "./learning-application";
 import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type TeachingRequest } from "./model-runtime";
 
@@ -230,6 +231,32 @@ describe("Learning Application", () => {
       link: { accessStatus: "unavailable", error: "The source is missing or access is no longer available." }
     });
 
+  });
+
+  it("refuses a legacy Primary Folder until its descendant fingerprint can be re-established", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.fingerprint = {
+      size: 64,
+      modifiedAtMs: 1234,
+      contentHash: "a".repeat(64)
+    };
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const created = await application.submit({ type: "createWorkspace", name: "Legacy Algebra" });
+    const linked = await application.linkPrimaryFolder(created.navigation.workspaceId, {
+      name: "legacy-algebra",
+      resourceType: "folder",
+      lastKnownPath: "/Users/learner/legacy-algebra",
+      canonicalPath: "/Users/learner/legacy-algebra",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "legacy-bookmark" },
+      fingerprint: { size: 64, modifiedAtMs: 1234 }
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+
+    await expect(application.openLinkedSource(source.id)).resolves.toEqual({
+      status: "unavailable",
+      sourceId: source.id,
+      error: "This source has changed since it was linked. Its original association is retained, but changed-source recovery is not available yet."
+    });
   });
 
   it("proposes an editable Learning Session and pauses materially ambiguous input for confirmation", async () => {
@@ -1103,6 +1130,8 @@ describe("Learning Application", () => {
     expect(state.sessions[0].accessPolicy).toBe("full");
     expect(runtime.teachingRequests).toHaveLength(2);
     expect(runtime.teachingRequests.at(-1)?.accessScope.policy).toBe("full");
+    runtime.teachingRequests[0].onDelta("stale interrupted output");
+    expect(application.getState().sessions[0].teachingCard.content).not.toContain("stale interrupted output");
 
     runtime.completeTeaching(state.sessions[0].id);
   });
@@ -1328,7 +1357,7 @@ class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
   readonly contentBySourceName = new Map<string, string>();
   error: Error | null = null;
-  fingerprint = { size: 64, modifiedAtMs: 1234 };
+  fingerprint: SourceFingerprint = { size: 64, modifiedAtMs: 1234 };
 
   async read(source: LinkedSource) {
     this.openedSourceIds.push(source.id);

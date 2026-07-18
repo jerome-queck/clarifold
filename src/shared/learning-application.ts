@@ -922,12 +922,13 @@ export class LearningApplication {
       onAccessRequest: (request) => this.handleRuntimeAccessRequest(session, request),
       signal: controller.signal,
       onDelta: (delta) => {
-        if (session.teachingCard.status !== "streaming") return;
+        if (controller.signal.aborted || session.teachingCard.status !== "streaming") return;
         session.teachingCard.content += delta;
         this.emitState();
         this.queuePersistence();
       },
       onRuntimeEvent: (event) => {
+        if (controller.signal.aborted) return;
         const log = this.agentWorkLogs[session.id] ??= [];
         log.push({ ...event, sequence: log.length + 1 });
         this.queuePersistence();
@@ -1277,7 +1278,7 @@ function usefulSourceError(error: unknown): string {
 
 function sameFingerprint(left: SourceFingerprint, right: SourceFingerprint): boolean {
   return left.size === right.size && left.modifiedAtMs === right.modifiedAtMs
-    && (left.contentHash === undefined || left.contentHash === right.contentHash);
+    && left.contentHash === right.contentHash;
 }
 
 function pathIsInside(path: string, folderPath: string): boolean {
