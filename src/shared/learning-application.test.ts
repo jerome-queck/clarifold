@@ -1461,14 +1461,18 @@ describe("Learning Application", () => {
       paletteAction: "annotate"
     });
     const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
+    const observed: Array<{ sourceAnchorId: string; prerequisite: string } | null> = [];
+    application.subscribe((next) => observed.push(next.sessions[0].pendingConceptPeek));
 
     const opening = application.submit({ type: "openConceptPeek", sourceAnchorId, prerequisite: "open covers" });
+    expect(observed.at(-1)).toEqual({ sourceAnchorId, prerequisite: "open covers" });
     const stopped = expect(opening).rejects.toThrow("Concept Peek generation was stopped");
     await application.submit({ type: "cancelSessionModelWork", sessionId });
 
     await stopped;
     expect(runtime.canceledSessionIds).toContain(sessionId);
     expect(application.getState().sessions[0].conceptPeeks).toEqual([]);
+    expect(application.getState().sessions[0].pendingConceptPeek).toBeNull();
   });
 
   it("requires a learner decision before branching and returns to the exact durable Return Point", async () => {
@@ -2885,6 +2889,7 @@ class DeterministicModelRuntime implements ModelRuntime {
     this.conceptPeekRequests.push(request);
     request.onRuntimeEvent?.({ type: "threadStarted", threadId: "peek-thread", turnId: null, detail: "Thread started." });
     if (this.holdConceptPeek) {
+      if (request.signal.aborted) throw new Error("Concept Peek aborted.");
       await new Promise<void>((_resolve, reject) => {
         request.signal.addEventListener("abort", () => reject(new Error("Concept Peek aborted.")), { once: true });
       });

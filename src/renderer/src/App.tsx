@@ -536,6 +536,7 @@ function ResumeCard({ state, session, onState }: {
   session: LearningSession;
   onState: StateHandler;
 }) {
+  const [backgroundError, setBackgroundError] = useState<string | null>(null);
   const workspace = state.workspaces.find((candidate) => candidate.id === session.workspaceId)!;
   const mission = state.missions.find((candidate) => candidate.id === session.missionId)!;
   return (
@@ -552,15 +553,19 @@ function ResumeCard({ state, session, onState }: {
         <p>{session.returnContext.label}</p>
         <small>{session.returnContext.nextAction}</small>
       </div>
-      {session.teachingCard.status === "streaming" && (
+      {hasBackgroundModelWork(session) && (
         <div className="background-work" role="status">
-          <span>Codex is teaching in the background</span>
+          <span>{session.pendingConceptPeek
+            ? `Codex is creating the Concept Peek ${session.pendingConceptPeek.prerequisite}`
+            : "Codex is teaching in the background"}</span>
           <button className="secondary" onClick={() => void window.quickStudy.submit({
-            type: "cancelSessionModelWork",
-            sessionId: session.id
-          }).then(onState)}>Stop background teaching</button>
+            type: "cancelSessionModelWork", sessionId: session.id
+          }).then(onState).catch((cause: unknown) => setBackgroundError(
+            cause instanceof Error ? cause.message : "The model work could not be stopped."
+          ))}>{session.pendingConceptPeek ? "Stop Concept Peek generation" : "Stop background teaching"}</button>
         </div>
       )}
+      {backgroundError && <p className="failure-message" role="alert">{backgroundError}</p>}
       <div className="resume-actions">
         <button className="primary" onClick={() => void window.quickStudy.submit({
           type: "resumeSession",
@@ -743,6 +748,7 @@ function MissionHistory({ workspace, mission, state, onState }: {
   state: LearningApplicationState;
   onState: StateHandler;
 }) {
+  const [modelWorkError, setModelWorkError] = useState<string | null>(null);
   const sessions = mission ? state.sessions.filter((session) => session.missionId === mission.id) : [];
   return (
     <section className="history-card" aria-labelledby="history-title">
@@ -753,13 +759,16 @@ function MissionHistory({ workspace, mission, state, onState }: {
           {sessions.map((session) => (
             <li key={session.id}>
               <div><strong>{session.learningGoal}</strong><small>{session.sessionTarget}</small>
-                {session.teachingCard.status === "streaming" && <small>Codex teaching in background</small>}
+                {hasBackgroundModelWork(session) && <small>{session.pendingConceptPeek
+                  ? `Creating Concept Peek: ${session.pendingConceptPeek.prerequisite}`
+                  : "Codex teaching in background"}</small>}
               </div>
               <div className="session-actions">
-                {session.teachingCard.status === "streaming" && <button className="secondary" onClick={() => void window.quickStudy.submit({
-                  type: "cancelSessionModelWork",
-                  sessionId: session.id
-                }).then(onState)}>Stop</button>}
+                {hasBackgroundModelWork(session) && <button className="secondary" onClick={() => void window.quickStudy.submit({
+                  type: "cancelSessionModelWork", sessionId: session.id
+                }).then(onState).catch((cause: unknown) => setModelWorkError(
+                  cause instanceof Error ? cause.message : "The model work could not be stopped."
+                ))}>{session.pendingConceptPeek ? "Stop Concept Peek" : "Stop"}</button>}
                 <button className="text-button" aria-label={`Resume Learning Session ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
                   type: "resumeSession",
                   sessionId: session.id
@@ -769,6 +778,7 @@ function MissionHistory({ workspace, mission, state, onState }: {
           ))}
         </ul>
       )}
+      {modelWorkError && <p className="failure-message" role="alert">{modelWorkError}</p>}
     </section>
   );
 }
@@ -986,9 +996,18 @@ function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin, onS
       setError(cause instanceof Error ? cause.message : "The Return Point could not be restored.");
     }
   };
-  if (!session.prerequisiteBranch && pending.length === 0 && openPeeks.length === 0) return null;
+  if (!session.prerequisiteBranch && pending.length === 0 && openPeeks.length === 0 && !session.pendingConceptPeek) return null;
   return (
     <section className="prerequisite-navigation" aria-label="Prerequisite navigation">
+      {session.pendingConceptPeek && (
+        <div className="background-work" role="status">
+          <span>Creating Concept Peek: {session.pendingConceptPeek.prerequisite}</span>
+          <button className="secondary" aria-label={`Stop Concept Peek generation ${session.pendingConceptPeek.prerequisite}`}
+            onClick={() => void submit({ type: "cancelSessionModelWork", sessionId: session.id })}>
+            Stop generation
+          </button>
+        </div>
+      )}
       {session.prerequisiteBranch && (
         <nav aria-label="Branch Trail">
           <p className="eyebrow">Branch Trail</p>
@@ -1023,13 +1042,13 @@ function PrerequisiteNavigation({ state, session, onState, onReturnToOrigin, onS
           <h2>Study {proposal.prerequisite} in a Prerequisite Branch?</h2>
           <p>This substantial prerequisite would open a linked Learning Session with its own Mathematical Workbench.</p>
           <div className="branch-proposal-actions">
-            <button className="primary" aria-label={`Accept Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void submit({
+            <button className="primary" disabled={Boolean(session.pendingConceptPeek)} aria-label={`Accept Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void submit({
               type: "decidePrerequisiteBranch", proposalId: proposal.id, decision: "accept"
             })}>Open branch</button>
-            <button className="secondary" aria-label={`Keep ${proposal.prerequisite} inline as a Concept Peek`} onClick={() => void submit({
+            <button className="secondary" disabled={Boolean(session.pendingConceptPeek)} aria-label={`Keep ${proposal.prerequisite} inline as a Concept Peek`} onClick={() => void submit({
               type: "decidePrerequisiteBranch", proposalId: proposal.id, decision: "keepInline"
             })}>Keep inline instead</button>
-            <button className="text-button" aria-label={`Defer Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void submit({
+            <button className="text-button" disabled={Boolean(session.pendingConceptPeek)} aria-label={`Defer Prerequisite Branch ${proposal.prerequisite}`} onClick={() => void submit({
               type: "decidePrerequisiteBranch", proposalId: proposal.id, decision: "defer"
             })}>Defer</button>
           </div>
@@ -1045,6 +1064,10 @@ function conceptPeekAnchorLabel(session: LearningSession, sourceAnchorId: string
   if (!anchor) return "an unavailable Source Anchor";
   if (anchor.selection.kind === "diagramRegion") return "the selected diagram region";
   return `“${anchor.selection.exactText}” (characters ${anchor.selection.startOffset}–${anchor.selection.endOffset})`;
+}
+
+function hasBackgroundModelWork(session: LearningSession): boolean {
+  return session.teachingCard.status === "streaming" || session.pendingConceptPeek !== null;
 }
 
 function ArgumentRoadmapPanel({ state, session, onState }: {
@@ -1151,10 +1174,10 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
           <ul>{session.learningSlice.immediatePrerequisites.map((prerequisite) => <li key={prerequisite}>
             <span>{prerequisite}</span>
             <div>
-              <button className="secondary" aria-label={`Open Concept Peek ${prerequisite}`} onClick={() => void handlePrerequisite({
+              <button className="secondary" disabled={Boolean(session.pendingConceptPeek)} aria-label={`Open Concept Peek ${prerequisite}`} onClick={() => void handlePrerequisite({
                 type: "openConceptPeek", sourceAnchorId: activeStage.sourceAnchorId, prerequisite
               })}>Open Concept Peek</button>
-              <button className="text-button" aria-label={`Propose Prerequisite Branch ${prerequisite}`} onClick={() => void handlePrerequisite({
+              <button className="text-button" disabled={Boolean(session.pendingConceptPeek)} aria-label={`Propose Prerequisite Branch ${prerequisite}`} onClick={() => void handlePrerequisite({
                 type: "proposePrerequisiteBranch", sourceAnchorId: activeStage.sourceAnchorId, prerequisite
               })}>Study as branch</button>
             </div>

@@ -481,6 +481,7 @@ export interface LearningSession {
   learningArtifacts: LearningArtifact[];
   learningSlice: LearningSlice | null;
   conceptPeeks: ConceptPeek[];
+  pendingConceptPeek: { sourceAnchorId: string; prerequisite: string } | null;
   prerequisiteBranchProposals: PrerequisiteBranchProposal[];
   prerequisiteBranch: PrerequisiteBranch | null;
 }
@@ -635,6 +636,7 @@ export class LearningApplication {
       application.agentWorkLogs = migrateAgentWorkLogs(agentWorkLogs);
       for (const session of persisted.sessions) {
         if (session.status === "active") session.status = "paused";
+        session.pendingConceptPeek = null;
         session.pendingFullAccessConfirmation = false;
         for (const request of session.accessRequests) {
           if (request.status === "pending") request.status = "denied";
@@ -1311,6 +1313,7 @@ export class LearningApplication {
           learningArtifacts: [],
           learningSlice: null,
           conceptPeeks: [],
+          pendingConceptPeek: null,
           prerequisiteBranchProposals: [],
           prerequisiteBranch: null
         };
@@ -1415,6 +1418,7 @@ export class LearningApplication {
           learningArtifacts: [],
           learningSlice: null,
           conceptPeeks: [],
+          pendingConceptPeek: null,
           prerequisiteBranchProposals: [],
           prerequisiteBranch: null
         };
@@ -1806,6 +1810,7 @@ export class LearningApplication {
           learningArtifacts: [],
           learningSlice: null,
           conceptPeeks: [],
+          pendingConceptPeek: null,
           prerequisiteBranchProposals: [],
           prerequisiteBranch: {
             prerequisite: proposal.prerequisite,
@@ -2561,6 +2566,7 @@ export class LearningApplication {
         learningArtifacts: [],
         learningSlice,
         conceptPeeks: [],
+        pendingConceptPeek: null,
         prerequisiteBranchProposals: [],
         prerequisiteBranch: null
       };
@@ -2662,7 +2668,10 @@ export class LearningApplication {
       this.agentWorkLogs[session.id] = log;
       const controller = new AbortController();
       const runtime = this.modelRuntime!;
-      const promise = runtime.createConceptPeek({
+      session.pendingConceptPeek = { sourceAnchorId: anchor.id, prerequisite };
+      this.emitState();
+      this.queuePersistence();
+      const promise = Promise.resolve().then(() => runtime.createConceptPeek({
         sessionId: session.id,
         prerequisite,
         mathematics: session.mathematics,
@@ -2674,7 +2683,7 @@ export class LearningApplication {
         onRuntimeEvent: (event) => {
           if (!controller.signal.aborted) log.push({ ...event, sequence: log.length + 1 });
         }
-      });
+      }));
       this.modelWorks.set(session.id, {
         controller,
         promise,
@@ -2691,6 +2700,9 @@ export class LearningApplication {
         throw error;
       } finally {
         if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
+        session.pendingConceptPeek = null;
+        this.emitState();
+        this.queuePersistence();
       }
       const content = requiredText(generated, "Concept Peek explanation");
       session.conceptPeeks.push({
@@ -2877,6 +2889,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       learningArtifacts: migrateLearningArtifacts(session.learningArtifacts),
       learningSlice: migrateLearningSlice(session.learningSlice),
       conceptPeeks: migrateConceptPeeks(session.conceptPeeks),
+      pendingConceptPeek: migratePendingConceptPeek(session.pendingConceptPeek),
       prerequisiteBranchProposals: migratePrerequisiteBranchProposals(session.prerequisiteBranchProposals),
       prerequisiteBranch: migratePrerequisiteBranch(session.prerequisiteBranch)
     }));
@@ -2922,6 +2935,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       learningArtifacts: [],
       learningSlice: null,
       conceptPeeks: [],
+      pendingConceptPeek: null,
       prerequisiteBranchProposals: [],
       prerequisiteBranch: null
     };
@@ -2987,6 +3001,15 @@ function migrateConceptPeeks(value: unknown): ConceptPeek[] {
   return value as ConceptPeek[];
 }
 
+function migratePendingConceptPeek(value: unknown): LearningSession["pendingConceptPeek"] {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.sourceAnchorId !== "string"
+    || typeof value.prerequisite !== "string" || !value.prerequisite.trim()) {
+    throw new Error("Stored pending Concept Peek is invalid.");
+  }
+  return value as unknown as LearningSession["pendingConceptPeek"];
+}
+
 function migratePrerequisiteBranchProposals(value: unknown): PrerequisiteBranchProposal[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some((proposal) => !isRecord(proposal)
@@ -3042,6 +3065,7 @@ function validatePrerequisiteBranchReferences(state: LearningApplicationState): 
   for (const session of state.sessions) {
     const anchorIds = new Set(session.sourceAnchors.map((anchor) => anchor.id));
     if (session.conceptPeeks.some((peek) => !anchorIds.has(peek.sourceAnchorId))
+      || (session.pendingConceptPeek !== null && !anchorIds.has(session.pendingConceptPeek.sourceAnchorId))
       || session.prerequisiteBranchProposals.some((proposal) => !anchorIds.has(proposal.sourceAnchorId))) {
       throw new Error("Stored prerequisite navigation references are invalid.");
     }

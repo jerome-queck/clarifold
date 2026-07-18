@@ -115,6 +115,30 @@ describe("anchored teaching workbench", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("The roadmap Source Anchor is stale.");
   });
 
+  it("announces and stops in-flight Concept Peek generation", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.sessions[0].pendingConceptPeek = {
+      sourceAnchorId: "anchor-1",
+      prerequisite: "Hausdorff separation"
+    };
+    window.quickStudy = quickStudyApi(state);
+    vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("Codex did not confirm interruption."));
+
+    render(<App />);
+
+    const pendingStatus = (await screen.findByText("Creating Concept Peek: Hausdorff separation")).closest("[role='status']");
+    expect(pendingStatus).toBeTruthy();
+    const stop = screen.getByRole("button", { name: "Stop Concept Peek generation Hausdorff separation" });
+    stop.focus();
+    await user.keyboard("{Enter}");
+    expect(window.quickStudy.submit).toHaveBeenCalledWith({
+      type: "cancelSessionModelWork",
+      sessionId: "session-1"
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain("did not confirm interruption");
+  });
+
   it("keeps prerequisite decisions accessible and restores focus from a Branch Trail Return Point", async () => {
     const user = userEvent.setup();
     const originState = workbenchState();
@@ -330,6 +354,7 @@ function workbenchState(): LearningApplicationState {
       }],
       activeTeachingCardId: "card-1",
       conceptPeeks: [],
+      pendingConceptPeek: null,
       prerequisiteBranchProposals: [],
       prerequisiteBranch: null,
       learningArtifacts: [{
