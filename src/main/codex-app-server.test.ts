@@ -96,7 +96,8 @@ describe("Codex app-server contract", () => {
               scope: "Check decreasing magnitude and zero limit",
               initialTeachingDirection: "Inspect the absolute values first",
               requiresConfirmation: false,
-              confirmationReason: null
+              confirmationReason: null,
+              argumentRoadmap: null
             })
           });
         } else {
@@ -126,8 +127,19 @@ describe("Codex app-server contract", () => {
       scope: "Check decreasing magnitude and zero limit",
       initialTeachingDirection: "Inspect the absolute values first",
       requiresConfirmation: false,
-      confirmationReason: null
+      confirmationReason: null,
+      argumentRoadmap: null
     });
+    const proposalTurn = transport.messages.find((message) => message.method === "turn/start");
+    expect(proposalTurn).toMatchObject({
+      params: {
+        outputSchema: {
+          required: expect.arrayContaining(["argumentRoadmap"]),
+          properties: { argumentRoadmap: expect.any(Object) }
+        }
+      }
+    });
+    expect(JSON.stringify(proposalTurn)).toContain("Argument Roadmap");
     expect(transport.messages.find((message) => message.method === "thread/start")).toMatchObject({
       params: {
         cwd: "/workspace",

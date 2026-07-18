@@ -829,6 +829,7 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
               <div><p className="eyebrow">Source Layer</p><h2>Session source</h2></div>
               <span className="saved">Saved locally</span>
             </div>
+            {session.learningSlice && <ArgumentRoadmapPanel state={state} session={session} onState={onState} />}
             <WorkbenchSourceLayer state={state} session={session} onState={onState}
               focusAnchorId={focusAnchorId}
               onTeachingCardCreated={setInspectorCardId}
@@ -899,6 +900,82 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
         </div>
       </div>
     </main>
+  );
+}
+
+function ArgumentRoadmapPanel({ state, session, onState }: {
+  state: LearningApplicationState;
+  session: LearningSession;
+  onState: StateHandler;
+}) {
+  const roadmap = state.argumentRoadmaps.find((candidate) => candidate.id === session.learningSlice?.roadmapId);
+  const [boundary, setBoundary] = useState(session.learningSlice?.boundary ?? "");
+  const [prerequisites, setPrerequisites] = useState(session.learningSlice?.immediatePrerequisites.join("\n") ?? "");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setBoundary(session.learningSlice?.boundary ?? "");
+    setPrerequisites(session.learningSlice?.immediatePrerequisites.join("\n") ?? "");
+  }, [session.id, session.learningSlice?.boundary, session.learningSlice?.immediatePrerequisites]);
+  if (!roadmap || !session.learningSlice) return null;
+  const editable = session.proposal.status === "awaitingConfirmation";
+  const save = async () => {
+    setError(null);
+    try {
+      onState(await window.quickStudy.submit({
+        type: "reviseLearningSlice",
+        boundary,
+        immediatePrerequisites: prerequisites.split("\n").map((item) => item.trim()).filter(Boolean)
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Learning Slice could not be saved.");
+    }
+  };
+  const choose = async (stageId: string) => {
+    setError(null);
+    try {
+      onState(await window.quickStudy.submit({ type: "selectRoadmapStage", roadmapId: roadmap.id, stageId }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Learning Slice could not be selected.");
+    }
+  };
+  return (
+    <section className="argument-roadmap" aria-label="Argument Roadmap">
+      <div className="card-heading">
+        <div><p className="eyebrow">Argument Roadmap</p><h2 id="argument-roadmap-title">{roadmap.title}</h2></div>
+        <span className="saved">{roadmap.stages.length} linked Learning Sessions</span>
+      </div>
+      <p className="subtle">Orientation only. Detailed teaching stays inside the Learning Slice you confirm.</p>
+      <ol className="roadmap-stages">
+        {roadmap.stages.map((stage) => {
+          const selected = stage.id === roadmap.selectedStageId;
+          const dependencies = stage.dependsOnStageIds
+            .map((id) => roadmap.stages.find((candidate) => candidate.id === id)?.title)
+            .filter((title): title is string => Boolean(title));
+          return (
+            <li key={stage.id} className={selected ? "selected" : ""}>
+              <div><strong>{stage.title}</strong><p>{stage.majorClaim}</p>
+                <small>{dependencies.length ? `Depends on ${dependencies.join(", ")}` : "No roadmap dependencies"} · Source Anchor retained</small>
+              </div>
+              {selected ? <span className="saved">Current Learning Slice</span> : (
+                <button className="secondary" disabled={!editable}
+                  aria-label={`Choose Learning Slice ${stage.title}`} onClick={() => void choose(stage.id)}>Choose this slice</button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <div className="learning-slice-editor">
+        <p className="proposal-label">Editable Learning Slice</p>
+        <label htmlFor="learning-slice-boundary">Learning Slice boundary</label>
+        <textarea id="learning-slice-boundary" value={boundary} disabled={!editable}
+          onChange={(event) => setBoundary(event.target.value)} />
+        <label htmlFor="learning-slice-prerequisites">Immediate prerequisites</label>
+        <textarea id="learning-slice-prerequisites" value={prerequisites} disabled={!editable}
+          onChange={(event) => setPrerequisites(event.target.value)} />
+        {editable && <button className="secondary" disabled={!boundary.trim()} onClick={() => void save()}>Save Learning Slice</button>}
+      </div>
+      {error && <p className="failure-message" role="alert">{error}</p>}
+    </section>
   );
 }
 

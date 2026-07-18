@@ -98,7 +98,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
                 scope: "Work through the central claim",
                 initialTeachingDirection: "Identify the key definition and first inference",
                 requiresConfirmation: false,
-                confirmationReason: null
+                confirmationReason: null,
+                argumentRoadmap: null
               })
             }
           });
