@@ -231,7 +231,7 @@ describe("Learning Application", () => {
       type: "createAnnotation",
       sourceAnchorId,
       purpose: "personalNote",
-      content: "I keep forgetting where the finite subcover enters."
+      content: "  I keep forgetting where the finite subcover enters.\n"
     });
 
     expect(runtime.teachingRequests).toHaveLength(requestCount);
@@ -239,7 +239,7 @@ describe("Learning Application", () => {
       expect.objectContaining({
         sourceAnchorId,
         purpose: "personalNote",
-        content: "I keep forgetting where the finite subcover enters."
+        content: "  I keep forgetting where the finite subcover enters.\n"
       })
     ]);
 
@@ -257,7 +257,7 @@ describe("Learning Application", () => {
       requiresConfirmation: false,
       confirmationReason: null
     }, true);
-    const { application } = await launchWithRuntime(runtime);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
     let state = await application.submit({
       type: "submitSessionIntake",
       mathematics: "Every compact subset of a Hausdorff space is closed."
@@ -279,19 +279,24 @@ describe("Learning Application", () => {
     const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
     const cardId = state.sessions[0].activeTeachingCardId!;
 
+    const equivalentAnnotation = "Show the neighbourhood choice explicitly.";
     state = await application.submit({
-      type: "createAnnotation", sourceAnchorId, purpose: "personalNote", content: "Use my own cover notation."
+      type: "createAnnotation", sourceAnchorId, purpose: "personalNote", content: equivalentAnnotation
     });
     const personalNoteId = state.sessions[0].annotations[0].id;
     state = await application.submit({
-      type: "createAnnotation", sourceAnchorId, purpose: "tutorFeedback", content: "Show the neighbourhood choice explicitly."
+      type: "createAnnotation", sourceAnchorId, purpose: "tutorFeedback", content: equivalentAnnotation
     });
+    const tutorFeedbackId = state.sessions[0].annotations[1].id;
     expect(runtime.teachingRequests.at(-1)?.focus).toMatchObject({
       sourceAnchorId,
-      instruction: "Show the neighbourhood choice explicitly.",
-      tutorFeedback: [{ content: "Show the neighbourhood choice explicitly." }]
+      instruction: equivalentAnnotation
     });
-    expect(JSON.stringify(runtime.teachingRequests.at(-1)?.focus)).not.toContain("Use my own cover notation");
+    expect(runtime.teachingRequests.at(-1)?.tutorFeedback).toEqual([{
+      annotationId: tutorFeedbackId,
+      sourceAnchorId,
+      content: equivalentAnnotation
+    }]);
     runtime.emitTeaching("Choose one neighbourhood for every point outside the compact set.");
     runtime.completeTeaching();
     await application.waitForModelWork();
@@ -301,17 +306,33 @@ describe("Learning Application", () => {
     state = await application.submit({ type: "convertAnnotation", annotationId: personalNoteId, purpose: "tutorFeedback" });
     expect(state.sessions[0].annotations[0]).toMatchObject({
       purpose: "tutorFeedback",
-      purposeChangedFrom: "personalNote"
+      purposeChanges: [{ from: "personalNote", to: "tutorFeedback" }]
     });
     await application.submit({ type: "reviseTeachingCard", cardId, instruction: "Give one more explicit revision." });
-    expect(runtime.teachingRequests.at(-1)?.focus).toMatchObject({
-      tutorFeedback: [
-        { content: "Use my own cover notation." },
-        { content: "Show the neighbourhood choice explicitly." }
-      ]
-    });
+    expect(runtime.teachingRequests.at(-1)?.tutorFeedback?.map((feedback) => feedback.annotationId))
+      .toEqual([personalNoteId, tutorFeedbackId]);
     runtime.completeTeaching();
     await application.waitForModelWork();
+
+    state = await application.submit({ type: "convertAnnotation", annotationId: personalNoteId, purpose: "personalNote" });
+    expect(state.sessions[0].annotations[0].purposeChanges).toEqual([
+      { from: "personalNote", to: "tutorFeedback" },
+      { from: "tutorFeedback", to: "personalNote" }
+    ]);
+    await application.submit({ type: "submitQuestion", text: "How does this affect the whole proof?" });
+    expect(runtime.teachingRequests.at(-1)?.focus).toBeUndefined();
+    expect(runtime.teachingRequests.at(-1)?.tutorFeedback?.map((feedback) => feedback.annotationId))
+      .toEqual([tutorFeedbackId]);
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    const relaunched = await LearningApplication.launch(dataDirectory, runtime);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].annotations).toEqual(state.sessions[0].annotations);
+    expect(relaunched.getState().sources[0]).toMatchObject({
+      kind: "managedAsset",
+      content: "Every compact subset of a Hausdorff space is closed."
+    });
   });
 
   it("lets the learner curate required Trail Items and restores the Trail Draft after resuming", async () => {
@@ -471,7 +492,6 @@ describe("Learning Application", () => {
       sourceId,
       selection: anchor.selection,
       instruction: "Explain or unpack this source anchor.",
-      tutorFeedback: [],
       previousContent: null,
       variantName: null
     });

@@ -14,6 +14,8 @@ import {
   type SessionProposal,
   type ArgumentRoadmapProposal
 } from "./model-runtime";
+import { annotationPurposeLabel, type AnnotationPurpose, type SourceAnnotation } from "./annotations";
+export type { AnnotationPurpose, SourceAnnotation } from "./annotations";
 import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-access";
 export type { SessionAccessPolicy } from "./session-access";
 
@@ -121,16 +123,6 @@ export interface SourceAnchorRequest {
   id: string;
   sourceAnchorId: string;
   action: SourceAnchorPaletteAction;
-}
-
-export type AnnotationPurpose = "personalNote" | "tutorFeedback";
-
-export interface SourceAnnotation {
-  id: string;
-  sourceAnchorId: string;
-  purpose: AnnotationPurpose;
-  content: string;
-  purposeChangedFrom: AnnotationPurpose | null;
 }
 
 export interface SubmittedPendingQuestion {
@@ -1302,8 +1294,8 @@ export class LearningApplication {
           id: crypto.randomUUID(),
           sourceAnchorId: action.sourceAnchorId,
           purpose: action.purpose,
-          content: requiredText(action.content, annotationPurposeLabel(action.purpose)),
-          purposeChangedFrom: null
+          content: requiredVerbatimText(action.content, annotationPurposeLabel(action.purpose)),
+          purposeChanges: []
         };
         session.annotations.push(annotation);
         session.activeSourceAnchorId = action.sourceAnchorId;
@@ -1347,7 +1339,7 @@ export class LearningApplication {
         const annotation = session.annotations.find((candidate) => candidate.id === action.annotationId);
         if (!annotation) throw new Error("Choose an annotation in this Learning Session.");
         if (annotation.purpose !== action.purpose) {
-          annotation.purposeChangedFrom = annotation.purpose;
+          annotation.purposeChanges.push({ from: annotation.purpose, to: action.purpose });
           annotation.purpose = action.purpose;
         }
         session.activeSourceAnchorId = annotation.sourceAnchorId;
@@ -2408,9 +2400,6 @@ export class LearningApplication {
       sourceId: anchor.sourceId,
       selection: anchor.selection,
       instruction: revision.instruction,
-      tutorFeedback: session.annotations
-        .filter((annotation) => annotation.sourceAnchorId === anchor.id && annotation.purpose === "tutorFeedback")
-        .map((annotation) => ({ annotationId: annotation.id, content: annotation.content })),
       previousContent,
       variantName
     };
@@ -2594,6 +2583,13 @@ export class LearningApplication {
       } : {}),
       accessScope: this.getSessionAccessScope(session.id),
       sourceContext,
+      tutorFeedback: session.annotations
+        .filter((annotation) => annotation.purpose === "tutorFeedback")
+        .map((annotation) => ({
+          annotationId: annotation.id,
+          sourceAnchorId: annotation.sourceAnchorId,
+          content: annotation.content
+        })),
       ...(questionContext ? { questionContext } : {}),
       ...(questionRevision ? { questionRevision } : {}),
       ...(focus ? { focus } : {}),
@@ -3219,6 +3215,11 @@ function requiredText(value: string, subject: string): string {
   const text = value.trim();
   if (!text) throw new Error(`${subject} text is required.`);
   return text;
+}
+
+function requiredVerbatimText(value: string, subject: string): string {
+  if (!value.trim()) throw new Error(`${subject} text is required.`);
+  return value;
 }
 
 function requireTargetDisposition(value: unknown): TargetDisposition {
@@ -4566,9 +4567,21 @@ function migrateAnnotations(value: unknown): SourceAnnotation[] {
   if (!Array.isArray(value)) throw new Error("Stored annotations are invalid.");
   return value.map((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.sourceAnchorId !== "string"
-      || !isAnnotationPurpose(candidate.purpose) || typeof candidate.content !== "string" || !candidate.content.trim()
-      || !(candidate.purposeChangedFrom === null || candidate.purposeChangedFrom === undefined
-        || isAnnotationPurpose(candidate.purposeChangedFrom))) {
+      || !isAnnotationPurpose(candidate.purpose) || typeof candidate.content !== "string" || !candidate.content.trim()) {
+      throw new Error("Stored annotation is invalid.");
+    }
+    const purposeChanges = candidate.purposeChanges === undefined
+      ? candidate.purposeChangedFrom === undefined || candidate.purposeChangedFrom === null
+        ? []
+        : isAnnotationPurpose(candidate.purposeChangedFrom) && candidate.purposeChangedFrom !== candidate.purpose
+          ? [{ from: candidate.purposeChangedFrom, to: candidate.purpose }]
+          : null
+      : Array.isArray(candidate.purposeChanges) && candidate.purposeChanges.every((change) => isRecord(change)
+        && isAnnotationPurpose(change.from) && isAnnotationPurpose(change.to) && change.from !== change.to)
+        ? candidate.purposeChanges as Array<{ from: AnnotationPurpose; to: AnnotationPurpose }>
+        : null;
+    if (!purposeChanges || purposeChanges.some((change, index) => index > 0 && change.from !== purposeChanges[index - 1].to)
+      || (purposeChanges.length > 0 && purposeChanges.at(-1)?.to !== candidate.purpose)) {
       throw new Error("Stored annotation is invalid.");
     }
     return {
@@ -4576,7 +4589,7 @@ function migrateAnnotations(value: unknown): SourceAnnotation[] {
       sourceAnchorId: candidate.sourceAnchorId,
       purpose: candidate.purpose,
       content: candidate.content,
-      purposeChangedFrom: candidate.purposeChangedFrom ?? null
+      purposeChanges
     };
   });
 }
@@ -4704,10 +4717,6 @@ export function isSourceAnchorPaletteAction(value: unknown): value is SourceAnch
 
 function isAnnotationPurpose(value: unknown): value is AnnotationPurpose {
   return value === "personalNote" || value === "tutorFeedback";
-}
-
-function annotationPurposeLabel(purpose: AnnotationPurpose): string {
-  return purpose === "personalNote" ? "Personal Note" : "Tutor Feedback";
 }
 
 export function isSourceAnchorSelection(value: unknown): value is SourceAnchorSelection {

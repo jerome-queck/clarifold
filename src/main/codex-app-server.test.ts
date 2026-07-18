@@ -279,6 +279,11 @@ describe("Codex app-server contract", () => {
         allowsSourceModification: false
       },
       sourceContext: [{ sourceId: "source-1", name: "lemma.txt", mediaType: "text/plain", content: "bounded monotone sequence" }],
+      tutorFeedback: [{
+        annotationId: "feedback-1",
+        sourceAnchorId: "anchor-1",
+        content: "Use the learner's preferred sequence notation."
+      }],
       questionContext: [{
         id: "source-anchor:anchor-1",
         kind: "sourceAnchor",
@@ -293,6 +298,10 @@ describe("Codex app-server contract", () => {
       onDelta: () => undefined,
       signal: new AbortController().signal
     });
+    expect(JSON.stringify(transport.messages.filter((message) => message.method === "turn/start").at(-1)?.params))
+      .toContain("Tutor Feedback available to guide this Teaching Move");
+    expect(JSON.stringify(transport.messages.filter((message) => message.method === "turn/start").at(-1)?.params))
+      .toContain("Use the learner's preferred sequence notation.");
     expect(transport.messages.filter((message) => message.method === "thread/start").at(-1)).toMatchObject({
       params: {
         dynamicTools: [],

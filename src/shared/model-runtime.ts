@@ -81,6 +81,7 @@ export interface TeachingRequest {
   };
   accessScope: SessionAccessScope;
   sourceContext: TeachingSourceContext[];
+  tutorFeedback?: Array<{ annotationId: string; sourceAnchorId: string; content: string }>;
   questionContext?: QuestionContextItem[];
   questionRevision?: { previousQuestion: string; previousContent: string };
   focus?: {
@@ -89,7 +90,6 @@ export interface TeachingRequest {
     sourceId: string;
     selection: SourceAnchorSelection;
     instruction: string;
-    tutorFeedback?: Array<{ annotationId: string; content: string }>;
     previousContent: string | null;
     variantName: string | null;
   };

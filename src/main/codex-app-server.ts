@@ -367,6 +367,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
           authorizedSourceContext(request),
           questionContext(request),
           questionRevision(request),
+          tutorFeedbackContext(request),
           teachingFocus(request),
           "Mathematics:",
           request.mathematics,
@@ -690,9 +691,6 @@ function teachingFocus(request: TeachingRequest): string {
       selection: request.focus.selection
     })}`,
     `Learner instruction: ${request.focus.instruction}`,
-    (request.focus.tutorFeedback ?? []).length === 0
-      ? "Tutor Feedback: none. Personal Notes are excluded from ordinary teaching context."
-      : `Tutor Feedback for this Source Anchor:\n${request.focus.tutorFeedback!.map((item) => `- ${item.content}`).join("\n")}`,
     request.focus.previousContent === null
       ? "This is the first explanation route for the anchor."
       : `Revise or branch from this current route without producing a chronological message feed:\n${request.focus.previousContent}`,
@@ -700,6 +698,16 @@ function teachingFocus(request: TeachingRequest): string {
       ? "Return one coherent current route."
       : `Return a genuinely different route retained as the named Teaching Variant: ${request.focus.variantName}.`
   ].join("\n\n");
+}
+
+function tutorFeedbackContext(request: TeachingRequest): string {
+  if (!request.tutorFeedback?.length) {
+    return "Tutor Feedback: none. Personal Notes are excluded from ordinary teaching context.";
+  }
+  return [
+    "Tutor Feedback available to guide this Teaching Move:",
+    ...request.tutorFeedback.map((item) => `- Source Anchor ${item.sourceAnchorId}: ${item.content}`)
+  ].join("\n");
 }
 
 function parseAccessRequestToolCall(params: unknown): {

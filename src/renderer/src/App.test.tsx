@@ -69,7 +69,7 @@ describe("anchored teaching workbench", () => {
       sourceAnchorId: "anchor-1",
       purpose: "personalNote",
       content: "Use my own cover notation.",
-      purposeChangedFrom: null
+      purposeChanges: []
     }];
     const api = quickStudyApi(state);
     window.quickStudy = api;

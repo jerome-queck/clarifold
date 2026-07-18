@@ -15,6 +15,7 @@ import type {
   StudyWorkspace,
   TargetDisposition
 } from "../../shared/learning-application";
+import { annotationPurposeLabel } from "../../shared/annotations";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
 import { ContextualInspector } from "./ContextualInspector";
@@ -1816,12 +1817,12 @@ function SessionRecord({ session }: { session: LearningSession }) {
       ))}
       {session.annotations.map((annotation) => (
         <article key={annotation.id}>
-          <h3>{annotation.purpose === "personalNote" ? "Personal Note" : "Tutor Feedback"}</h3>
+          <h3>{annotationPurposeLabel(annotation.purpose)}</h3>
           <p>{annotation.content}</p>
           <p className="record-link">Linked Source Anchor: {annotation.sourceAnchorId}</p>
-          {annotation.purposeChangedFrom && <p className="record-link">
-            Changed from {annotation.purposeChangedFrom === "personalNote" ? "Personal Note" : "Tutor Feedback"}; future use follows the current purpose.
-          </p>}
+          {annotation.purposeChanges.map((change, index) => <p className="record-link" key={`${change.from}-${change.to}-${index}`}>
+            Changed from {annotationPurposeLabel(change.from)} to {annotationPurposeLabel(change.to)}; future use follows the current purpose.
+          </p>)}
         </article>
       ))}
       {session.learningArtifacts.map((artifact) => (

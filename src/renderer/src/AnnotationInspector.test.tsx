@@ -34,7 +34,7 @@ describe("Annotation Inspector", () => {
         sourceAnchorId: "anchor-1",
         purpose: "tutorFeedback",
         content: "Use my own cover notation.",
-        purposeChangedFrom: "personalNote"
+        purposeChanges: [{ from: "personalNote", to: "tutorFeedback" }]
       }]}
       initialPurpose="tutorFeedback"
       onCreate={onCreate}
@@ -47,5 +47,24 @@ describe("Annotation Inspector", () => {
     convert.focus();
     await user.keyboard("{Enter}");
     expect(onConvert).toHaveBeenCalledWith("annotation-1", "personalNote");
+  });
+
+  it("announces annotation save failures without losing the verbatim draft", async () => {
+    const user = userEvent.setup();
+    render(<AnnotationInspector
+      anchorLabel="Text Source Anchor: compact subset"
+      annotations={[]}
+      initialPurpose="personalNote"
+      onCreate={async () => { throw new Error("The local annotation could not be persisted."); }}
+      onConvert={async () => undefined}
+      onClose={() => undefined}
+    />);
+
+    const draft = screen.getByRole("textbox", { name: "Personal Note" });
+    await user.type(draft, "  Keep these spaces.  ");
+    await user.click(screen.getByRole("button", { name: "Save Personal Note" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("could not be persisted");
+    expect((draft as HTMLTextAreaElement).value).toBe("  Keep these spaces.  ");
   });
 });
