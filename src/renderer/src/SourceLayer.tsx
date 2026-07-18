@@ -247,7 +247,8 @@ function SelectionPalette({ selection, onChoose, onClose }: {
       <div className="selection-palette-actions">
         <button ref={firstActionRef} className="primary" aria-label={`Explain or unpack ${selectionLabel}`} onClick={() => onChoose("explain")}>Explain or unpack</button>
         <button className="secondary" aria-label={`Ask about ${selectionLabel}`} onClick={() => onChoose("question")}>Ask about this</button>
-        <button className="secondary" aria-label={`Annotate ${selectionLabel}`} onClick={() => onChoose("annotate")}>Annotate</button>
+        <button className="secondary" aria-label={`Add note to ${selectionLabel}`} onClick={() => onChoose("addNote")}>Add note</button>
+        <button className="secondary" aria-label={`Tell tutor about ${selectionLabel}`} onClick={() => onChoose("tellTutor")}>Tell tutor</button>
         <button className="secondary" aria-label={`Add ${selectionLabel} to the Learning Trail`} onClick={() => onChoose("addToLearningTrail")}>Add to Learning Trail</button>
       </div>
       <button className="text-button" aria-label="Close Selection Palette" onClick={onClose}>Cancel</button>

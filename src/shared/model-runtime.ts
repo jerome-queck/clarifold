@@ -81,6 +81,7 @@ export interface TeachingRequest {
   };
   accessScope: SessionAccessScope;
   sourceContext: TeachingSourceContext[];
+  tutorFeedback?: Array<{ annotationId: string; sourceAnchorId: string; content: string }>;
   questionContext?: QuestionContextItem[];
   questionRevision?: { previousQuestion: string; previousContent: string };
   focus?: {

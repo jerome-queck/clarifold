@@ -61,6 +61,38 @@ describe("anchored teaching workbench", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("The Source Anchor is stale.");
   });
 
+  it("opens anchored annotations from the Anchor Marker and keyboard-converts their purpose", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.sessions[0].annotations = [{
+      id: "annotation-1",
+      sourceAnchorId: "anchor-1",
+      purpose: "personalNote",
+      content: "Use my own cover notation.",
+      purposeChanges: []
+    }];
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", {
+      name: "Open Anchor Marker for Text Source Anchor: compact subset (characters 6–20)"
+    }));
+
+    const inspector = screen.getByRole("complementary", {
+      name: "Annotations for Text Source Anchor: compact subset"
+    });
+    expect(inspector.textContent).toContain("Use my own cover notation.");
+    const convert = screen.getByRole("button", { name: "Convert Personal Note to Tutor Feedback" });
+    convert.focus();
+    await user.keyboard("{Enter}");
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "convertAnnotation",
+      annotationId: "annotation-1",
+      purpose: "tutorFeedback"
+    });
+  });
+
   it("exports and shares a source-linked artifact with visible revision provenance by keyboard", async () => {
     const user = userEvent.setup();
     const state = workbenchState();
@@ -499,6 +531,7 @@ function workbenchState(): LearningApplicationState {
       pendingFullAccessConfirmation: false,
       sourceAnchors: [anchor],
       sourceAnchorRequests: [{ id: "request-1", sourceAnchorId: "anchor-1", action: "explain" }],
+      annotations: [],
       activeSourceAnchorId: "anchor-1",
       anchoredTeachingCards: [{
         id: "card-1",

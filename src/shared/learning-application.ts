@@ -14,6 +14,8 @@ import {
   type SessionProposal,
   type ArgumentRoadmapProposal
 } from "./model-runtime";
+import { annotationPurposeLabel, type AnnotationPurpose, type SourceAnnotation } from "./annotations";
+export type { AnnotationPurpose, SourceAnnotation } from "./annotations";
 import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-access";
 export type { SessionAccessPolicy } from "./session-access";
 
@@ -83,7 +85,7 @@ export interface QuestionCard {
   revisions: QuestionCardRevision[];
 }
 
-export type SourceAnchorPaletteAction = "explain" | "question" | "annotate" | "addToLearningTrail";
+export type SourceAnchorPaletteAction = "explain" | "question" | "addNote" | "tellTutor" | "addToLearningTrail";
 
 export interface SourceTextLocation {
   startOffset: number;
@@ -552,6 +554,7 @@ export interface LearningSession {
   pendingFullAccessConfirmation: boolean;
   sourceAnchors: SourceAnchor[];
   sourceAnchorRequests: SourceAnchorRequest[];
+  annotations: SourceAnnotation[];
   activeSourceAnchorId: string | null;
   anchoredTeachingCards: AnchoredTeachingCard[];
   activeTeachingCardId: string | null;
@@ -625,6 +628,8 @@ export type LearnerAction =
       selection: SourceAnchorSelection;
       paletteAction: SourceAnchorPaletteAction;
     }
+  | { type: "createAnnotation"; sourceAnchorId: string; purpose: AnnotationPurpose; content: string }
+  | { type: "convertAnnotation"; annotationId: string; purpose: AnnotationPurpose }
   | { type: "reviseTeachingCard"; cardId: string; instruction: string }
   | { type: "restoreTeachingCardRevision"; cardId: string; revisionId: string }
   | { type: "createTeachingVariant"; cardId: string; name: string; instruction: string }
@@ -1277,6 +1282,67 @@ export class LearningApplication {
             card.currentRevision.retryable = true;
           }
         }
+        session.activityOrder = this.nextActivityOrder();
+        this.state.resumeSessionId = session.id;
+        break;
+      }
+      case "createAnnotation": {
+        const session = this.requireActiveSession();
+        requireSourceAnchor(session, action.sourceAnchorId);
+        if (!isAnnotationPurpose(action.purpose)) throw new Error("Choose Personal Note or Tutor Feedback.");
+        const annotation: SourceAnnotation = {
+          id: crypto.randomUUID(),
+          sourceAnchorId: action.sourceAnchorId,
+          purpose: action.purpose,
+          content: requiredVerbatimText(action.content, annotationPurposeLabel(action.purpose)),
+          purposeChanges: []
+        };
+        session.annotations.push(annotation);
+        session.activeSourceAnchorId = action.sourceAnchorId;
+        session.activityOrder = this.nextActivityOrder();
+        this.state.resumeSessionId = session.id;
+        let card = session.anchoredTeachingCards.find((candidate) => candidate.sourceAnchorId === action.sourceAnchorId);
+        if (annotation.purpose === "tutorFeedback" && !card) {
+          const anchor = requireSourceAnchor(session, action.sourceAnchorId);
+          card = {
+            id: crypto.randomUUID(),
+            sourceAnchorId: anchor.id,
+            title: sourceAnchorTeachingTitle(anchor.selection, "Tutor Feedback for"),
+            currentRevision: teachingCardRevision(annotation.content),
+            revisions: [],
+            variants: [],
+            artifactId: null
+          };
+          session.anchoredTeachingCards.push(card);
+        }
+        if (annotation.purpose === "tutorFeedback" && card && this.state.modelAccess.status === "available"
+          && !this.modelWorks.has(session.id) && card.currentRevision.status !== "streaming") {
+          const previous = structuredClone(card.currentRevision);
+          if (previous.status !== "idle") {
+            card.revisions.push(previous);
+            card.currentRevision = teachingCardRevision(annotation.content);
+          }
+          session.activeTeachingCardId = card.id;
+          await this.beginAnchoredTeaching(session, requireSourceAnchor(session, action.sourceAnchorId), card.currentRevision,
+            previous.status === "idle" ? null : previous.content);
+        } else if (annotation.purpose === "tutorFeedback" && card && this.state.modelAccess.status !== "available") {
+          card.currentRevision.status = "failed";
+          card.currentRevision.error = "Model teaching is unavailable. Tutor Feedback is saved for a later Teaching Move.";
+          card.currentRevision.retryable = true;
+          session.activeTeachingCardId = card.id;
+        }
+        break;
+      }
+      case "convertAnnotation": {
+        const session = this.requireActiveSession();
+        if (!isAnnotationPurpose(action.purpose)) throw new Error("Choose Personal Note or Tutor Feedback.");
+        const annotation = session.annotations.find((candidate) => candidate.id === action.annotationId);
+        if (!annotation) throw new Error("Choose an annotation in this Learning Session.");
+        if (annotation.purpose !== action.purpose) {
+          annotation.purposeChanges.push({ from: annotation.purpose, to: action.purpose });
+          annotation.purpose = action.purpose;
+        }
+        session.activeSourceAnchorId = annotation.sourceAnchorId;
         session.activityOrder = this.nextActivityOrder();
         this.state.resumeSessionId = session.id;
         break;
@@ -2517,6 +2583,13 @@ export class LearningApplication {
       } : {}),
       accessScope: this.getSessionAccessScope(session.id),
       sourceContext,
+      tutorFeedback: session.annotations
+        .filter((annotation) => annotation.purpose === "tutorFeedback")
+        .map((annotation) => ({
+          annotationId: annotation.id,
+          sourceAnchorId: annotation.sourceAnchorId,
+          content: annotation.content
+        })),
       ...(questionContext ? { questionContext } : {}),
       ...(questionRevision ? { questionRevision } : {}),
       ...(focus ? { focus } : {}),
@@ -3144,6 +3217,11 @@ function requiredText(value: string, subject: string): string {
   return text;
 }
 
+function requiredVerbatimText(value: string, subject: string): string {
+  if (!value.trim()) throw new Error(`${subject} text is required.`);
+  return value;
+}
+
 function requireTargetDisposition(value: unknown): TargetDisposition {
   if (value !== "addressed" && value !== "deferred" && value !== "unresolved") {
     throw new Error("Choose Addressed, Deferred, or Unresolved for the Session Target.");
@@ -3252,6 +3330,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       pendingFullAccessConfirmation: false,
       sourceAnchors: migrateSourceAnchors(session.sourceAnchors),
       sourceAnchorRequests: migrateSourceAnchorRequests(session.sourceAnchorRequests),
+      annotations: migrateAnnotations(session.annotations),
       activeSourceAnchorId: typeof session.activeSourceAnchorId === "string" ? session.activeSourceAnchorId : null,
       anchoredTeachingCards: migrateAnchoredTeachingCards(session.anchoredTeachingCards),
       activeTeachingCardId: typeof session.activeTeachingCardId === "string" ? session.activeTeachingCardId : null,
@@ -3304,6 +3383,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       pendingFullAccessConfirmation: false,
       sourceAnchors: [],
       sourceAnchorRequests: [],
+      annotations: [],
       activeSourceAnchorId: null,
       anchoredTeachingCards: [],
       activeTeachingCardId: null,
@@ -3811,7 +3891,7 @@ function questionRevisionReceipt(previous: { previousQuestion: string; previousC
   }];
 }
 
-function sourceAnchorTeachingTitle(selection: SourceAnchorSelection, action: "Explain" | "Question about"): string {
+function sourceAnchorTeachingTitle(selection: SourceAnchorSelection, action: "Explain" | "Question about" | "Tutor Feedback for"): string {
   if (selection.kind === "diagramRegion") return `${action} selected diagram region`;
   const excerpt = selection.exactText.trim().replace(/\s+/g, " ");
   return `${action} ${excerpt.length > 60 ? `${excerpt.slice(0, 57)}…` : excerpt}`;
@@ -3860,6 +3940,7 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     pendingFullAccessConfirmation: false,
     sourceAnchors: details.sourceAnchors ?? [],
     sourceAnchorRequests: [],
+    annotations: [],
     activeSourceAnchorId: details.activeSourceAnchorId ?? null,
     anchoredTeachingCards: [],
     activeTeachingCardId: null,
@@ -4470,10 +4551,46 @@ function migrateSourceAnchorRequests(value: unknown): SourceAnchorRequest[] {
   if (!Array.isArray(value)) throw new Error("Stored Source Anchor requests are invalid.");
   return value.map((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.sourceAnchorId !== "string"
-      || !isSourceAnchorPaletteAction(candidate.action)) {
+      || !(isSourceAnchorPaletteAction(candidate.action) || candidate.action === "annotate")) {
       throw new Error("Stored Source Anchor request is invalid.");
     }
-    return candidate as unknown as SourceAnchorRequest;
+    return {
+      id: candidate.id,
+      sourceAnchorId: candidate.sourceAnchorId,
+      action: candidate.action === "annotate" ? "addNote" : candidate.action
+    };
+  });
+}
+
+function migrateAnnotations(value: unknown): SourceAnnotation[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored annotations are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.sourceAnchorId !== "string"
+      || !isAnnotationPurpose(candidate.purpose) || typeof candidate.content !== "string" || !candidate.content.trim()) {
+      throw new Error("Stored annotation is invalid.");
+    }
+    const purposeChanges = candidate.purposeChanges === undefined
+      ? candidate.purposeChangedFrom === undefined || candidate.purposeChangedFrom === null
+        ? []
+        : isAnnotationPurpose(candidate.purposeChangedFrom) && candidate.purposeChangedFrom !== candidate.purpose
+          ? [{ from: candidate.purposeChangedFrom, to: candidate.purpose }]
+          : null
+      : Array.isArray(candidate.purposeChanges) && candidate.purposeChanges.every((change) => isRecord(change)
+        && isAnnotationPurpose(change.from) && isAnnotationPurpose(change.to) && change.from !== change.to)
+        ? candidate.purposeChanges as Array<{ from: AnnotationPurpose; to: AnnotationPurpose }>
+        : null;
+    if (!purposeChanges || purposeChanges.some((change, index) => index > 0 && change.from !== purposeChanges[index - 1].to)
+      || (purposeChanges.length > 0 && purposeChanges.at(-1)?.to !== candidate.purpose)) {
+      throw new Error("Stored annotation is invalid.");
+    }
+    return {
+      id: candidate.id,
+      sourceAnchorId: candidate.sourceAnchorId,
+      purpose: candidate.purpose,
+      content: candidate.content,
+      purposeChanges
+    };
   });
 }
 
@@ -4502,6 +4619,7 @@ function validateSessionSourceAnchorReferences(state: LearningApplicationState, 
   const sourceIds = new Set(session.sourceIds);
   const stateSources = new Map(state.sources.map((source) => [source.id, source]));
   const requestsAreValid = session.sourceAnchorRequests.every((request) => anchorsById.has(request.sourceAnchorId));
+  const annotationsAreValid = session.annotations.every((annotation) => anchorsById.has(annotation.sourceAnchorId));
   const anchorsAreValid = session.sourceAnchors.every((anchor) => {
     const source = stateSources.get(anchor.sourceId);
     return sourceIds.has(anchor.sourceId) && source?.workspaceId === session.workspaceId;
@@ -4525,9 +4643,10 @@ function validateSessionSourceAnchorReferences(state: LearningApplicationState, 
   const identifiersAreUnique = anchorsById.size === session.sourceAnchors.length
     && cardsById.size === session.anchoredTeachingCards.length
     && artifactsById.size === session.learningArtifacts.length
-    && new Set(session.sourceAnchorRequests.map((request) => request.id)).size === session.sourceAnchorRequests.length;
+    && new Set(session.sourceAnchorRequests.map((request) => request.id)).size === session.sourceAnchorRequests.length
+    && new Set(session.annotations.map((annotation) => annotation.id)).size === session.annotations.length;
   if (!requestsAreValid || !anchorsAreValid || !activeAnchorIsValid || !cardsAreValid || !artifactsAreValid || !trailItemsAreValid
-    || !activeCardIsValid || !identifiersAreUnique) {
+    || !annotationsAreValid || !activeCardIsValid || !identifiersAreUnique) {
     throw new Error("Stored Source Anchor references are invalid.");
   }
 }
@@ -4592,7 +4711,12 @@ function matchesSourceTextLocation(
 }
 
 export function isSourceAnchorPaletteAction(value: unknown): value is SourceAnchorPaletteAction {
-  return value === "explain" || value === "question" || value === "annotate" || value === "addToLearningTrail";
+  return value === "explain" || value === "question" || value === "addNote" || value === "tellTutor"
+    || value === "addToLearningTrail";
+}
+
+function isAnnotationPurpose(value: unknown): value is AnnotationPurpose {
+  return value === "personalNote" || value === "tutorFeedback";
 }
 
 export function isSourceAnchorSelection(value: unknown): value is SourceAnchorSelection {

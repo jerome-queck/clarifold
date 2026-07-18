@@ -150,7 +150,7 @@ describe("Learning Application", () => {
         prefix: "Let ",
         suffix: ". The diagram below"
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
     await application.submit({
       type: "createSourceAnchor",
@@ -185,7 +185,7 @@ describe("Learning Application", () => {
       }
     ]);
     expect(anchored.sessions[0].sourceAnchorRequests.map((request) => request.action)).toEqual([
-      "annotate", "question", "addToLearningTrail"
+      "addNote", "question", "addToLearningTrail"
     ]);
     expect(anchored.sessions[0].activeSourceAnchorId).toBe(anchored.sessions[0].sourceAnchors[2].id);
 
@@ -197,6 +197,142 @@ describe("Learning Application", () => {
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].sourceAnchors).toEqual(anchored.sessions[0].sourceAnchors);
     expect(relaunched.getState().sessions[0].activeSourceAnchorId).toBe(anchored.sessions[0].activeSourceAnchorId);
+  });
+
+  it("keeps a verbatim Personal Note anchored and out of ordinary model context across reload", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the selected claim",
+      initialTeachingDirection: "Start from the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const requestCount = runtime.teachingRequests.length;
+    const sourceId = state.sessions[0].sourceIds[0];
+
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "addNote"
+    });
+    const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
+    state = await application.submit({
+      type: "createAnnotation",
+      sourceAnchorId,
+      purpose: "personalNote",
+      content: "  I keep forgetting where the finite subcover enters.\n"
+    });
+
+    expect(runtime.teachingRequests).toHaveLength(requestCount);
+    expect(state.sessions[0].annotations).toEqual([
+      expect.objectContaining({
+        sourceAnchorId,
+        purpose: "personalNote",
+        content: "  I keep forgetting where the finite subcover enters.\n"
+      })
+    ]);
+
+    const relaunched = await LearningApplication.launch(dataDirectory, runtime);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].annotations).toEqual(state.sessions[0].annotations);
+    expect(JSON.stringify(runtime.teachingRequests)).not.toContain("I keep forgetting");
+  });
+
+  it("uses Tutor Feedback to revise anchored teaching and honors later purpose conversions", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the selected claim",
+      initialTeachingDirection: "Start from the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "explain"
+    });
+    runtime.emitTeaching("The first explanation is too compressed.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
+    const cardId = state.sessions[0].activeTeachingCardId!;
+
+    const equivalentAnnotation = "Show the neighbourhood choice explicitly.";
+    state = await application.submit({
+      type: "createAnnotation", sourceAnchorId, purpose: "personalNote", content: equivalentAnnotation
+    });
+    const personalNoteId = state.sessions[0].annotations[0].id;
+    state = await application.submit({
+      type: "createAnnotation", sourceAnchorId, purpose: "tutorFeedback", content: equivalentAnnotation
+    });
+    const tutorFeedbackId = state.sessions[0].annotations[1].id;
+    expect(runtime.teachingRequests.at(-1)?.focus).toMatchObject({
+      sourceAnchorId,
+      instruction: equivalentAnnotation
+    });
+    expect(runtime.teachingRequests.at(-1)?.tutorFeedback).toEqual([{
+      annotationId: tutorFeedbackId,
+      sourceAnchorId,
+      content: equivalentAnnotation
+    }]);
+    runtime.emitTeaching("Choose one neighbourhood for every point outside the compact set.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].anchoredTeachingCards[0].currentRevision.content)
+      .toContain("Choose one neighbourhood");
+
+    state = await application.submit({ type: "convertAnnotation", annotationId: personalNoteId, purpose: "tutorFeedback" });
+    expect(state.sessions[0].annotations[0]).toMatchObject({
+      purpose: "tutorFeedback",
+      purposeChanges: [{ from: "personalNote", to: "tutorFeedback" }]
+    });
+    await application.submit({ type: "reviseTeachingCard", cardId, instruction: "Give one more explicit revision." });
+    expect(runtime.teachingRequests.at(-1)?.tutorFeedback?.map((feedback) => feedback.annotationId))
+      .toEqual([personalNoteId, tutorFeedbackId]);
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    state = await application.submit({ type: "convertAnnotation", annotationId: personalNoteId, purpose: "personalNote" });
+    expect(state.sessions[0].annotations[0].purposeChanges).toEqual([
+      { from: "personalNote", to: "tutorFeedback" },
+      { from: "tutorFeedback", to: "personalNote" }
+    ]);
+    await application.submit({ type: "submitQuestion", text: "How does this affect the whole proof?" });
+    expect(runtime.teachingRequests.at(-1)?.focus).toBeUndefined();
+    expect(runtime.teachingRequests.at(-1)?.tutorFeedback?.map((feedback) => feedback.annotationId))
+      .toEqual([tutorFeedbackId]);
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    const relaunched = await LearningApplication.launch(dataDirectory, runtime);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].annotations).toEqual(state.sessions[0].annotations);
+    expect(relaunched.getState().sources[0]).toMatchObject({
+      kind: "managedAsset",
+      content: "Every compact subset of a Hausdorff space is closed."
+    });
   });
 
   it("lets the learner curate required Trail Items and restores the Trail Draft after resuming", async () => {
@@ -743,7 +879,7 @@ describe("Learning Application", () => {
       selection: {
         kind: "text", startOffset: 6, endOffset: 13, exactText: "compact", prefix: "Every ", suffix: " set is closed."
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
     const statePath = join(dataDirectory, "learning-application.json");
     const persisted = JSON.parse(await readFile(statePath, "utf8"));
@@ -856,7 +992,7 @@ describe("Learning Application", () => {
         prefix: "Every ",
         suffix: " of a Hausdorff space is closed."
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
 
     const session = state.sessions[0];
@@ -980,7 +1116,7 @@ describe("Learning Application", () => {
         kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
         prefix: "Every ", suffix: " of a Hausdorff space is closed."
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
 
     await expect(application.submit({
@@ -1019,7 +1155,7 @@ describe("Learning Application", () => {
         type: "createSourceAnchor",
         sourceId,
         selection: { kind: "text", ...selection },
-        paletteAction: "annotate"
+        paletteAction: "addNote"
       });
     }
     const [firstAnchor, secondAnchor] = state.sessions[0].sourceAnchors;
@@ -1890,7 +2026,7 @@ describe("Learning Application", () => {
         prefix: "compact subset of a ",
         suffix: " is closed."
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
     const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
 
@@ -1948,7 +2084,7 @@ describe("Learning Application", () => {
       selection: {
         kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset", prefix: "Every ", suffix: " is closed."
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
     const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
     const observed: Array<{ sourceAnchorId: string; prerequisite: string } | null> = [];
@@ -1984,7 +2120,7 @@ describe("Learning Application", () => {
         prefix: "Every ",
         suffix: " of a Hausdorff space"
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
     const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
 
@@ -2081,7 +2217,7 @@ describe("Learning Application", () => {
       selection: {
         kind: "text", startOffset: 8, endOffset: 23, exactText: "closed diagonal", prefix: "Use the ", suffix: " criterion."
       },
-      paletteAction: "annotate"
+      paletteAction: "addNote"
     });
     const sourceAnchorId = state.sessions[0].activeSourceAnchorId!;
     state = await application.submit({

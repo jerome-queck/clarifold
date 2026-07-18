@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   AgentWorkLogEvidence,
+  AnnotationPurpose,
   LearningApplicationState,
   LearningArtifact,
   LearningSession,
@@ -14,11 +15,13 @@ import type {
   StudyWorkspace,
   TargetDisposition
 } from "../../shared/learning-application";
+import { annotationPurposeLabel } from "../../shared/annotations";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
 import { ContextualInspector } from "./ContextualInspector";
 import { AskBar } from "./AskBar";
 import { TrailDraft } from "./TrailDraft";
+import { AnnotationInspector } from "./AnnotationInspector";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -834,12 +837,15 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
   const [inspectorCardId, setInspectorCardId] = useState<string | null>(
     returnFocusAnchorId ? session.activeTeachingCardId : null
   );
+  const [annotationAnchorId, setAnnotationAnchorId] = useState<string | null>(null);
+  const [annotationPurpose, setAnnotationPurpose] = useState<AnnotationPurpose>("personalNote");
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(returnFocusAnchorId);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const inspectorCard = session.anchoredTeachingCards.find((card) => card.id === inspectorCardId) ?? null;
   const inspectorArtifact = inspectorCard?.artifactId
     ? session.learningArtifacts.find((artifact) => artifact.id === inspectorCard.artifactId) ?? null
     : null;
+  const annotationAnchor = session.sourceAnchors.find((anchor) => anchor.id === annotationAnchorId) ?? null;
   useEffect(() => {
     if (returnFocusAnchorId) onReturnFocusConsumed();
   }, []);
@@ -929,11 +935,21 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             {session.learningSlice && <ArgumentRoadmapPanel state={state} session={session} onState={onState} />}
             <WorkbenchSourceLayer state={state} session={session} onState={onState}
               focusAnchorId={focusAnchorId}
-              onTeachingCardCreated={setInspectorCardId}
+              onTeachingCardCreated={(teachingCardId) => {
+                setInspectorCardId(teachingCardId);
+                setAnnotationAnchorId(null);
+              }}
+              onAnnotationRequested={(sourceAnchorId, purpose) => {
+                setAnnotationAnchorId(sourceAnchorId);
+                setAnnotationPurpose(purpose);
+                setInspectorCardId(null);
+              }}
               onActivateAnchor={(sourceAnchorId) => {
                 const card = session.anchoredTeachingCards.find((candidate) => candidate.sourceAnchorId === sourceAnchorId);
+                const hasAnnotations = session.annotations.some((annotation) => annotation.sourceAnchorId === sourceAnchorId);
                 setFocusAnchorId(null);
                 setInspectorCardId(card?.id ?? null);
+                setAnnotationAnchorId(hasAnnotations ? sourceAnchorId : null);
                 setWorkbenchError(null);
                 void window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId })
                   .then(onState)
@@ -1006,6 +1022,21 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             }))}
             onPin={async (artifactKind) => onState(await window.quickStudy.submit({
               type: "pinTeachingCardArtifact", cardId: inspectorCard.id, artifactKind
+            }))}
+          />}
+          {annotationAnchor && <AnnotationInspector
+            anchorLabel={annotationAnchorLabel(annotationAnchor)}
+            annotations={session.annotations.filter((annotation) => annotation.sourceAnchorId === annotationAnchor.id)}
+            initialPurpose={annotationPurpose}
+            onClose={() => {
+              setAnnotationAnchorId(null);
+              setFocusAnchorId(annotationAnchor.id);
+            }}
+            onCreate={async (purpose, content) => onState(await window.quickStudy.submit({
+              type: "createAnnotation", sourceAnchorId: annotationAnchor.id, purpose, content
+            }))}
+            onConvert={async (annotationId, purpose) => onState(await window.quickStudy.submit({
+              type: "convertAnnotation", annotationId, purpose
             }))}
           />}
         </div>
@@ -1402,12 +1433,13 @@ function ArgumentRoadmapPanel({ state, session, onState }: {
   );
 }
 
-function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTeachingCardCreated, focusAnchorId }: {
+function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTeachingCardCreated, onAnnotationRequested, focusAnchorId }: {
   state: LearningApplicationState;
   session: LearningSession;
   onState: StateHandler;
   onActivateAnchor(sourceAnchorId: string): void;
   onTeachingCardCreated(teachingCardId: string): void;
+  onAnnotationRequested(sourceAnchorId: string, purpose: AnnotationPurpose): void;
   focusAnchorId: string | null;
 }) {
   const selectableSources = state.sources.filter((source) => source.workspaceId === session.workspaceId
@@ -1472,9 +1504,14 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTea
               paletteAction
             }).then((nextState) => {
               onState(nextState);
-              if (paletteAction !== "explain" && paletteAction !== "question") return;
               const activeSession = nextState.sessions.find((candidate) => candidate.id === nextState.activeSessionId);
-              if (activeSession?.activeTeachingCardId) onTeachingCardCreated(activeSession.activeTeachingCardId);
+              if ((paletteAction === "explain" || paletteAction === "question") && activeSession?.activeTeachingCardId) {
+                onTeachingCardCreated(activeSession.activeTeachingCardId);
+              }
+              if ((paletteAction === "addNote" || paletteAction === "tellTutor") && activeSession?.activeSourceAnchorId) {
+                onAnnotationRequested(activeSession.activeSourceAnchorId,
+                  paletteAction === "addNote" ? "personalNote" : "tutorFeedback");
+              }
             });
           }}
         />
@@ -1486,6 +1523,11 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTea
       {sourceError && <p className="failure-message" role="alert">{sourceError}</p>}
     </section>
   );
+}
+
+function annotationAnchorLabel(anchor: LearningSession["sourceAnchors"][number]): string {
+  if (anchor.selection.kind === "diagramRegion") return "selected diagram-region Source Anchor";
+  return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} Source Anchor: ${anchor.selection.exactText}`;
 }
 
 function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "Pinned on the main canvas" }: {
@@ -1725,7 +1767,7 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
 function SessionRecord({ session }: { session: LearningSession }) {
   if (session.submittedPendingQuestions.length === 0 && session.teachingCardHistory.length === 0
     && session.questionCards.length === 0 && session.anchoredTeachingCards.length === 0
-    && session.learningArtifacts.length === 0) return null;
+    && session.annotations.length === 0 && session.learningArtifacts.length === 0) return null;
   return (
     <section className="session-record" aria-labelledby="session-record-title">
       <p className="eyebrow">Session Record</p>
@@ -1771,6 +1813,16 @@ function SessionRecord({ session }: { session: LearningSession }) {
             {card.revisions.map((revision, index) => <p key={revision.id}>Revision {index + 1}: {revision.content || revision.error}</p>)}
             {card.variants.map((variant) => <p key={variant.id}>{variant.name}: {variant.revision.content || variant.revision.error}</p>)}
           </details>}
+        </article>
+      ))}
+      {session.annotations.map((annotation) => (
+        <article key={annotation.id}>
+          <h3>{annotationPurposeLabel(annotation.purpose)}</h3>
+          <p>{annotation.content}</p>
+          <p className="record-link">Linked Source Anchor: {annotation.sourceAnchorId}</p>
+          {annotation.purposeChanges.map((change, index) => <p className="record-link" key={`${change.from}-${change.to}-${index}`}>
+            Changed from {annotationPurposeLabel(change.from)} to {annotationPurposeLabel(change.to)}; future use follows the current purpose.
+          </p>)}
         </article>
       ))}
       {session.learningArtifacts.map((artifact) => (
