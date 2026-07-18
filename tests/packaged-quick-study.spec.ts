@@ -152,7 +152,10 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     const submitPending = page.getByRole("button", { name: "Submit Pending Question" });
     await submitPending.focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByText("Start from the key definition, then connect each inference to the stated goal.")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Current Teaching Card" }).getByText(
+      "Start from the key definition, then connect each inference to the stated goal.",
+      { exact: true }
+    )).toBeVisible();
   } finally {
     await quit();
     await rm(dataDirectory, { recursive: true, force: true });
