@@ -112,6 +112,40 @@ describe("Learning Application", () => {
     });
   });
 
+  it("restarts active teaching when an immediately accepted proposal is revised", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the original goal",
+      scope: "Original scope",
+      initialTeachingDirection: "Original direction",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const started = await application.submit({ type: "submitSessionIntake", mathematics: "Explain this theorem." });
+    const sessionId = started.activeSessionId!;
+
+    const revised = await application.submit({
+      type: "applySessionProposalRevision",
+      learningGoal: "Understand the revised goal",
+      scope: "Revised scope",
+      initialTeachingDirection: "Revised direction"
+    });
+    expect(runtime.canceledSessionIds).toContain(sessionId);
+    expect(runtime.teachingRequests).toHaveLength(2);
+    expect(runtime.teachingRequests[1]).toMatchObject({
+      sessionId,
+      learningGoal: "Understand the revised goal",
+      scope: "Revised scope",
+      initialTeachingDirection: "Revised direction"
+    });
+    expect(revised.sessions[0]).toMatchObject({
+      learningGoal: "Understand the revised goal",
+      teachingCard: { status: "streaming", content: "" }
+    });
+    runtime.completeTeaching(sessionId);
+    await application.waitForModelWork();
+  });
+
   it("starts confirmed work and cancellation retains the Learning Session in a clear stopped state", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Choose the intended convergence claim",
@@ -139,6 +173,28 @@ describe("Learning Application", () => {
         retryable: true
       }
     });
+  });
+
+  it("persists a stopped state even when Codex cannot confirm interruption", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand cancellation",
+      scope: "Stop one teaching turn",
+      initialTeachingDirection: "Begin teaching",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    runtime.cancelError = new Error("interrupt request timed out");
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Explain this slowly." });
+
+    const stopped = await application.submit({ type: "cancelModelWork" });
+    expect(stopped.sessions[0].teachingCard).toMatchObject({
+      status: "stopped",
+      retryable: true,
+      error: "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying."
+    });
+    runtime.completeTeaching(stopped.sessions[0].id);
+    await application.waitForModelWork();
   });
 
   it("surfaces honest runtime failures and retries the same Teaching Card", async () => {
@@ -277,7 +333,10 @@ describe("Learning Application", () => {
     expect(application.getState().sessions.map((session) => session.teachingCard.status)).toEqual(["stopped", "stopped"]);
 
     const reloaded = await LearningApplication.launch(dataDirectory);
-    expect(reloaded.getState().authentication.status).toBe("signedOut");
+    expect(reloaded.getState()).toMatchObject({
+      runtimeAvailable: false,
+      authentication: { status: "failed", error: "Codex Runtime is unavailable. Restart Codex and try again." }
+    });
     expect(reloaded.getState().sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: firstSessionId, teachingCard: expect.objectContaining({ status: "stopped", retryable: true }) }),
       expect.objectContaining({ id: secondSessionId, teachingCard: expect.objectContaining({ status: "stopped", retryable: true }) })
@@ -512,6 +571,7 @@ class DeterministicModelRuntime implements ModelRuntime {
   readonly receivedApiKeys: string[] = [];
   proposalError: Error | null = null;
   authenticationError: Error | null = null;
+  cancelError: Error | null = null;
 
   constructor(private readonly proposal: SessionProposal, private readonly holdTeaching = false) {}
 
@@ -536,6 +596,8 @@ class DeterministicModelRuntime implements ModelRuntime {
 
   async streamTeaching(request: TeachingRequest): Promise<void> {
     this.teachingRequests.push(request);
+    request.onRuntimeEvent?.({ type: "threadStarted", threadId: `thread-${request.sessionId}`, turnId: null, detail: "Thread started." });
+    request.onRuntimeEvent?.({ type: "turnStarted", threadId: `thread-${request.sessionId}`, turnId: `turn-${request.sessionId}`, detail: "Turn started." });
     if (this.holdTeaching) {
       await new Promise<void>((resolve, reject) => {
         this.teachingCompletions.set(request.sessionId, resolve);
@@ -545,11 +607,27 @@ class DeterministicModelRuntime implements ModelRuntime {
   }
 
   emitTeaching(delta: string) {
-    this.teachingRequests.at(-1)?.onDelta(delta);
+    const request = this.teachingRequests.at(-1);
+    request?.onDelta(delta);
+    request?.onRuntimeEvent?.({
+      type: "outputDelta",
+      threadId: `thread-${request.sessionId}`,
+      turnId: `turn-${request.sessionId}`,
+      detail: `Received ${delta.length} characters.`
+    });
   }
 
   completeTeaching(sessionId = this.teachingRequests.at(-1)?.sessionId) {
-    if (sessionId) this.teachingCompletions.get(sessionId)?.();
+    if (sessionId) {
+      const request = this.teachingRequests.find((candidate) => candidate.sessionId === sessionId);
+      request?.onRuntimeEvent?.({
+        type: "turnCompleted",
+        threadId: `thread-${sessionId}`,
+        turnId: `turn-${sessionId}`,
+        detail: "Turn completed."
+      });
+      this.teachingCompletions.get(sessionId)?.();
+    }
   }
 
   failTeaching(error: Error, sessionId = this.teachingRequests.at(-1)?.sessionId) {
@@ -558,6 +636,7 @@ class DeterministicModelRuntime implements ModelRuntime {
 
   async cancelTeaching(sessionId: string) {
     this.canceledSessionIds.push(sessionId);
+    if (this.cancelError) throw this.cancelError;
     this.completeTeaching(sessionId);
   }
 

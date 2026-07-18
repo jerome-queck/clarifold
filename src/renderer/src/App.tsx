@@ -80,7 +80,9 @@ function AuthenticationPanel({ state, onState }: { state: LearningApplicationSta
       <div>
         <p className="eyebrow">Codex Runtime</p>
         <h2 id="authentication-title">
-          {authentication.status === "signedIn"
+          {!state.runtimeAvailable
+            ? "Codex Runtime unavailable"
+            : authentication.status === "signedIn"
             ? `Connected with ${authentication.method === "chatgpt" ? "ChatGPT subscription" : "API key"}`
             : "Connect Codex to begin teaching"}
         </h2>
@@ -91,7 +93,7 @@ function AuthenticationPanel({ state, onState }: { state: LearningApplicationSta
         )}
         {authentication.error && <p className="failure-message" role="alert">{authentication.error}</p>}
       </div>
-      {authentication.status !== "signedIn" && (
+      {state.runtimeAvailable && authentication.status !== "signedIn" && (
         <div className="authentication-actions">
           <button className="primary" onClick={() => void signInWithChatGpt()}>Sign in with ChatGPT</button>
           <form className="api-key-form" onSubmit={(event) => void useApiKey(event)}>
@@ -220,6 +222,15 @@ function ResumeCard({ state, session, onState }: {
         <p>{session.returnContext.label}</p>
         <small>{session.returnContext.nextAction}</small>
       </div>
+      {session.teachingCard.status === "streaming" && (
+        <div className="background-work" role="status">
+          <span>Codex is teaching in the background</span>
+          <button className="secondary" onClick={() => void window.quickStudy.submit({
+            type: "cancelSessionModelWork",
+            sessionId: session.id
+          }).then(onState)}>Stop background teaching</button>
+        </div>
+      )}
       <div className="resume-actions">
         <button className="primary" onClick={() => void window.quickStudy.submit({
           type: "resumeSession",
@@ -363,11 +374,19 @@ function MissionHistory({ workspace, mission, state, onState }: {
         <ul className="session-list">
           {sessions.map((session) => (
             <li key={session.id}>
-              <div><strong>{session.learningGoal}</strong><small>{session.sessionTarget}</small></div>
-              <button className="text-button" aria-label={`Resume Learning Session ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
-                type: "resumeSession",
-                sessionId: session.id
-              }).then(onState)}>Resume</button>
+              <div><strong>{session.learningGoal}</strong><small>{session.sessionTarget}</small>
+                {session.teachingCard.status === "streaming" && <small>Codex teaching in background</small>}
+              </div>
+              <div className="session-actions">
+                {session.teachingCard.status === "streaming" && <button className="secondary" onClick={() => void window.quickStudy.submit({
+                  type: "cancelSessionModelWork",
+                  sessionId: session.id
+                }).then(onState)}>Stop</button>}
+                <button className="text-button" aria-label={`Resume Learning Session ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
+                  type: "resumeSession",
+                  sessionId: session.id
+                }).then(onState)}>Resume</button>
+              </div>
             </li>
           ))}
         </ul>
@@ -384,12 +403,12 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
   const [target, setTarget] = useState(session.sessionTarget);
   const [direction, setDirection] = useState(session.proposal.initialTeachingDirection);
 
-  const saveProposal = () => window.quickStudy.submit({
-    type: "reviseSessionProposal",
-    learningGoal: goal,
-    scope: target,
-    initialTeachingDirection: direction
-  });
+  const saveProposal = (applyToTeaching = false) => window.quickStudy.submit({
+      type: applyToTeaching ? "applySessionProposalRevision" : "reviseSessionProposal",
+      learningGoal: goal,
+      scope: target,
+      initialTeachingDirection: direction
+    });
   const leave = async () => {
     await saveProposal();
     onState(await window.quickStudy.submit({ type: "leaveSession" }));
@@ -423,8 +442,8 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
                 </button>
               </>
             ) : (
-              <button className="secondary proposal-action" disabled={!goal.trim() || !target.trim() || !direction.trim()} onClick={() => void saveProposal().then(onState)}>
-                Save proposal changes
+              <button className="secondary proposal-action" disabled={!goal.trim() || !target.trim() || !direction.trim()} onClick={() => void saveProposal(true).then(onState)}>
+                Apply proposal changes
               </button>
             )}
             <button className="secondary" onClick={() => void leave()}>Leave session</button>
@@ -436,6 +455,7 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
             </div>
             <article>{session.mathematics}</article>
             <TeachingCard session={session} onState={onState} />
+            <AgentWorkLog session={session} />
           </section>
         </div>
       </div>
@@ -470,4 +490,22 @@ function TeachingCard({ session, onState }: { session: LearningSession; onState:
 
 function teachingStatusLabel(status: LearningSession["teachingCard"]["status"]): string {
   return ({ idle: "Ready", streaming: "Streaming", completed: "Complete", stopped: "Stopped", failed: "Needs attention" })[status];
+}
+
+function AgentWorkLog({ session }: { session: LearningSession }) {
+  if (session.agentWorkLog.length === 0) return null;
+  return (
+    <details className="agent-work-log">
+      <summary>Agent Work Log · {session.agentWorkLog.length} events</summary>
+      <ol>
+        {session.agentWorkLog.map((event) => (
+          <li key={event.sequence}>
+            <strong>{event.type}</strong>
+            <span>{event.detail}</span>
+            {event.turnId && <code>{event.turnId}</code>}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
 }

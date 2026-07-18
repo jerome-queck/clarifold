@@ -29,6 +29,7 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "refreshAuthentication":
       return true;
     case "resumeSession":
+    case "cancelSessionModelWork":
       return "sessionId" in action && typeof action.sessionId === "string";
     case "startQuickStudy":
     case "submitSessionIntake":
@@ -36,6 +37,7 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "loginWithApiKey":
       return "apiKey" in action && typeof action.apiKey === "string";
     case "reviseSessionProposal":
+    case "applySessionProposalRevision":
       return "learningGoal" in action && typeof action.learningGoal === "string"
         && "scope" in action && typeof action.scope === "string"
         && "initialTeachingDirection" in action && typeof action.initialTeachingDirection === "string";
@@ -112,7 +114,7 @@ function createWindow(): void {
 void app.whenReady().then(async () => {
   const dataDirectory = process.env.QUICK_STUDY_DATA_DIR ?? app.getPath("userData");
   try {
-    modelRuntime = await CodexAppServerRuntime.launch(process.cwd());
+    modelRuntime = await CodexAppServerRuntime.launch(dataDirectory);
   } catch (error) {
     console.error("Codex app-server is unavailable:", error);
   }

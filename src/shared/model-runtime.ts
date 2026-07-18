@@ -26,7 +26,15 @@ export interface TeachingRequest {
   scope: string;
   initialTeachingDirection: string;
   onDelta(delta: string): void;
+  onRuntimeEvent?(event: ModelRuntimeEvent): void;
   signal: AbortSignal;
+}
+
+export interface ModelRuntimeEvent {
+  type: "threadStarted" | "turnStarted" | "outputDelta" | "turnCompleted" | "turnFailed";
+  threadId: string;
+  turnId: string | null;
+  detail: string;
 }
 
 export interface ModelRuntime {

@@ -72,6 +72,7 @@ h2 { margin: 0; font-size: 27px; }
 .return-context p { margin: 7px 0 3px; font-weight: 750; }
 .return-context small { color: #5b746d; }
 .resume-actions { display: flex; align-items: end; gap: 16px; flex-wrap: wrap; }
+.background-work { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: -7px 0 18px; padding: 12px 14px; border-radius: 10px; color: #704a32; background: #f4e4d5; font-size: 12px; font-weight: 750; }
 .empty-resume p:last-child { margin-bottom: 0; color: #647971; }
 
 .intake-card textarea { width: 100%; min-height: 125px; padding: 18px; resize: vertical; border: 1px solid #c5c5b8; border-radius: 14px; color: #16362f; background: rgba(255,255,255,.78); font-family: Georgia, serif; font-size: 19px; line-height: 1.5; }
@@ -96,6 +97,8 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .session-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0; border-top: 1px solid #deddd4; }
 .session-list div { display: flex; flex-direction: column; gap: 4px; }
 .session-list small { color: #6b7c76; }
+.session-list .session-actions { align-items: center; flex-direction: row; }
+.session-list .session-actions .secondary { padding: 7px 10px; }
 
 .workbench-grid { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; gap: 20px; min-height: calc(100vh - 100px); }
 .session-panel { padding: 26px; }
@@ -118,6 +121,12 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .teaching-section .teaching-content { margin-top: 0; }
 .failure-message { margin: 14px 0 0; color: #8d3d2b; font-weight: 650; line-height: 1.45; }
 .teaching-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+.agent-work-log { margin-top: 12px; padding: 13px 16px; border: 1px solid #d5d4ca; border-radius: 12px; color: #5c6f69; background: rgba(255,255,255,.55); font-size: 12px; }
+.agent-work-log summary { cursor: pointer; font-weight: 750; }
+.agent-work-log ol { margin: 12px 0 0; padding-left: 22px; }
+.agent-work-log li { margin: 8px 0; }
+.agent-work-log li span { display: block; margin: 2px 0; }
+.agent-work-log code { color: #81634f; font-size: 10px; }
 .loading { display: grid; min-height: 100vh; place-items: center; color: #49665e; background: #f4efe5; }
 
 @media (max-width: 1000px) {

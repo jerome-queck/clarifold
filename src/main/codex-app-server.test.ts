@@ -129,7 +129,24 @@ describe("Codex app-server contract", () => {
       confirmationReason: null
     });
     expect(transport.messages.find((message) => message.method === "thread/start")).toMatchObject({
-      params: { cwd: "/workspace", approvalPolicy: "never", sandbox: "read-only", ephemeral: true }
+      params: {
+        cwd: "/workspace",
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        ephemeral: true,
+        config: {
+          features: {
+            apps: false,
+            hooks: false,
+            multi_agent: false,
+            remote_plugin: false,
+            shell_tool: false,
+            unified_exec: false
+          },
+          mcp_servers: {},
+          web_search: "disabled"
+        }
+      }
     });
 
     const deltas: string[] = [];
@@ -231,7 +248,7 @@ describe("Codex app-server contract", () => {
     const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
 
     await expect(runtime.getAuthentication()).rejects.toThrow(
-      "Codex app-server error -32000: Authentication unavailable"
+      "Codex authentication is unavailable. Sign in and retry."
     );
     await expect(runtime.proposeSession("Ambiguous input")).rejects.toThrow(
       "Codex returned a malformed Session Proposal. Retry"

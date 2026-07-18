@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { AuthenticationState, ModelRuntime, SessionProposal } from "./model-runtime";
+import type { AuthenticationState, ModelRuntime, ModelRuntimeEvent, SessionProposal } from "./model-runtime";
 
 export type SessionStatus = "active" | "paused";
 
@@ -66,6 +66,7 @@ export interface LearningSession {
     error: string | null;
     retryable: boolean;
   };
+  agentWorkLog: Array<ModelRuntimeEvent & { sequence: number }>;
 }
 
 export interface LearningApplicationState {
@@ -89,6 +90,7 @@ export interface LearningApplicationState {
     error: string | null;
   };
   intakeError: string | null;
+  runtimeAvailable: boolean;
 }
 
 export type LearnerAction =
@@ -96,12 +98,19 @@ export type LearnerAction =
   | { type: "submitSessionIntake"; mathematics: string }
   | { type: "confirmSessionProposal" }
   | { type: "cancelModelWork" }
+  | { type: "cancelSessionModelWork"; sessionId: string }
   | { type: "retryModelWork" }
   | { type: "startChatGptLogin" }
   | { type: "loginWithApiKey"; apiKey: string }
   | { type: "refreshAuthentication" }
   | {
       type: "reviseSessionProposal";
+      learningGoal: string;
+      scope: string;
+      initialTeachingDirection: string;
+    }
+  | {
+      type: "applySessionProposalRevision";
       learningGoal: string;
       scope: string;
       initialTeachingDirection: string;
@@ -148,13 +157,15 @@ export class LearningApplication {
       if (!isMissingFile(error)) throw error;
     }
     if (modelRuntime) {
+      application.state.runtimeAvailable = true;
       try {
         application.state.authentication = authenticationView(await modelRuntime.getAuthentication());
       } catch (error) {
         application.state.authentication = failedAuthentication(null, error);
       }
     } else {
-      application.state.authentication = signedOutAuthentication();
+      application.state.runtimeAvailable = false;
+      application.state.authentication = failedAuthentication(null, new Error("Codex Runtime is unavailable. Restart Codex and try again."));
     }
     return application;
   }
@@ -261,7 +272,8 @@ export class LearningApplication {
             nextAction: "Continue working through the key idea"
           },
           proposal: defaultAcceptedProposal(),
-          teachingCard: emptyTeachingCard()
+          teachingCard: emptyTeachingCard(),
+          agentWorkLog: []
         };
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -279,7 +291,9 @@ export class LearningApplication {
           proposal = await this.modelRuntime.proposeSession(mathematics);
           this.state.intakeError = null;
         } catch (error) {
-          this.state.intakeError = usefulRuntimeError(error);
+          const message = usefulRuntimeError(error);
+          this.state.intakeError = message;
+          this.recordAuthenticationLoss(message);
           break;
         }
         this.pauseActiveSession();
@@ -302,7 +316,8 @@ export class LearningApplication {
             status: proposal.requiresConfirmation ? "awaitingConfirmation" : "accepted",
             confirmationReason: proposal.confirmationReason
           },
-          teachingCard: emptyTeachingCard()
+          teachingCard: emptyTeachingCard(),
+          agentWorkLog: []
         };
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -314,13 +329,14 @@ export class LearningApplication {
       }
       case "reviseSessionProposal": {
         const session = this.requireActiveSession();
-        session.learningGoal = requiredName(action.learningGoal, "Learning Goal");
-        session.sessionTarget = requiredName(action.scope, "Session scope");
-        session.proposal.scope = session.sessionTarget;
-        session.proposal.initialTeachingDirection = requiredName(action.initialTeachingDirection, "Teaching direction");
-        session.returnContext.nextAction = session.proposal.initialTeachingDirection;
-        session.activityOrder = this.nextActivityOrder();
-        this.state.resumeSessionId = session.id;
+        this.reviseProposal(session, action);
+        break;
+      }
+      case "applySessionProposalRevision": {
+        const session = this.requireActiveSession();
+        const changed = this.reviseProposal(session, action);
+        if (changed && this.modelWorks.has(session.id) && !await this.stopModelWork(session)) break;
+        if (changed) this.beginTeaching(session);
         break;
       }
       case "confirmSessionProposal": {
@@ -333,18 +349,17 @@ export class LearningApplication {
       }
       case "cancelModelWork": {
         const session = this.requireActiveSession();
-        const work = this.modelWorks.get(session.id);
-        if (!this.modelRuntime || !work) {
-          throw new Error("There is no active model work to stop.");
-        }
-        session.teachingCard = interruptedTeachingCard(session.teachingCard.content);
-        work.controller.abort();
-        await this.modelRuntime.cancelTeaching(session.id);
+        await this.stopModelWork(session);
+        break;
+      }
+      case "cancelSessionModelWork": {
+        await this.stopModelWork(this.requireSession(action.sessionId));
         break;
       }
       case "retryModelWork": {
         const session = this.requireActiveSession();
         if (!session.teachingCard.retryable) throw new Error("This Teaching Card is not ready to retry.");
+        if (this.modelWorks.has(session.id)) throw new Error("Restart Codex before retrying this Teaching Card.");
         this.beginTeaching(session);
         break;
       }
@@ -377,7 +392,11 @@ export class LearningApplication {
       }
       case "refreshAuthentication": {
         if (!this.modelRuntime) throw new Error("Codex is unavailable.");
-        this.state.authentication = authenticationView(await this.modelRuntime.getAuthentication());
+        try {
+          this.state.authentication = authenticationView(await this.modelRuntime.getAuthentication());
+        } catch (error) {
+          this.state.authentication = failedAuthentication(null, error);
+        }
         break;
       }
       case "resumeSession": {
@@ -460,6 +479,10 @@ export class LearningApplication {
         session.teachingCard.content += delta;
         this.emitState();
         this.queuePersistence();
+      },
+      onRuntimeEvent: (event) => {
+        session.agentWorkLog.push({ ...event, sequence: session.agentWorkLog.length + 1 });
+        this.queuePersistence();
       }
     }).then(() => {
       if (session.teachingCard.status === "streaming") {
@@ -468,18 +491,65 @@ export class LearningApplication {
       }
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
+      const message = usefulRuntimeError(error);
       session.teachingCard = {
         ...session.teachingCard,
         status: "failed",
-        error: usefulRuntimeError(error),
+        error: message,
         retryable: true
       };
+      this.recordAuthenticationLoss(message);
     }).finally(() => {
       if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
       this.queuePersistence();
       this.emitState();
     });
     this.modelWorks.set(session.id, { controller, promise });
+  }
+
+  private async stopModelWork(session: LearningSession): Promise<boolean> {
+    const work = this.modelWorks.get(session.id);
+    if (!this.modelRuntime || !work) throw new Error("There is no active model work to stop.");
+    session.teachingCard = interruptedTeachingCard(session.teachingCard.content);
+    work.controller.abort();
+    try {
+      await this.modelRuntime.cancelTeaching(session.id);
+      return true;
+    } catch {
+      session.teachingCard.error = "Teaching is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
+      return false;
+    }
+  }
+
+  private reviseProposal(
+    session: LearningSession,
+    revision: { learningGoal: string; scope: string; initialTeachingDirection: string }
+  ): boolean {
+    const learningGoal = requiredName(revision.learningGoal, "Learning Goal");
+    const scope = requiredName(revision.scope, "Session scope");
+    const initialTeachingDirection = requiredName(revision.initialTeachingDirection, "Teaching direction");
+    const changed = learningGoal !== session.learningGoal
+      || scope !== session.proposal.scope
+      || initialTeachingDirection !== session.proposal.initialTeachingDirection;
+    session.learningGoal = learningGoal;
+    session.sessionTarget = scope;
+    session.proposal.scope = scope;
+    session.proposal.initialTeachingDirection = initialTeachingDirection;
+    session.returnContext.nextAction = initialTeachingDirection;
+    session.activityOrder = this.nextActivityOrder();
+    this.state.resumeSessionId = session.id;
+    return changed;
+  }
+
+  private recordAuthenticationLoss(message: string): void {
+    if (!/authentication|sign in|credential/i.test(message)) return;
+    this.state.authentication = {
+      status: "failed",
+      method: this.state.authentication.method,
+      accountLabel: null,
+      loginUrl: null,
+      error: message
+    };
   }
 
   private emitState(state = this.getState()): void {
@@ -570,10 +640,12 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     }));
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
+    current.runtimeAvailable ??= false;
     current.sessions = current.sessions.map((session) => ({
       ...session,
       proposal: session.proposal ?? defaultAcceptedProposal(),
-      teachingCard: session.teachingCard ?? emptyTeachingCard()
+      teachingCard: session.teachingCard ?? emptyTeachingCard(),
+      agentWorkLog: session.agentWorkLog ?? []
     }));
     return current;
   }
@@ -589,7 +661,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       status: "paused",
       activityOrder: 1,
       proposal: defaultAcceptedProposal(),
-      teachingCard: emptyTeachingCard()
+      teachingCard: emptyTeachingCard(),
+      agentWorkLog: []
     };
     migrated.sessions.push(session);
     migrated.resumeSessionId = session.id;
@@ -659,7 +732,8 @@ function initialState(): LearningApplicationState {
     },
     activityOrder: 0,
     authentication: signedOutAuthentication(),
-    intakeError: null
+    intakeError: null,
+    runtimeAvailable: false
   };
 }
 

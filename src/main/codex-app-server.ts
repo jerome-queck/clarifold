@@ -2,6 +2,7 @@ import type {
   AuthenticationState,
   ChatGptLogin,
   ModelRuntime,
+  ModelRuntimeEvent,
   SessionProposal,
   TeachingRequest
 } from "../shared/model-runtime";
@@ -156,7 +157,8 @@ class AppServerClient {
     if (!pending) return;
     this.pending.delete(message.id);
     if (message.error) {
-      pending.reject(new Error(`Codex app-server error ${message.error.code}: ${message.error.message}`));
+      console.error("Codex app-server request failed:", message.error);
+      pending.reject(curatedProtocolError(message.error.message));
     } else {
       pending.resolve(message.result);
     }
@@ -179,6 +181,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     resolve(content: string): void;
     reject(error: Error): void;
     timeout: ReturnType<typeof setTimeout>;
+    onRuntimeEvent?: (event: ModelRuntimeEvent) => void;
   }>();
   private readonly earlyTurnNotifications = new Map<string, ProtocolMessage[]>();
   private runtimeFailure: Error | null = null;
@@ -276,7 +279,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
         ].join("\n\n"),
         undefined,
         request.onDelta,
-        request.sessionId
+        request.sessionId,
+        request.onRuntimeEvent
       );
     } catch (error) {
       resolveStart();
@@ -303,15 +307,34 @@ export class CodexAppServerRuntime implements ModelRuntime {
     prompt: string,
     outputSchema?: unknown,
     onDelta?: (delta: string) => void,
-    sessionId?: string
+    sessionId?: string,
+    onRuntimeEvent?: (event: ModelRuntimeEvent) => void
   ): Promise<string> {
     const threadResponse = await this.client.request("thread/start", {
       cwd: this.cwd,
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
+      config: {
+        features: {
+          apps: false,
+          hooks: false,
+          multi_agent: false,
+          remote_plugin: false,
+          shell_tool: false,
+          unified_exec: false
+        },
+        mcp_servers: {},
+        web_search: "disabled"
+      },
       baseInstructions: "You are the bounded teaching runtime for Quick Study. Do not use tools, execute commands, or modify files. Produce only learner-facing mathematical teaching output."
     }) as { thread: { id: string } };
+    onRuntimeEvent?.({
+      type: "threadStarted",
+      threadId: threadResponse.thread.id,
+      turnId: null,
+      detail: "Codex teaching thread started with Focused Access tools disabled."
+    });
     const turnResponse = await this.client.request("turn/start", {
       threadId: threadResponse.thread.id,
       input: [{ type: "text", text: prompt, text_elements: [] }],
@@ -320,6 +343,12 @@ export class CodexAppServerRuntime implements ModelRuntime {
     if (this.runtimeFailure) {
       throw new Error(`Codex runtime became unavailable. ${this.runtimeFailure.message}`);
     }
+    onRuntimeEvent?.({
+      type: "turnStarted",
+      threadId: threadResponse.thread.id,
+      turnId: turnResponse.turn.id,
+      detail: "Codex teaching turn started."
+    });
 
     return new Promise<string>((resolve, reject) => {
       this.turns.set(turnResponse.turn.id, {
@@ -328,7 +357,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
         onDelta,
         resolve,
         reject,
-        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), this.turnTimeoutMs)
+        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), this.turnTimeoutMs),
+        onRuntimeEvent
       });
       if (sessionId) this.activeTeachingTurns.set(sessionId, {
         threadId: threadResponse.thread.id,
@@ -354,6 +384,12 @@ export class CodexAppServerRuntime implements ModelRuntime {
       }
       turn.content += params.delta;
       turn.onDelta?.(params.delta);
+      turn.onRuntimeEvent?.({
+        type: "outputDelta",
+        threadId: turn.threadId,
+        turnId: params.turnId,
+        detail: `Received ${params.delta.length} learner-facing characters.`
+      });
       return;
     }
     if (message.method !== "turn/completed") return;
@@ -371,11 +407,29 @@ export class CodexAppServerRuntime implements ModelRuntime {
       if (active.turnId === params.turn.id) this.activeTeachingTurns.delete(sessionId);
     }
     if (params.turn.status === "completed") {
+      turn.onRuntimeEvent?.({
+        type: "turnCompleted",
+        threadId: turn.threadId,
+        turnId: params.turn.id,
+        detail: "Codex teaching turn completed."
+      });
       turn.resolve(turn.content);
     } else if (params.turn.status === "interrupted") {
+      turn.onRuntimeEvent?.({
+        type: "turnFailed",
+        threadId: turn.threadId,
+        turnId: params.turn.id,
+        detail: "Codex teaching turn was interrupted."
+      });
       turn.reject(new Error("Codex teaching was interrupted."));
     } else {
-      turn.reject(new Error(params.turn.error?.message ?? "Codex could not complete this turn."));
+      turn.onRuntimeEvent?.({
+        type: "turnFailed",
+        threadId: turn.threadId,
+        turnId: params.turn.id,
+        detail: "Codex teaching turn failed."
+      });
+      turn.reject(curatedProtocolError(params.turn.error?.message ?? "Codex could not complete this turn."));
     }
   }
 
@@ -390,6 +444,12 @@ export class CodexAppServerRuntime implements ModelRuntime {
     if (!turn) return;
     this.turns.delete(turnId);
     this.removeActiveTeachingTurn(turnId);
+    turn.onRuntimeEvent?.({
+      type: "turnFailed",
+      threadId: turn.threadId,
+      turnId,
+      detail: "Codex teaching turn timed out."
+    });
     void this.client.request("turn/interrupt", { threadId: turn.threadId, turnId }).catch(() => undefined);
     turn.reject(new Error("Codex teaching timed out. Retry when the runtime is available."));
   }
@@ -397,7 +457,13 @@ export class CodexAppServerRuntime implements ModelRuntime {
   private failActiveTurns(error: Error): void {
     for (const [turnId, turn] of this.turns) {
       clearTimeout(turn.timeout);
-      turn.reject(new Error(`Codex runtime became unavailable. ${error.message}`));
+      turn.onRuntimeEvent?.({
+        type: "turnFailed",
+        threadId: turn.threadId,
+        turnId,
+        detail: "Codex Runtime became unavailable."
+      });
+      turn.reject(new Error("Codex runtime became unavailable. Restart Codex and retry this Teaching Card."));
       this.removeActiveTeachingTurn(turnId);
     }
     this.turns.clear();
@@ -423,6 +489,17 @@ function createUnrefTimer(callback: () => void, timeoutMs: number): ReturnType<t
   const timer = setTimeout(callback, timeoutMs);
   timer.unref();
   return timer;
+}
+
+function curatedProtocolError(message: string): Error {
+  if (/auth|unauthor|credential/i.test(message)) {
+    return new Error("Codex authentication is unavailable. Sign in and retry.");
+  }
+  if (/rate|quota|usage|limit/i.test(message)) {
+    return new Error("Codex usage is currently unavailable. Check your plan or API usage, then retry.");
+  }
+  if (/interrupt/i.test(message)) return new Error("Codex teaching was interrupted.");
+  return new Error("Codex could not complete this request. Retry when the runtime is available.");
 }
 
 const SESSION_PROPOSAL_SCHEMA = {
