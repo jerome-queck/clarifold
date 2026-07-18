@@ -187,6 +187,68 @@ describe("macOS source access", () => {
     await expect(access.read(linkedFile())).rejects.toThrow("volume unavailable");
     expect(stopAccess).toHaveBeenCalledOnce();
   });
+
+  it("extracts searchable text, equation geometry, page geometry, and a small thumbnail", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("First page has $x^2$.\fSecond page proves compactness."));
+    const access = new MacOsSourceAccess(sourceDependencies);
+
+    const extraction = await access.extractForIndex(linkedFile());
+
+    expect(extraction).toMatchObject({
+      extractionMethod: "embeddedText",
+      pages: [
+        {
+          pageNumber: 1,
+          width: 1000,
+          height: 1400,
+          thumbnailDataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+          regions: expect.arrayContaining([
+            expect.objectContaining({ kind: "text", text: "First page has $x^2$.", sourceStartOffset: 0 }),
+            expect.objectContaining({ kind: "equation", text: "$x^2$", sourceStartOffset: 15 })
+          ])
+        },
+        { pageNumber: 2, regions: [expect.objectContaining({ text: "Second page proves compactness." })] }
+      ]
+    });
+  });
+
+  it("uses the bounded native extractor for OCR and image geometry", async () => {
+    const sourceDependencies = {
+      ...dependencies(),
+      extractDocument: vi.fn().mockResolvedValue({
+        extractionMethod: "ocr" as const,
+        pages: [{
+          pageNumber: 1,
+          width: 800,
+          height: 600,
+          thumbnailDataUrl: "data:image/png;base64,c21hbGw=",
+          regions: [{
+            kind: "text" as const,
+            text: "Assume the sequence is Cauchy",
+            bounds: { x: 0.1, y: 0.2, width: 0.7, height: 0.08 }
+          }]
+        }]
+      })
+    };
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("synthetic-image"));
+    const access = new MacOsSourceAccess(sourceDependencies);
+    const image = {
+      ...linkedFile(),
+      name: "proof.png",
+      link: { ...linkedFile().link, lastKnownPath: "/Users/learner/notes/proof.png" }
+    };
+
+    const extraction = await access.extractForIndex(image);
+
+    expect(sourceDependencies.extractDocument).toHaveBeenCalledWith("/Users/learner/notes/proof.png");
+    expect(extraction).toMatchObject({
+      extractionMethod: "ocr",
+      pages: [{ thumbnailDataUrl: "data:image/png;base64,c21hbGw=", regions: [expect.objectContaining({
+        text: "Assume the sequence is Cauchy"
+      })] }]
+    });
+  });
 });
 
 function fileStat() {

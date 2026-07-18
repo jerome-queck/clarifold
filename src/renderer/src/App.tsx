@@ -5,7 +5,9 @@ import type {
   LearnerAction,
   LinkedSource,
   LinkedSourceView,
+  OpenedSourceSearchResult,
   SessionSearchResult,
+  SourceSearchResult,
   StudyMission,
   StudyWorkspace
 } from "../../shared/learning-application";
@@ -145,6 +147,7 @@ function SourcesPanel({ workspace, state, onState }: {
           </ul>
         )}
       </div>
+      <SourceIndexPanel workspace={workspace} state={state} onState={onState} />
       {view?.status === "available" && (
         <section className="source-view" aria-label="Linked Source view">
           <h3>Read-only Source Layer</h3>
@@ -157,6 +160,154 @@ function SourcesPanel({ workspace, state, onState }: {
       )}
       {view?.status === "unavailable" && <p className="failure-message" role="alert">{view.error}</p>}
       {sourceError && <p className="failure-message" role="alert">{sourceError}</p>}
+    </section>
+  );
+}
+
+function SourceIndexPanel({ workspace, state, onState }: {
+  workspace: StudyWorkspace;
+  state: LearningApplicationState;
+  onState: StateHandler;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SourceSearchResult[]>([]);
+  const [opened, setOpened] = useState<OpenedSourceSearchResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const sources = state.sources.filter((source): source is LinkedSource =>
+    source.kind === "linkedSource" && source.workspaceId === workspace.id
+  );
+  const runIndexMutation = async (label: string, action: () => Promise<LearningApplicationState>) => {
+    setError(null);
+    setBusy(label);
+    try {
+      const nextState = await action();
+      onState(nextState);
+      setResults([]);
+      setOpened(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Source Index could not be updated.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const search = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setOpened(null);
+    setBusy("Searching indexed source content…");
+    try {
+      setResults(await window.quickStudy.searchSourceIndex(workspace.id, query));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Source Index could not be searched.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const openResult = async (resultId: string) => {
+    setError(null);
+    setBusy("Opening the indexed source location…");
+    try {
+      setOpened(await window.quickStudy.openSourceSearchResult(resultId));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Source Index result could not be opened.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="source-index" aria-labelledby="source-index-title">
+      <div className="card-heading">
+        <div><p className="eyebrow">Rebuildable local search</p><h3 id="source-index-title">Source Index</h3></div>
+        <span className="saved">Derived data, not a source copy</span>
+      </div>
+      {sources.length === 0 ? <p className="subtle">Link a supported file to build searchable source data.</p> : (
+        <ul className="source-index-statuses" aria-live="polite">
+          {sources.map((source) => {
+            const status = state.sourceIndexes.find((candidate) => candidate.sourceId === source.id);
+            const label = status?.status === "ready"
+              ? `Ready · ${status.pageCount} ${status.pageCount === 1 ? "page" : "pages"} · ${status.equationCount} ${status.equationCount === 1 ? "equation region" : "equation regions"}`
+              : status?.status === "cleared" ? "Search data unavailable · rebuild required"
+                : status?.status === "unavailable" ? "Search data unavailable" : "Not indexed";
+            const shouldRebuild = status?.status === "ready" || status?.status === "cleared";
+            return (
+              <li key={source.id}>
+                <div><strong>{source.name}</strong><span>{label}</span></div>
+                {status?.error && <p className="failure-message">{status.error}</p>}
+                <div className="source-actions">
+                  <button className="secondary" aria-label={`${shouldRebuild ? "Rebuild" : "Build"} Source Index for ${source.name}`}
+                    disabled={Boolean(busy)}
+                    onClick={() => void runIndexMutation(shouldRebuild ? "Rebuilding the Source Index…" : "Building the Source Index…", () => shouldRebuild
+                      ? window.quickStudy.rebuildSourceIndex(source.id)
+                      : window.quickStudy.indexSource(source.id))}>
+                    {shouldRebuild ? "Rebuild index" : "Build index"}
+                  </button>
+                  <button className="text-button" aria-label={`Clear Source Index for ${source.name}`}
+                    disabled={Boolean(busy) || !status || status.status === "cleared"}
+                    onClick={() => void runIndexMutation("Clearing the Source Index…", () => window.quickStudy.clearSourceIndex(source.id))}>Clear index</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <form className="source-index-search" onSubmit={(event) => void search(event)}>
+        <label htmlFor={`source-index-search-${workspace.id}`}>Search indexed source content</label>
+        <div>
+          <input id={`source-index-search-${workspace.id}`} type="search" value={query} disabled={Boolean(busy)}
+            onChange={(event) => setQuery(event.target.value)} />
+          <button className="primary" type="submit" disabled={Boolean(busy)}>Search sources</button>
+        </div>
+      </form>
+      {results.length > 0 && (
+        <ul className="source-index-results" aria-live="polite">
+          {results.map((result) => (
+            <li key={result.id}>
+              <img src={result.thumbnailDataUrl} alt="" />
+              <button className="text-button" aria-label={`Open source result ${result.sourceName}, ${result.locationLabel}: ${result.preview}`}
+                disabled={Boolean(busy)}
+                onClick={() => void openResult(result.id)}>
+                <strong>{result.sourceName} · {result.locationLabel}</strong>
+                <span>{result.preview}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {results.length === 0 && query.trim() && <p className="subtle" role="status">No indexed source matches.</p>}
+      {busy && <p className="subtle" role="status" aria-live="polite">{busy}</p>}
+      {opened?.status === "available" && (
+        <section className="source-index-opened" aria-label="Opened Source Index result">
+          <h4>Source location</h4>
+          {opened.mediaType === "text/plain" ? (
+            <SourceLayer sourceId={opened.sourceId} content={opened.content} anchors={[]}
+              highlight={opened.highlight?.sourceStartOffset === undefined || opened.highlight.sourceEndOffset === undefined
+                ? undefined
+                : {
+                    startOffset: opened.highlight.sourceStartOffset,
+                    endOffset: opened.highlight.sourceEndOffset,
+                    exactText: opened.highlight.exactText
+                  }}
+              onChooseAction={() => undefined} />
+          ) : opened.highlight ? (
+            <figure className="indexed-visual-match">
+              <div>
+                <img src={opened.highlight.thumbnailDataUrl} alt={`Indexed source page ${opened.highlight.pageNumber}`} />
+                <span aria-label="Opened Source Index visual match" style={{
+                  left: `${opened.highlight.bounds.x * 100}%`,
+                  top: `${opened.highlight.bounds.y * 100}%`,
+                  width: `${opened.highlight.bounds.width * 100}%`,
+                  height: `${opened.highlight.bounds.height * 100}%`
+                }} />
+              </div>
+              <figcaption>Page {opened.highlight.pageNumber}: {opened.highlight.exactText}</figcaption>
+            </figure>
+          ) : <p className="failure-message">The indexed source location is unavailable.</p>}
+        </section>
+      )}
+      {opened?.status === "unavailable" && <p className="failure-message" role="alert">{opened.error}</p>}
+      {error && <p className="failure-message" role="alert">{error}</p>}
     </section>
   );
 }

@@ -5,6 +5,7 @@ import type {
   LinkedSource,
   LocalSourceAccess,
   SelectedLocalSource,
+  SourceIndexExtraction,
   SourceFingerprint
 } from "../shared/learning-application";
 
@@ -29,6 +30,7 @@ interface SourceAccessDependencies {
   readFile(path: string): Promise<Buffer>;
   readdir(path: string): Promise<string[]>;
   startAccessingSecurityScopedResource(bookmarkData: string): () => void;
+  extractDocument?(path: string): Promise<SourceIndexExtraction>;
 }
 
 export class MacOsSourceAccess implements LocalSourceAccess {
@@ -69,6 +71,30 @@ export class MacOsSourceAccess implements LocalSourceAccess {
         mediaType,
         fingerprint: fingerprint(stat, source.resourceType === "folder" ? content : undefined)
       };
+    } finally {
+      stopAccess?.();
+    }
+  }
+
+  async extractForIndex(source: LinkedSource): Promise<SourceIndexExtraction> {
+    const stopAccess = source.link.accessGrant
+      ? this.dependencies.startAccessingSecurityScopedResource(source.link.accessGrant.bookmarkData)
+      : null;
+    try {
+      const view = await this.read(source);
+      const extractionMethod = view.mediaType === "text/plain"
+        ? "embeddedText"
+        : view.mediaType === "application/pdf"
+          ? "pdfText"
+          : view.mediaType === "image/png" || view.mediaType === "image/jpeg"
+            ? "ocr"
+            : null;
+      if (!extractionMethod) throw new Error("This source type does not have indexable mathematical content.");
+      if (view.mediaType !== "text/plain") {
+        if (!this.dependencies.extractDocument) throw new Error("Native document indexing is unavailable.");
+        return this.dependencies.extractDocument(source.link.lastKnownPath);
+      }
+      return textSourceIndexExtraction(view.content, EMPTY_THUMBNAIL_DATA_URL);
     } finally {
       stopAccess?.();
     }
@@ -126,6 +152,64 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       fingerprint: fingerprint(stat, resourceType === "folder" ? await this.readSupportedFolder(path) : undefined)
     };
   }
+}
+
+const EMPTY_THUMBNAIL_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X2NDWQAAAABJRU5ErkJggg==";
+
+function textSourceIndexExtraction(
+  content: string,
+  thumbnailDataUrl: string
+): SourceIndexExtraction {
+  let pageStartOffset = 0;
+  return {
+    extractionMethod: "embeddedText",
+    pages: content.split("\f").map((pageText, pageIndex) => {
+      const lines = [...pageText.matchAll(/[^\r\n]+/g)];
+      const lineHeight = 1 / Math.max(lines.length, 1);
+      const regions = lines.flatMap((lineMatch, lineIndex) => {
+        const line = lineMatch[0];
+        const trimmed = line.trim();
+        const leadingWhitespace = line.indexOf(trimmed);
+        const startOffset = pageStartOffset + lineMatch.index + Math.max(leadingWhitespace, 0);
+        if (!trimmed) return [];
+        const bounds = {
+          x: 0.05,
+          y: lineIndex * lineHeight,
+          width: 0.9,
+          height: Math.min(lineHeight, 0.08)
+        };
+        const offsets = { sourceStartOffset: startOffset, sourceEndOffset: startOffset + trimmed.length };
+        const textRegion = { kind: "text" as const, text: trimmed, bounds, ...offsets };
+        const equations = [...trimmed.matchAll(/\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\$[^$\n]+?\$|\\\([\s\S]+?\\\)/g)].map((match) => {
+          const equationStart = match.index;
+          const equationWidth = Math.max(0.03, Math.min(0.9, match[0].length / Math.max(trimmed.length, 1) * 0.9));
+          return {
+            kind: "equation" as const,
+            text: match[0],
+            bounds: {
+              x: Math.min(0.95 - equationWidth, 0.05 + equationStart / Math.max(trimmed.length, 1) * 0.9),
+              y: bounds.y,
+              width: equationWidth,
+              height: bounds.height
+            },
+            ...({
+              sourceStartOffset: startOffset + equationStart,
+              sourceEndOffset: startOffset + equationStart + match[0].length
+            })
+          };
+        });
+        return [textRegion, ...equations];
+      });
+      pageStartOffset += pageText.length + 1;
+      return {
+        pageNumber: pageIndex + 1,
+        width: 1000,
+        height: 1400,
+        thumbnailDataUrl,
+        regions
+      };
+    })
+  };
 }
 
 function fingerprint(stat: FileStat, content?: string): SourceFingerprint {

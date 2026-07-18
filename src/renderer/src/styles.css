@@ -105,6 +105,25 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .search-results button { display: flex; width: 100%; align-items: start; flex-direction: column; gap: 4px; text-align: left; }
 .search-results small { color: #6b7c76; }
 
+.source-index { margin-top: 24px; border-top: 1px solid #deddd4; padding-top: 22px; }
+.source-index-statuses, .source-index-results { margin: 12px 0 0; padding: 0; list-style: none; }
+.source-index-statuses li { border-top: 1px solid #deddd4; padding: 14px 0; }
+.source-index-statuses li > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.source-index-statuses li > div:first-child span { color: #536b62; font-size: 0.86rem; }
+.source-index-search { margin-top: 18px; }
+.source-index-search > div { display: flex; gap: 10px; align-items: center; }
+.source-index-search input { flex: 1; }
+.source-index-results li { display: grid; grid-template-columns: 64px 1fr; gap: 12px; align-items: center; border-top: 1px solid #deddd4; padding: 12px 0; }
+.source-index-results img { width: 64px; height: 72px; object-fit: cover; border: 1px solid #c9c7bd; border-radius: 6px; }
+.source-index-results button { display: flex; flex-direction: column; align-items: start; gap: 5px; text-align: left; }
+.source-index-opened { margin-top: 18px; padding-top: 16px; border-top: 1px solid #deddd4; }
+.source-index-opened object, .source-index-opened > img { width: 100%; min-height: 320px; object-fit: contain; }
+.indexed-visual-match > div { position: relative; width: fit-content; max-width: 100%; }
+.indexed-visual-match img { display: block; max-width: 100%; max-height: 520px; }
+.indexed-visual-match span { position: absolute; border: 3px solid #c78f14; background: rgb(255 231 154 / 34%); pointer-events: none; }
+.indexed-visual-match figcaption { margin-top: 8px; color: #536b62; }
+.source-selection-surface mark { background: #ffe79a; color: inherit; outline: 2px solid #c78f14; outline-offset: 2px; }
+
 .source-actions { display: flex; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
 .source-group { margin-top: 20px; }
 .source-group h3, .source-view h3 { margin: 0 0 9px; color: #385950; font-size: 13px; letter-spacing: .04em; }

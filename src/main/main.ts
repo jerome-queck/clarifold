@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { execFile } from "node:child_process";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
   isSourceAnchorPaletteAction,
@@ -14,6 +16,7 @@ import { MacOsSourceAccess } from "./source-access";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
+const execFileAsync = promisify(execFile);
 const sourceAccess = new MacOsSourceAccess({
   showOpenDialog: (options) => dialog.showOpenDialog(options),
   stat,
@@ -23,6 +26,15 @@ const sourceAccess = new MacOsSourceAccess({
   startAccessingSecurityScopedResource: (bookmarkData) => {
     const stopAccess = app.startAccessingSecurityScopedResource(bookmarkData);
     return () => stopAccess();
+  },
+  extractDocument: async (path) => {
+    const helperPath = join(__dirname, "../helpers/source-index-extractor").replace("app.asar", "app.asar.unpacked");
+    const { stdout } = await execFileAsync(helperPath, [path], {
+      timeout: 45_000,
+      maxBuffer: 25 * 1024 * 1024,
+      encoding: "utf8"
+    });
+    return JSON.parse(stdout);
   }
 });
 
@@ -159,6 +171,31 @@ function registerLearningApplicationHandlers(): void {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
     return learningApplication.openLinkedSource(sourceId);
+  });
+  ipcMain.handle("source:index", async (event, sourceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
+    return learningApplication.indexSource(sourceId);
+  });
+  ipcMain.handle("source:indexClear", async (event, sourceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
+    return learningApplication.clearSourceIndex(sourceId);
+  });
+  ipcMain.handle("source:indexRebuild", async (event, sourceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
+    return learningApplication.rebuildSourceIndex(sourceId);
+  });
+  ipcMain.handle("source:indexSearch", async (event, workspaceId: unknown, query: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof workspaceId !== "string" || typeof query !== "string") throw new Error("Invalid Source Index search.");
+    return learningApplication.searchSourceIndex(workspaceId, query);
+  });
+  ipcMain.handle("source:indexOpenResult", async (event, resultId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof resultId !== "string") throw new Error("Invalid Source Index result.");
+    return learningApplication.openSourceSearchResult(resultId);
   });
   ipcMain.handle("authentication:openExternal", async (event, url: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
