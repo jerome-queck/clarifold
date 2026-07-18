@@ -79,6 +79,13 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "sourceId" in action && typeof action.sourceId === "string"
         && "selection" in action && isSourceAnchorSelection(action.selection)
         && "paletteAction" in action && isSourceAnchorPaletteAction(action.paletteAction);
+    case "createAnnotation":
+      return "sourceAnchorId" in action && typeof action.sourceAnchorId === "string"
+        && "purpose" in action && ["personalNote", "tutorFeedback"].includes(String(action.purpose))
+        && "content" in action && typeof action.content === "string";
+    case "convertAnnotation":
+      return "annotationId" in action && typeof action.annotationId === "string"
+        && "purpose" in action && ["personalNote", "tutorFeedback"].includes(String(action.purpose));
     case "reviseTeachingCard":
       return "cardId" in action && typeof action.cardId === "string"
         && "instruction" in action && typeof action.instruction === "string";
@@ -96,6 +103,9 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "cardId" in action && typeof action.cardId === "string"
         && (!("artifactKind" in action) || action.artifactKind === undefined
           || action.artifactKind === "learningArtifact" || action.artifactKind === "reformulatedProof");
+    case "synthesizeLearningArtifact":
+      return "artifactId" in action && typeof action.artifactId === "string"
+        && (!("sessionId" in action) || action.sessionId === undefined || typeof action.sessionId === "string");
     case "editLearningArtifact":
       return "artifactId" in action && typeof action.artifactId === "string"
         && "content" in action && typeof action.content === "string";
@@ -138,6 +148,7 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "selectSessionAccessPolicy":
       return "policy" in action && ["focused", "workspace", "full"].includes(String(action.policy));
     case "setFullAccessConfirmation":
+    case "setPersonalNoteSynthesis":
       return "enabled" in action && typeof action.enabled === "boolean";
     case "decideFullAccessConfirmation":
       return "decision" in action && ["confirm", "cancel"].includes(String(action.decision));

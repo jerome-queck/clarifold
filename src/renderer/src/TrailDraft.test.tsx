@@ -109,6 +109,7 @@ function trailSession(): LearningSession {
       kind: "learningArtifact", originatingSessionId: "session-1",
       currentRevision: { id: "artifact-revision-1", content: "Use a finite subcover.", claimOrigin: "modelGenerated",
         verificationLevel: "notIndependentlyChecked", verificationCurrency: "current",
+        personalNoteContributions: [],
         provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null } },
       revisions: [], sourceAnchorIds: ["anchor-1"], pinned: true
     }],

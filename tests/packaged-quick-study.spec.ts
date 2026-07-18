@@ -73,6 +73,12 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   try {
     let page = await launch();
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
+    const noteSynthesisPreference = page.getByRole("checkbox", { name: "Allow Personal Notes during artifact synthesis" });
+    await expect(noteSynthesisPreference).toBeChecked();
+    await noteSynthesisPreference.click();
+    await expect(noteSynthesisPreference).not.toBeChecked();
+    await noteSynthesisPreference.click();
+    await expect(noteSynthesisPreference).toBeChecked();
 
     await page.getByLabel("New Study Workspace name").fill("Abstract Algebra");
     await page.getByRole("button", { name: "Create Study Workspace" }).click();
@@ -271,6 +277,14 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByRole("button", { name: "Propose Learning Session" }).click();
     const equation = page.getByRole("button", { name: "Select equation 1: $a=b$" });
     await equation.press("Enter");
+    await page.getByRole("button", { name: "Add note to selected equation" }).press("Enter");
+    const annotationInspector = page.getByRole("complementary", { name: /Annotations for Equation Source Anchor/ });
+    await annotationInspector.getByRole("textbox", { name: "Personal Note" }).fill("  My exact finite-choice insight.\n");
+    await annotationInspector.getByRole("button", { name: "Save Personal Note" }).click();
+    await expect(annotationInspector.getByRole("article", { name: "Personal Note" }))
+      .toContainText("My exact finite-choice insight.");
+    await annotationInspector.getByRole("button", { name: "Close Annotation Inspector" }).click();
+    await equation.press("Enter");
     await page.getByRole("button", { name: "Explain or unpack selected equation" }).press("Enter");
     const inspector = page.getByRole("complementary", { name: /Contextual Inspector/ });
     await expect(inspector.getByRole("region", { name: "Current anchored Teaching Card" })).toContainText(
@@ -280,14 +294,20 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await inspector.getByRole("button", { name: "Save as Reformulated Proof" }).press("Enter");
     const reformulatedProof = page.getByRole("article", { name: /Reformulated Proof/ });
     await expect(reformulatedProof).toContainText("1 retained Source Anchor");
+    await reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ }).press("Enter");
+    await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
+    await expect(reformulatedProof).toContainText("The learner connects the equation with a finite-choice insight.");
+    await expect(reformulatedProof.getByText(/Learning Artifact synthesized/)).toBeVisible();
     await reformulatedProof.getByRole("button", { name: /Export Reformulated Proof/ }).press("Enter");
-    await expect(reformulatedProof.getByRole("status")).toContainText(`Artifact Export saved to ${artifactExportPath}`);
+    await expect(reformulatedProof.getByText(`Artifact Export saved to ${artifactExportPath}`)).toBeVisible();
     const exportedArtifact = await readFile(artifactExportPath, "utf8");
     expect(exportedArtifact).toContain("# Reformulated Proof");
     expect(exportedArtifact).toContain("`$a=b$`");
-    expect(exportedArtifact).toContain("Start from the key definition, then connect each inference to the stated goal.");
+    expect(exportedArtifact).toContain("Start from the key definition, then preserve the learner's finite-choice insight.");
+    expect(exportedArtifact).toContain("  My exact finite-choice insight.\n");
+    expect(exportedArtifact).toContain("### Note Interpretation");
     await expect(reformulatedProof.getByLabel("Learning Artifact content for Explain $a=b$")).toHaveValue(
-      "Start from the key definition, then connect each inference to the stated goal."
+      "Start from the key definition, then preserve the learner's finite-choice insight."
     );
     await expect(page.getByRole("article", { name: "Read-only Source Layer" })).toContainText(
       "Adapt the source proof around $a=b$ without changing the supplied source."

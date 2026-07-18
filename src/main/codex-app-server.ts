@@ -1,4 +1,6 @@
 import { ModelAccessError, type
+  ArtifactSynthesisRequest,
+  ArtifactSynthesisResult,
   AuthenticationState,
   ChatGptLogin,
   ConceptPeekRequest,
@@ -349,6 +351,35 @@ export class CodexAppServerRuntime implements ModelRuntime {
       throw error;
     } finally {
       this.teachingStartSignals.delete(request.sessionId);
+    }
+  }
+
+  async synthesizeArtifact(request: ArtifactSynthesisRequest): Promise<ArtifactSynthesisResult> {
+    if (request.signal.aborted) throw new Error("Learning Artifact synthesis was stopped.");
+    try {
+      const content = await this.runTurn(
+        [
+          "Synthesize one coherent learner-facing Learning Artifact revision from the current artifact.",
+          "Return only the requested JSON. Preserve the mathematical meaning and do not claim verification that did not occur.",
+          "Personal Notes below are authorized only for this artifact synthesis. Never treat them as ordinary Teaching Move context.",
+          "A Note Interpretation is optional. For any interpretation you create, use the supplied annotationId and polish only grammar, clarity, or organization; it must remain visibly distinct from the verbatim original retained by the application.",
+          `Learning Goal: ${request.learningGoal}`,
+          `Artifact title: ${request.artifactTitle}`,
+          "Current artifact content:",
+          request.artifactContent,
+          "Authorized Personal Notes:",
+          request.personalNotes.length === 0 ? "none" : request.personalNotes.map((note) => JSON.stringify(note)).join("\n")
+        ].join("\n\n"),
+        ARTIFACT_SYNTHESIS_SCHEMA,
+        undefined,
+        request.sessionId,
+        request.onRuntimeEvent
+      );
+      if (request.signal.aborted) throw new Error("Learning Artifact synthesis was stopped.");
+      return parseArtifactSynthesis(content);
+    } catch (error) {
+      request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+      throw error;
     }
   }
 
@@ -850,6 +881,27 @@ const SESSION_PROPOSAL_SCHEMA = {
   }
 } as const;
 
+const ARTIFACT_SYNTHESIS_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["content", "noteInterpretations"],
+  properties: {
+    content: { type: "string" },
+    noteInterpretations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["annotationId", "interpretation"],
+        properties: {
+          annotationId: { type: "string" },
+          interpretation: { type: "string" }
+        }
+      }
+    }
+  }
+} as const;
+
 function parseSessionProposal(content: string): SessionProposal {
   let value: unknown;
   try {
@@ -875,6 +927,23 @@ function parseSessionProposal(content: string): SessionProposal {
     throw new Error("Codex returned a malformed Session Proposal. Retry to request a fresh proposal.");
   }
   return proposal as unknown as SessionProposal;
+}
+
+function parseArtifactSynthesis(content: string): ArtifactSynthesisResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("Codex returned a malformed Learning Artifact synthesis. Retry to request a fresh synthesis.");
+  }
+  if (!isRecord(value) || typeof value.content !== "string" || !value.content.trim()
+    || !Array.isArray(value.noteInterpretations)
+    || !value.noteInterpretations.every((item) => isRecord(item)
+      && typeof item.annotationId === "string" && Boolean(item.annotationId)
+      && typeof item.interpretation === "string" && Boolean(item.interpretation.trim()))) {
+    throw new Error("Codex returned a malformed Learning Artifact synthesis. Retry to request a fresh synthesis.");
+  }
+  return value as unknown as ArtifactSynthesisResult;
 }
 
 function validArgumentRoadmapProposal(value: unknown): boolean {

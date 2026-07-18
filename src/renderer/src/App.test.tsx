@@ -560,6 +560,7 @@ function workbenchState(): LearningApplicationState {
           claimOrigin: "modelGenerated",
           verificationLevel: "notIndependentlyChecked",
           verificationCurrency: "current",
+          personalNoteContributions: [],
           provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
         },
         revisions: [],
@@ -586,6 +587,7 @@ function workbenchState(): LearningApplicationState {
     intakeError: null,
     runtimeAvailable: false,
     modelAccess: { status: "unavailable", cause: "runtime", message: "Unavailable" },
-    accessConfirmationPreference: { confirmFullAccess: true }
+    accessConfirmationPreference: { confirmFullAccess: true },
+    personalNoteSynthesisPreference: { includePersonalNotes: true }
   };
 }

@@ -314,6 +314,72 @@ describe("Codex app-server contract", () => {
     expect(JSON.stringify(questionTurnStart.params)).not.toContain("Learning Goal:");
   });
 
+  it("uses Personal Notes only in the bounded artifact-synthesis request and returns linked interpretations", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1",
+          codexHome: "/tmp/codex-home",
+          platformFamily: "unix",
+          platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") {
+        transport.respond(message.id, { thread: { id: "artifact-thread" } });
+      }
+      if (message.method === "turn/start") {
+        const params = message.params as { threadId: string };
+        transport.respond(message.id, { turn: { id: "artifact-turn" } });
+        transport.notify("item/agentMessage/delta", {
+          threadId: params.threadId,
+          turnId: "artifact-turn",
+          itemId: "artifact-synthesis",
+          delta: JSON.stringify({
+            content: "A coherent compactness argument using the learner's finite-choice picture.",
+            noteInterpretations: [{
+              annotationId: "annotation-1",
+              interpretation: "Compactness reduces the local choices to a finite family."
+            }]
+          })
+        });
+        transport.notify("turn/completed", {
+          threadId: params.threadId,
+          turn: { id: "artifact-turn", status: "completed", error: null }
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const original = "  My exact finite-choice picture.\n";
+
+    await expect(runtime.synthesizeArtifact({
+      sessionId: "session-1",
+      learningGoal: "Understand compactness",
+      artifactTitle: "Compactness proof",
+      artifactContent: "Use a finite subcover.",
+      personalNotes: [{ annotationId: "annotation-1", sourceAnchorId: "anchor-1", content: original }],
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      content: "A coherent compactness argument using the learner's finite-choice picture.",
+      noteInterpretations: [{
+        annotationId: "annotation-1",
+        interpretation: "Compactness reduces the local choices to a finite family."
+      }]
+    });
+
+    const synthesisTurn = transport.messages.find((message) => message.method === "turn/start")!;
+    expect(synthesisTurn).toMatchObject({
+      params: {
+        outputSchema: {
+          required: ["content", "noteInterpretations"],
+          properties: { noteInterpretations: expect.any(Object) }
+        }
+      }
+    });
+    expect(JSON.stringify(synthesisTurn.params)).toContain(original.trim());
+    expect(JSON.stringify(synthesisTurn.params)).toContain("authorized only for this artifact synthesis");
+  });
+
   it("interrupts active teaching and shuts down the stdio transport", async () => {
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;

@@ -79,6 +79,7 @@ function Dashboard({ state, onState }: { state: LearningApplicationState; onStat
           </header>
           <AuthenticationPanel state={state} onState={onState} />
           <ModelAccessPanel state={state} onState={onState} />
+          <ApplicationSettings state={state} onState={onState} />
           {resumeSession ? <ResumeCard state={state} session={resumeSession} onState={onState} /> : <EmptyResume />}
           <Intake state={state} onState={onState} />
           <SessionSearch onState={onState} />
@@ -88,6 +89,27 @@ function Dashboard({ state, onState }: { state: LearningApplicationState; onStat
         </section>
       </div>
     </main>
+  );
+}
+
+function ApplicationSettings({ state, onState }: { state: LearningApplicationState; onState: StateHandler }) {
+  return (
+    <section className="settings-card" aria-labelledby="application-settings-title">
+      <p className="eyebrow">Settings</p>
+      <h2 id="application-settings-title">Application settings</h2>
+      <label className="confirmation-preference">
+        <input
+          type="checkbox"
+          checked={state.personalNoteSynthesisPreference.includePersonalNotes}
+          onChange={(event) => void window.quickStudy.submit({
+            type: "setPersonalNoteSynthesis",
+            enabled: event.target.checked
+          }).then(onState)}
+        />
+        Allow Personal Notes during artifact synthesis
+      </label>
+      <small>Enabled by default. Personal Notes remain excluded from ordinary Teaching Moves.</small>
+    </section>
   );
 }
 
@@ -810,7 +832,7 @@ function MissionHistory({ workspace, mission, state, onState }: {
                   }).then(onState)}>Resume</button>}
               </div>
               <ModelStopConfirmationNotice session={session} onState={onState} onError={setModelWorkError} />
-              {session.consolidatedOutcome && <ConsolidatedOutcome session={session} onState={onState} />}
+              {session.consolidatedOutcome && <ConsolidatedOutcome state={state} session={session} onState={onState} />}
             </li>
           ))}
         </ul>
@@ -958,7 +980,8 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
                   ));
               }} />
             {workbenchError && <p className="failure-message" role="alert">{workbenchError}</p>}
-            {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} onState={onState} key={artifact.id} />)}
+            {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} onState={onState}
+              modelAvailable={state.modelAccess.status === "available"} key={artifact.id} />)}
             {!session.consolidationDraft && <TrailDraft session={session} onAction={async (action) => {
               onState(await window.quickStudy.submit(action));
             }} onActivateSourceAnchor={async (sourceAnchorId) => {
@@ -1143,7 +1166,11 @@ function SessionConsolidation({ session, onState }: { session: LearningSession; 
   );
 }
 
-function ConsolidatedOutcome({ session, onState }: { session: LearningSession; onState: StateHandler }) {
+function ConsolidatedOutcome({ state, session, onState }: {
+  state: LearningApplicationState;
+  session: LearningSession;
+  onState: StateHandler;
+}) {
   const outcome = session.consolidatedOutcome!;
   const includedArtifacts = session.learningArtifacts.filter((artifact) => outcome.includedArtifactIds.includes(artifact.id));
   const essentialReasoning = outcome.trailItems.filter((item) => item.kind === "reasoningStep").map((item) => item.content);
@@ -1167,6 +1194,7 @@ function ConsolidatedOutcome({ session, onState }: { session: LearningSession; o
         <h4>Included Learning Artifacts</h4>
         {includedArtifacts.length ? includedArtifacts.map((artifact) => (
           <PinnedLearningArtifact key={artifact.id} artifact={artifact} sessionId={session.id}
+            modelAvailable={state.modelAccess.status === "available"}
             statusLabel="Included in this Consolidated Session Outcome" onState={onState} />
         )) : <p>None included.</p>}
         <p className="subtle">Proof, source, note, Teaching Variant, and verification details appear above when they were retained in this Learning Session.</p>
@@ -1530,15 +1558,17 @@ function annotationAnchorLabel(anchor: LearningSession["sourceAnchors"][number])
   return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} Source Anchor: ${anchor.selection.exactText}`;
 }
 
-function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "Pinned on the main canvas" }: {
+function PinnedLearningArtifact({ artifact, onState, sessionId, modelAvailable = false, statusLabel = "Pinned on the main canvas" }: {
   artifact: LearningArtifact;
   onState: StateHandler;
   sessionId?: string;
+  modelAvailable?: boolean;
   statusLabel?: string;
 }) {
   const [content, setContent] = useState(artifact.currentRevision.content);
   const [portabilityStatus, setPortabilityStatus] = useState<string | null>(null);
   const [portabilityError, setPortabilityError] = useState<string | null>(null);
+  const [synthesisStatus, setSynthesisStatus] = useState<string | null>(null);
   const artifactLabel = artifact.kind === "reformulatedProof" ? "Reformulated Proof" : "Learning Artifact";
   const originatingSessionId = sessionId ?? artifact.originatingSessionId;
   useEffect(() => setContent(artifact.currentRevision.content), [artifact.currentRevision.id, artifact.currentRevision.content]);
@@ -1558,6 +1588,21 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
     await window.quickStudy.shareLearningArtifact(originatingSessionId, artifact.id);
     setPortabilityStatus("Artifact Export handed to macOS sharing.");
   };
+  const synthesize = async () => {
+    setPortabilityError(null);
+    setSynthesisStatus("Synthesizing Learning Artifact…");
+    try {
+      onState(await window.quickStudy.submit({
+        type: "synthesizeLearningArtifact",
+        ...(sessionId ? { sessionId } : {}),
+        artifactId: artifact.id
+      }));
+      setSynthesisStatus("Learning Artifact synthesized with the current Personal Note Synthesis Preference.");
+    } catch (cause) {
+      setSynthesisStatus(null);
+      setPortabilityError(cause instanceof Error ? cause.message : "The Learning Artifact could not be synthesized.");
+    }
+  };
   const runPortableAction = (action: () => Promise<void>) => void action().catch((cause: unknown) => {
     setPortabilityError(cause instanceof Error ? cause.message : "The Learning Artifact could not be handed off.");
   });
@@ -1574,6 +1619,9 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
       <button className="secondary" aria-label={`Save Learning Artifact revision for ${artifact.title}`}
         disabled={!content.trim() || content === artifact.currentRevision.content}
         onClick={() => void save()}>Save Learning Artifact revision</button>
+      <button className="secondary" aria-label={`Synthesize Learning Artifact ${artifact.title}`}
+        disabled={!modelAvailable || synthesisStatus === "Synthesizing Learning Artifact…"}
+        onClick={() => void synthesize()}>Synthesize artifact</button>
       <div className="artifact-portability-actions">
         <button className="secondary" aria-label={`Export ${artifactLabel} ${artifact.title}`}
           onClick={() => runPortableAction(exportArtifact)}>Export portable copy</button>
@@ -1588,6 +1636,20 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
         <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor{artifact.sourceAnchorIds.length === 1 ? "" : "s"}</dd></div>
         <div><dt>Revision provenance</dt><dd>{artifactRevisionProvenance(artifact.currentRevision)}</dd></div>
       </dl>
+      {artifact.currentRevision.personalNoteContributions.length > 0 && (
+        <section className="personal-note-contributions" aria-label="Personal Notes used in this Learning Artifact revision">
+          <h3>Personal Notes used in this synthesis</h3>
+          {artifact.currentRevision.personalNoteContributions.map((note) => (
+            <article key={note.annotationId} aria-label={`Personal Note ${note.annotationId}`}>
+              <p className="record-link">Original annotation {note.annotationId} · Source Anchor {note.sourceAnchorId}</p>
+              <h4>Verbatim original</h4>
+              <blockquote>{note.verbatim}</blockquote>
+              {note.interpretation !== null && <><h4>Note Interpretation</h4><p>{note.interpretation}</p></>}
+            </article>
+          ))}
+        </section>
+      )}
+      {synthesisStatus && <p className="saved" role="status">{synthesisStatus}</p>}
       {portabilityStatus && <p className="saved" role="status">{portabilityStatus}</p>}
       {portabilityError && <p className="failure-message" role="alert">{portabilityError}</p>}
       {artifact.revisions.length > 0 && <details className="artifact-history">
@@ -1595,6 +1657,12 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
         <ol>{artifact.revisions.map((revision, index) => <li key={revision.id}>
           <p>Revision {index + 1}: {revision.content}</p>
           <p className="subtle">{artifactRevisionProvenance(revision)}</p>
+          {revision.personalNoteContributions.map((note) => <div className="historical-personal-note" key={note.annotationId}>
+            <p className="record-link">Personal Note {note.annotationId} · Source Anchor {note.sourceAnchorId}</p>
+            <h4>Verbatim original</h4>
+            <blockquote>{note.verbatim}</blockquote>
+            {note.interpretation !== null && <><h4>Note Interpretation</h4><p>{note.interpretation}</p></>}
+          </div>)}
           <button className="text-button" aria-label={`Restore ${artifact.title} revision ${index + 1}`}
             onClick={() => void window.quickStudy.submit({
               type: "restoreLearningArtifactRevision",
@@ -1611,7 +1679,8 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, statusLabel = "P
 function artifactRevisionProvenance(revision: LearningArtifact["currentRevision"]): string {
   const action = revision.provenance.action === "promoted"
     ? "Promoted"
-    : revision.provenance.action === "edited" ? "Edited" : "Restored";
+    : revision.provenance.action === "edited" ? "Edited"
+      : revision.provenance.action === "synthesized" ? "Synthesized" : "Restored";
   const created = revision.provenance.createdAt
     ? new Date(revision.provenance.createdAt).toLocaleDateString("en-GB", {
         day: "numeric", month: "short", year: "numeric", timeZone: "UTC"

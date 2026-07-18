@@ -111,6 +111,28 @@ export interface ConceptPeekRequest {
   onRuntimeEvent?(event: ModelRuntimeEvent): void;
 }
 
+export interface ArtifactSynthesisRequest {
+  sessionId: string;
+  learningGoal: string;
+  artifactTitle: string;
+  artifactContent: string;
+  personalNotes: Array<{
+    annotationId: string;
+    sourceAnchorId: string;
+    content: string;
+  }>;
+  signal: AbortSignal;
+  onRuntimeEvent?(event: ModelRuntimeEvent): void;
+}
+
+export interface ArtifactSynthesisResult {
+  content: string;
+  noteInterpretations: Array<{
+    annotationId: string;
+    interpretation: string;
+  }>;
+}
+
 export interface ModelRuntimeEvent {
   type: "threadStarted" | "turnStarted" | "inputSubmitted" | "outputDelta" | "turnCompleted" | "turnFailed";
   threadId: string;
@@ -124,6 +146,7 @@ export interface ModelRuntime {
   loginWithApiKey(apiKey: string): Promise<void>;
   proposeSession(mathematics: string, onRuntimeEvent?: (event: ModelRuntimeEvent) => void): Promise<SessionProposal>;
   createConceptPeek(request: ConceptPeekRequest): Promise<string>;
+  synthesizeArtifact(request: ArtifactSynthesisRequest): Promise<ArtifactSynthesisResult>;
   streamTeaching(request: TeachingRequest): Promise<void>;
   cancelTeaching(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
