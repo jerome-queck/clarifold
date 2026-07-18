@@ -461,6 +461,230 @@ describe("Learning Application", () => {
     });
   });
 
+  it("consolidates a durable outcome and continues in a fresh linked Learning Session", async () => {
+    const { application, dataDirectory } = await launch();
+    let state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Show that every compact subset of a Hausdorff space is closed."
+    });
+    const sessionId = state.activeSessionId!;
+    state = await application.submit({
+      type: "addTrailItem",
+      kind: "reasoningStep",
+      content: "Separate each outside point and use compactness to choose finitely many neighbourhoods."
+    });
+    const requiredItem = state.sessions[0].trailDraft.items[0];
+
+    state = await application.submit({ type: "beginSessionConsolidation" });
+    expect(state.sessions[0].consolidationDraft).toMatchObject({
+      targetDisposition: null,
+      includedArtifactIds: []
+    });
+    state = await application.submit({
+      type: "reviseSessionConsolidation",
+      centralInsight: "Compactness turns pointwise separation into one neighbourhood separating the whole compact set.",
+      learningProgress: "I can now explain where the finite subcover enters the proof.",
+      unresolvedQuestions: ["How does the argument change without Hausdorff separation?"],
+      nextStep: "Write the proof without looking at the source.",
+      includedArtifactIds: [],
+      targetDisposition: "addressed"
+    });
+    state = await application.submit({ type: "consolidateSession" });
+
+    const consolidated = state.sessions.find((session) => session.id === sessionId)!;
+    expect(consolidated.status).toBe("consolidated");
+    expect(consolidated.consolidatedOutcome).toMatchObject({
+      targetDisposition: "addressed",
+      centralInsight: "Compactness turns pointwise separation into one neighbourhood separating the whole compact set.",
+      learningProgress: "I can now explain where the finite subcover enters the proof.",
+      unresolvedQuestions: ["How does the argument change without Hausdorff separation?"],
+      nextStep: "Write the proof without looking at the source.",
+      includedArtifactIds: []
+    });
+    expect(consolidated.consolidatedOutcome?.trailItems).toContainEqual(requiredItem);
+    expect(state).toMatchObject({ screen: "dashboard", activeSessionId: null, resumeSessionId: null });
+    await expect(application.submit({ type: "resumeSession", sessionId })).rejects.toThrow(
+      "A consolidated Learning Session is a stable historical record"
+    );
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    const historicalRecord = structuredClone(relaunched.getState().sessions[0]);
+    expect(historicalRecord.status).toBe("consolidated");
+
+    state = await relaunched.submit({ type: "continueSession", sessionId });
+    const continuation = state.sessions.find((session) => session.id === state.activeSessionId)!;
+    expect(continuation).toMatchObject({
+      workspaceId: historicalRecord.workspaceId,
+      missionId: historicalRecord.missionId,
+      learningGoal: historicalRecord.learningGoal,
+      sessionTarget: historicalRecord.sessionTarget,
+      status: "active",
+      continuationOf: {
+        sessionId,
+        outcomeId: historicalRecord.consolidatedOutcome?.id
+      },
+      teachingCardHistory: [],
+      submittedPendingQuestions: [],
+      anchoredTeachingCards: [],
+      questionCards: [],
+      learningArtifacts: [],
+      trailDraft: { items: [] }
+    });
+    expect(continuation.askBarContext.items).toContainEqual(expect.objectContaining({
+      id: "continuation-outcome",
+      typeLabel: "Prior Consolidated Session Outcome",
+      preview: expect.stringContaining("Compactness turns pointwise separation")
+    }));
+    expect(state.sessions.find((session) => session.id === sessionId)).toEqual(historicalRecord);
+  });
+
+  it("lets the learner begin Session Consolidation while teaching is in flight", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the finite-subcover step",
+      initialTeachingDirection: "Start from pointwise separation",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const started = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Show that every compact subset of a Hausdorff space is closed."
+    });
+    const sessionId = started.activeSessionId!;
+
+    const state = await application.submit({ type: "beginSessionConsolidation" });
+
+    expect(runtime.canceledSessionIds).toEqual([sessionId]);
+    expect(state.sessions[0].teachingCard.status).toBe("stopped");
+    expect(state.sessions[0].consolidationDraft).not.toBeNull();
+
+    await application.submit({
+      type: "reviseSessionConsolidation",
+      centralInsight: "Compactness makes the separation finite.",
+      learningProgress: "I can locate the finite-subcover step.",
+      unresolvedQuestions: [],
+      nextStep: "Reconstruct the proof.",
+      includedArtifactIds: [],
+      targetDisposition: "addressed"
+    });
+    const consolidated = await application.submit({ type: "consolidateSession" });
+    const historicalSessionId = consolidated.sessions[0].id;
+    const continued = await application.submit({ type: "continueSession", sessionId: historicalSessionId });
+    const firstContinuationId = continued.activeSessionId!;
+    await application.submit({ type: "submitQuestion", text: "Can I prove it another way?" });
+
+    const continuedAgain = await application.submit({ type: "continueSession", sessionId: historicalSessionId });
+    runtime.completeTeaching(firstContinuationId);
+    await application.waitForModelWork();
+
+    expect(runtime.canceledSessionIds).toEqual([sessionId, firstContinuationId]);
+    expect(continuedAgain.sessions.find((session) => session.id === firstContinuationId)?.status).toBe("paused");
+  });
+
+  it("does not let failed runtime cancellation block learner-controlled Session Consolidation", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the finite-subcover step",
+      initialTeachingDirection: "Start from pointwise separation",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    runtime.cancelError = new Error("Runtime cancellation transport failed.");
+    const { application } = await launchWithRuntime(runtime);
+    const started = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Show that every compact subset of a Hausdorff space is closed."
+    });
+    const sessionId = started.activeSessionId!;
+    try {
+      const state = await application.submit({ type: "beginSessionConsolidation" });
+      expect(state.sessions[0]).toMatchObject({
+        teachingCard: { status: "stopped" },
+        consolidationDraft: expect.objectContaining({ targetDisposition: null })
+      });
+      await Promise.resolve();
+      expect(application.getState().sessions[0].modelStopConfirmation).toMatchObject({
+        status: "unconfirmed",
+        message: expect.stringContaining("Retry interruption")
+      });
+      runtime.cancelError = null;
+      await application.submit({ type: "retrySessionModelStop", sessionId });
+      await Promise.resolve();
+      expect(application.getState().sessions[0].modelStopConfirmation).toBeNull();
+      expect(runtime.canceledSessionIds).toEqual([sessionId, sessionId]);
+    } finally {
+      runtime.cancelError = null;
+      runtime.completeTeaching(sessionId);
+      await application.waitForModelWork();
+    }
+  });
+
+  it("keeps included Learning Artifacts revisable after consolidation", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the compactness step",
+      initialTeachingDirection: "Use finite subcovers",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "explain"
+    });
+    runtime.emitTeaching("Use compactness to select finitely many separating neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const cardId = application.getState().sessions[0].anchoredTeachingCards[0].id;
+    state = await application.submit({ type: "pinTeachingCardArtifact", cardId });
+    const sessionId = state.sessions[0].id;
+    const artifactId = state.sessions[0].learningArtifacts[0].id;
+    await application.submit({ type: "beginSessionConsolidation" });
+    await application.submit({
+      type: "reviseSessionConsolidation",
+      centralInsight: "Compactness turns the pointwise construction into a finite one.",
+      learningProgress: "I can identify the finite subcover.",
+      unresolvedQuestions: [],
+      nextStep: "Rewrite the proof.",
+      includedArtifactIds: [artifactId],
+      targetDisposition: "addressed"
+    });
+    await application.submit({ type: "consolidateSession" });
+
+    state = await application.submit({
+      type: "editLearningArtifact",
+      sessionId,
+      artifactId,
+      content: "Learner revision after consolidation."
+    });
+    expect(state.sessions[0].learningArtifacts[0]).toMatchObject({
+      currentRevision: { content: "Learner revision after consolidation.", claimOrigin: "mixed" },
+      revisions: [expect.objectContaining({ content: "Use compactness to select finitely many separating neighbourhoods." })]
+    });
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    const previousRevisionId = relaunched.getState().sessions[0].learningArtifacts[0].revisions[0].id;
+    state = await relaunched.submit({
+      type: "restoreLearningArtifactRevision", sessionId, artifactId, revisionId: previousRevisionId
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.content)
+      .toBe("Use compactness to select finitely many separating neighbourhoods.");
+  });
+
   it("opens an anchored question in the Contextual Inspector path without dispatching until the learner words it", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness",

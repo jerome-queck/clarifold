@@ -19,7 +19,8 @@ export type { SessionAccessPolicy } from "./session-access";
 
 const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
 
-export type SessionStatus = "active" | "paused";
+export type SessionStatus = "active" | "paused" | "consolidated";
+export type TargetDisposition = "addressed" | "deferred" | "unresolved";
 
 export interface SessionAccessScope {
   policy: SessionAccessPolicy;
@@ -209,6 +210,32 @@ export interface TrailDraft {
   items: TrailItem[];
 }
 
+export interface SessionConsolidationDraft {
+  centralInsight: string;
+  learningProgress: string;
+  unresolvedQuestions: string[];
+  nextStep: string;
+  includedArtifactIds: string[];
+  targetDisposition: TargetDisposition | null;
+}
+
+export interface ConsolidatedSessionOutcome extends Omit<SessionConsolidationDraft, "targetDisposition"> {
+  id: string;
+  targetDisposition: TargetDisposition;
+  trailItems: TrailItem[];
+}
+
+export interface ContinuationLink {
+  sessionId: string;
+  outcomeId: string;
+}
+
+export interface ModelStopConfirmation {
+  attemptId: string;
+  status: "pending" | "unconfirmed";
+  message: string;
+}
+
 export interface AgentWorkLogEvidence {
   sequence: number;
   type: ModelRuntimeEvent["type"];
@@ -228,10 +255,13 @@ interface ModelTeachingTarget {
 
 export interface SessionSearchResult {
   sessionId: string;
+  workspaceId: string;
+  missionId: string;
   learningGoal: string;
   sessionTarget: string;
   workspaceName: string;
   missionName: string;
+  status: SessionStatus;
 }
 
 export interface SourceIndexBounds {
@@ -506,6 +536,10 @@ export interface LearningSession {
   activeTeachingCardId: string | null;
   learningArtifacts: LearningArtifact[];
   trailDraft: TrailDraft;
+  consolidationDraft: SessionConsolidationDraft | null;
+  consolidatedOutcome: ConsolidatedSessionOutcome | null;
+  continuationOf: ContinuationLink | null;
+  modelStopConfirmation: ModelStopConfirmation | null;
   learningSlice: LearningSlice | null;
   conceptPeeks: ConceptPeek[];
   pendingConceptPeek: { sourceAnchorId: string; prerequisite: string } | null;
@@ -575,13 +609,18 @@ export type LearnerAction =
   | { type: "createTeachingVariant"; cardId: string; name: string; instruction: string }
   | { type: "retryAnchoredTeachingCard"; cardId: string; variantId?: string }
   | { type: "pinTeachingCardArtifact"; cardId: string }
-  | { type: "editLearningArtifact"; artifactId: string; content: string }
-  | { type: "restoreLearningArtifactRevision"; artifactId: string; revisionId: string }
+  | { type: "editLearningArtifact"; sessionId?: string; artifactId: string; content: string }
+  | { type: "restoreLearningArtifactRevision"; sessionId?: string; artifactId: string; revisionId: string }
   | { type: "addTrailItem"; kind: TrailItemKind; content: string }
   | { type: "editTrailItem"; trailItemId: string; content: string }
   | { type: "removeTrailItem"; trailItemId: string }
   | { type: "moveTrailItem"; trailItemId: string; direction: "up" | "down" }
   | { type: "setTrailItemRequired"; trailItemId: string; required: boolean }
+  | { type: "beginSessionConsolidation" }
+  | ({ type: "reviseSessionConsolidation" } & SessionConsolidationDraft)
+  | { type: "consolidateSession" }
+  | { type: "continueSession"; sessionId: string }
+  | { type: "retrySessionModelStop"; sessionId: string }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
@@ -685,7 +724,7 @@ export class LearningApplication {
         refreshAskBarContext(persisted, session);
       }
       persisted.activeSessionId = null;
-      persisted.resumeSessionId = mostRecentSessionId(persisted.sessions);
+      persisted.resumeSessionId = mostRecentPausedSessionId(persisted.sessions);
       persisted.screen = "dashboard";
       application.state = persisted;
     } catch (error) {
@@ -770,10 +809,13 @@ export class LearningApplication {
       if (!terms.every((term) => searchable.includes(term))) return [];
       return [{
         sessionId: session.id,
+        workspaceId: session.workspaceId,
+        missionId: session.missionId,
         learningGoal: session.learningGoal,
         sessionTarget: session.sessionTarget,
         workspaceName: workspace.name,
-        missionName: mission.name
+        missionName: mission.name,
+        status: session.status
       }];
     });
   }
@@ -1271,7 +1313,7 @@ export class LearningApplication {
         break;
       }
       case "editLearningArtifact": {
-        const session = this.requireActiveSession();
+        const session = this.requireArtifactEditingSession(action.sessionId);
         const artifact = requireLearningArtifact(session, action.artifactId);
         const content = requiredText(action.content, "Learning Artifact");
         if (content === artifact.currentRevision.content) break;
@@ -1286,7 +1328,7 @@ export class LearningApplication {
         break;
       }
       case "restoreLearningArtifactRevision": {
-        const session = this.requireActiveSession();
+        const session = this.requireArtifactEditingSession(action.sessionId);
         const artifact = requireLearningArtifact(session, action.artifactId);
         const revisionIndex = artifact.revisions.findIndex((revision) => revision.id === action.revisionId);
         if (revisionIndex < 0) throw new Error("Choose an earlier Learning Artifact revision to restore.");
@@ -1343,6 +1385,100 @@ export class LearningApplication {
         requireTrailItem(session, action.trailItemId).required = action.required;
         break;
       }
+      case "beginSessionConsolidation": {
+        const session = this.requireActiveSession();
+        this.stopModelWorkForSessionLifecycle(session);
+        session.consolidationDraft ??= suggestedSessionConsolidation(session);
+        break;
+      }
+      case "reviseSessionConsolidation": {
+        const session = this.requireActiveSession();
+        if (!session.consolidationDraft) throw new Error("Begin Session Consolidation before revising its review.");
+        const includedArtifactIds = [...new Set(action.includedArtifactIds)];
+        if (includedArtifactIds.some((artifactId) => !session.learningArtifacts.some((artifact) => artifact.id === artifactId))) {
+          throw new Error("Choose Learning Artifacts from the active Learning Session.");
+        }
+        session.consolidationDraft = {
+          centralInsight: requiredText(action.centralInsight, "Central insight"),
+          learningProgress: action.learningProgress.trim(),
+          unresolvedQuestions: action.unresolvedQuestions.map((question) => question.trim()).filter(Boolean),
+          nextStep: requiredText(action.nextStep, "Next step"),
+          includedArtifactIds,
+          targetDisposition: requireTargetDisposition(action.targetDisposition)
+        };
+        break;
+      }
+      case "consolidateSession": {
+        const session = this.requireActiveSession();
+        this.stopModelWorkForSessionLifecycle(session);
+        const draft = session.consolidationDraft;
+        if (!draft) throw new Error("Review the Session Consolidation before creating its outcome.");
+        const targetDisposition = requireTargetDisposition(draft.targetDisposition);
+        session.consolidatedOutcome = {
+          id: crypto.randomUUID(),
+          ...structuredClone(draft),
+          targetDisposition,
+          trailItems: structuredClone(session.trailDraft.items)
+        };
+        session.consolidationDraft = null;
+        session.status = "consolidated";
+        session.activityOrder = this.nextActivityOrder();
+        this.state.activeSessionId = null;
+        this.state.resumeSessionId = this.latestPausedSessionId(session.id);
+        this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
+        this.state.screen = "dashboard";
+        break;
+      }
+      case "continueSession": {
+        const historical = this.requireSession(action.sessionId);
+        if (historical.status !== "consolidated" || !historical.consolidatedOutcome) {
+          throw new Error("Choose a consolidated Learning Session to continue.");
+        }
+        if (this.state.activeSessionId) {
+          const active = this.requireSession(this.state.activeSessionId);
+          if (this.modelWorks.has(active.id) && !await this.stopModelWork(active)) {
+            throw new Error("Codex did not confirm interruption. The active Learning Session remains open.");
+          }
+          this.pauseActiveSession();
+        }
+        const session = createLearningSession({
+          id: crypto.randomUUID(),
+          workspaceId: historical.workspaceId,
+          missionId: historical.missionId,
+          mathematics: historical.mathematics,
+          sourceIds: [...historical.sourceIds],
+          learningGoal: historical.learningGoal,
+          sessionTarget: historical.sessionTarget,
+          status: "active",
+          activityOrder: this.nextActivityOrder(),
+          returnContext: {
+            label: `Continuation of ${historical.learningGoal}`,
+            nextAction: historical.consolidatedOutcome.nextStep
+          },
+          proposal: {
+            scope: historical.sessionTarget,
+            initialTeachingDirection: historical.consolidatedOutcome.nextStep,
+            status: "accepted",
+            confirmationReason: null
+          },
+          currentTeachingInput: { kind: "sessionIntake", text: historical.consolidatedOutcome.nextStep },
+          accessPolicy: historical.accessPolicy,
+          continuationOf: { sessionId: historical.id, outcomeId: historical.consolidatedOutcome.id }
+        });
+        this.state.sessions.push(session);
+        this.state.activeSessionId = session.id;
+        this.state.resumeSessionId = session.id;
+        this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
+        this.state.screen = "workbench";
+        refreshAskBarContext(this.state, session);
+        break;
+      }
+      case "retrySessionModelStop": {
+        const session = this.requireSession(action.sessionId);
+        if (!session.modelStopConfirmation) throw new Error("This Learning Session has no unconfirmed model interruption.");
+        this.requestModelStopConfirmation(session);
+        break;
+      }
       case "addSourceToSession": {
         const session = this.requireActiveSession();
         const source = this.state.sources.find((candidate) => candidate.id === action.sourceId);
@@ -1381,7 +1517,7 @@ export class LearningApplication {
         this.pauseActiveSession();
         const location = this.resolveIntakeLocation(action.location);
         const managedAsset = this.createManagedTextAsset(location.workspaceId, mathematics);
-        const session: LearningSession = {
+        const session = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: location.workspaceId,
           missionId: location.missionId,
@@ -1396,30 +1532,8 @@ export class LearningApplication {
             nextAction: "Continue working through the key idea"
           },
           proposal: defaultAcceptedProposal(),
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
-          currentTeachingInput: { kind: "sessionIntake", text: mathematics },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
-          accessPolicy: location.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
-          prerequisiteBranch: null
-        };
+          accessPolicy: location.accessPolicy
+        });
         refreshAskBarContext(this.state, session);
         this.state.sessions.push(session);
         this.state.activeSessionId = session.id;
@@ -1482,7 +1596,7 @@ export class LearningApplication {
           this.state.screen = "workbench";
           break;
         }
-        const session: LearningSession = {
+        const session = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: location.workspaceId,
           missionId: location.missionId,
@@ -1502,30 +1616,8 @@ export class LearningApplication {
             status: proposal.requiresConfirmation ? "awaitingConfirmation" : "accepted",
             confirmationReason: proposal.confirmationReason
           },
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
-          currentTeachingInput: { kind: "sessionIntake", text: mathematics },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
-          accessPolicy: location.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
-          prerequisiteBranch: null
-        };
+          accessPolicy: location.accessPolicy
+        });
         refreshAskBarContext(this.state, session);
         this.agentWorkLogs[session.id] = pendingLog;
         delete this.agentWorkLogs[proposalAttemptId];
@@ -1751,6 +1843,9 @@ export class LearningApplication {
       }
       case "resumeSession": {
         const session = this.requireSession(action.sessionId);
+        if (session.status === "consolidated") {
+          throw new Error("A consolidated Learning Session is a stable historical record. Continue this work in a new session instead.");
+        }
         this.pauseActiveSession();
         if (session.learningSlice) {
           const roadmap = this.state.argumentRoadmaps.find((candidate) => candidate.id === session.learningSlice?.roadmapId);
@@ -1875,7 +1970,7 @@ export class LearningApplication {
         }
         if (this.modelWorks.has(origin.id)) throw new Error("Stop current teaching before opening a Prerequisite Branch.");
         const anchor = requireSourceAnchor(origin, proposal.sourceAnchorId);
-        const branch: LearningSession = {
+        const branch = createLearningSession({
           id: crypto.randomUUID(),
           workspaceId: origin.workspaceId,
           missionId: origin.missionId,
@@ -1895,28 +1990,8 @@ export class LearningApplication {
             status: "accepted",
             confirmationReason: null
           },
-          teachingCard: emptyTeachingCard(),
-          teachingCardHistory: [],
-          submittedPendingQuestions: [],
           currentTeachingInput: { kind: "sessionIntake", text: proposal.prerequisite },
-          pendingQuestion: null,
-          askBarContext: emptyAskBarContext(),
-          questionCards: [],
-          activeQuestionCardId: null,
           accessPolicy: origin.accessPolicy,
-          accessRequests: [],
-          pendingFullAccessConfirmation: false,
-          sourceAnchors: [],
-          sourceAnchorRequests: [],
-          activeSourceAnchorId: null,
-          anchoredTeachingCards: [],
-          activeTeachingCardId: null,
-          learningArtifacts: [],
-          trailDraft: emptyTrailDraft(),
-          learningSlice: null,
-          conceptPeeks: [],
-          pendingConceptPeek: null,
-          prerequisiteBranchProposals: [],
           prerequisiteBranch: {
             prerequisite: proposal.prerequisite,
             returnPoint: {
@@ -1927,7 +2002,7 @@ export class LearningApplication {
               label: sourceAnchorLocation(anchor)
             }
           }
-        };
+        });
         origin.status = "paused";
         proposal.status = "accepted";
         proposal.branchSessionId = branch.id;
@@ -2532,6 +2607,39 @@ export class LearningApplication {
     }
   }
 
+  private stopModelWorkForSessionLifecycle(session: LearningSession): void {
+    const work = this.modelWorks.get(session.id);
+    if (!this.modelRuntime || !work) return;
+    this.denyPendingAccessRequests(session);
+    work.stop();
+    work.controller.abort();
+    if (this.modelWorks.get(session.id) === work) this.modelWorks.delete(session.id);
+    this.requestModelStopConfirmation(session);
+  }
+
+  private requestModelStopConfirmation(session: LearningSession): void {
+    const attemptId = crypto.randomUUID();
+    session.modelStopConfirmation = {
+      attemptId,
+      status: "pending",
+      message: "Waiting for Codex to confirm interruption. Local model work is stopped."
+    };
+    if (!this.modelRuntime) {
+      session.modelStopConfirmation = unconfirmedModelStop(attemptId);
+      return;
+    }
+    void this.modelRuntime.cancelTeaching(session.id).then(() => {
+      if (session.modelStopConfirmation?.attemptId === attemptId) session.modelStopConfirmation = null;
+    }).catch(() => {
+      if (session.modelStopConfirmation?.attemptId === attemptId) {
+        session.modelStopConfirmation = unconfirmedModelStop(attemptId);
+      }
+    }).finally(() => {
+      this.queuePersistence();
+      this.emitState();
+    });
+  }
+
   private reviseProposal(
     session: LearningSession,
     revision: { learningGoal: string; scope: string; initialTeachingDirection: string }
@@ -2682,7 +2790,7 @@ export class LearningApplication {
         boundary: requiredName(stage.boundary, "Learning Slice boundary"),
         immediatePrerequisites: stage.immediatePrerequisites.map((item) => requiredName(item, "Immediate prerequisite"))
       };
-      return {
+      return createLearningSession({
         id: sessionIds[index],
         workspaceId: location.workspaceId,
         missionId: location.missionId,
@@ -2702,30 +2810,11 @@ export class LearningApplication {
           status: "awaitingConfirmation",
           confirmationReason: "Confirm this Learning Slice before detailed teaching begins."
         },
-        teachingCard: emptyTeachingCard(),
-        teachingCardHistory: [],
-        submittedPendingQuestions: [],
-        currentTeachingInput: { kind: "sessionIntake", text: mathematics },
-        pendingQuestion: null,
-        askBarContext: emptyAskBarContext(),
-        questionCards: [],
-        activeQuestionCardId: null,
         accessPolicy: location.accessPolicy,
-        accessRequests: [],
-        pendingFullAccessConfirmation: false,
         sourceAnchors: [anchors[index]],
-        sourceAnchorRequests: [],
         activeSourceAnchorId: anchors[index].id,
-        anchoredTeachingCards: [],
-        activeTeachingCardId: null,
-        learningArtifacts: [],
-        trailDraft: emptyTrailDraft(),
-        learningSlice,
-        conceptPeeks: [],
-        pendingConceptPeek: null,
-        prerequisiteBranchProposals: [],
-        prerequisiteBranch: null
-      };
+        learningSlice
+      });
     });
     for (const session of sessions) refreshAskBarContext(this.state, session);
     this.state.argumentRoadmaps.push(roadmap);
@@ -2920,6 +3009,21 @@ export class LearningApplication {
     this.state.activityOrder += 1;
     return this.state.activityOrder;
   }
+
+  private latestPausedSessionId(excludedSessionId: string): string | null {
+    return this.state.sessions
+      .filter((session) => session.id !== excludedSessionId && session.status === "paused")
+      .sort((left, right) => right.activityOrder - left.activityOrder)[0]?.id ?? null;
+  }
+
+  private requireArtifactEditingSession(sessionId?: string): LearningSession {
+    if (!sessionId) return this.requireActiveSession();
+    const session = this.requireSession(sessionId);
+    if (session.status !== "consolidated" && session.id !== this.state.activeSessionId) {
+      throw new Error("Choose an active or consolidated Learning Session to revise its Learning Artifact.");
+    }
+    return session;
+  }
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -2936,6 +3040,13 @@ function requiredText(value: string, subject: string): string {
   const text = value.trim();
   if (!text) throw new Error(`${subject} text is required.`);
   return text;
+}
+
+function requireTargetDisposition(value: unknown): TargetDisposition {
+  if (value !== "addressed" && value !== "deferred" && value !== "unresolved") {
+    throw new Error("Choose Addressed, Deferred, or Unresolved for the Session Target.");
+  }
+  return value;
 }
 
 function accessPolicyRank(policy: SessionAccessPolicy): number {
@@ -2975,8 +3086,8 @@ function pathIsInside(path: string, folderPath: string): boolean {
   return relation !== "" && relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation);
 }
 
-function mostRecentSessionId(sessions: LearningSession[]): string | null {
-  return sessions.reduce<LearningSession | null>(
+function mostRecentPausedSessionId(sessions: LearningSession[]): string | null {
+  return sessions.filter((session) => session.status === "paused").reduce<LearningSession | null>(
     (latest, session) => (!latest || session.activityOrder > latest.activityOrder ? session : latest),
     null
   )?.id ?? null;
@@ -3044,6 +3155,10 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       activeTeachingCardId: typeof session.activeTeachingCardId === "string" ? session.activeTeachingCardId : null,
       learningArtifacts: migrateLearningArtifacts(session.learningArtifacts),
       trailDraft: migrateTrailDraft(session.trailDraft),
+      consolidationDraft: migrateSessionConsolidationDraft(session.consolidationDraft),
+      consolidatedOutcome: migrateConsolidatedSessionOutcome(session.consolidatedOutcome),
+      continuationOf: migrateContinuationLink(session.continuationOf),
+      modelStopConfirmation: migrateModelStopConfirmation(session.modelStopConfirmation),
       learningSlice: migrateLearningSlice(session.learningSlice),
       conceptPeeks: migrateConceptPeeks(session.conceptPeeks),
       pendingConceptPeek: migratePendingConceptPeek(session.pendingConceptPeek),
@@ -3056,6 +3171,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       validateQuestionCardReferences(current, session);
       refreshAskBarContext(current, session);
     }
+    validateSessionLifecycleReferences(current);
     validateArgumentRoadmapReferences(current);
     validatePrerequisiteBranchReferences(current);
     return current;
@@ -3091,6 +3207,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       activeTeachingCardId: null,
       learningArtifacts: [],
       trailDraft: emptyTrailDraft(),
+      ...emptySessionLifecycle(),
       learningSlice: null,
       conceptPeeks: [],
       pendingConceptPeek: null,
@@ -3451,6 +3568,60 @@ function refreshAskBarContext(state: LearningApplicationState, session: Learning
     sourceId: null,
     sourceAnchorId: null
   });
+  const continuation = continuationOutcomeContext(state, session);
+  if (continuation) {
+    const { historical, outcome } = continuation;
+    items.push({
+      id: "continuation-outcome",
+      kind: "sessionContext",
+      typeLabel: "Prior Consolidated Session Outcome",
+      identity: historical.learningGoal,
+      location: "Linked prior Learning Session",
+      preview: [outcome.centralInsight, outcome.learningProgress, ...outcome.unresolvedQuestions, outcome.nextStep]
+        .filter(Boolean).join("\n"),
+      sourceId: null,
+      sourceAnchorId: null
+    });
+    const returnPoint = historical.prerequisiteBranch?.returnPoint;
+    if (returnPoint) {
+      items.push({
+        id: "continuation-return-point",
+        kind: "sessionContext",
+        typeLabel: "Return Point",
+        identity: returnPoint.label,
+        location: "Linked prior Learning Session",
+        preview: returnPoint.label,
+        sourceId: returnPoint.sourceId,
+        sourceAnchorId: null
+      });
+    }
+    for (const item of outcome.trailItems.filter((trailItem) => trailItem.kind === "evidence")) {
+      items.push({
+        id: `continuation-evidence:${item.id}`,
+        kind: "sessionContext",
+        typeLabel: "Trail Evidence",
+        identity: item.content,
+        location: "Prior Consolidated Session Outcome",
+        preview: item.content,
+        sourceId: null,
+        sourceAnchorId: null
+      });
+    }
+    for (const artifactId of outcome.includedArtifactIds) {
+      const artifact = historical.learningArtifacts.find((candidate) => candidate.id === artifactId);
+      if (!artifact) continue;
+      items.push({
+        id: `continuation-artifact:${artifact.id}`,
+        kind: "sessionContext",
+        typeLabel: "Learning Artifact",
+        identity: artifact.title,
+        location: "Prior Consolidated Session Outcome",
+        preview: artifact.currentRevision.content,
+        sourceId: null,
+        sourceAnchorId: null
+      });
+    }
+  }
   const workspace = state.workspaces.find((candidate) => candidate.id === session.workspaceId);
   const availableSourceIds = session.accessPolicy === "focused"
     ? session.sourceIds
@@ -3476,13 +3647,25 @@ function refreshAskBarContext(state: LearningApplicationState, session: Learning
   const availableIds = new Set(items.map((item) => item.id));
   const shouldUseDefaults = reset || !session.askBarContext.customized;
   const includedIds = shouldUseDefaults
-    ? activeAnchor ? [`source-anchor:${activeAnchor.id}`, "learning-goal"] : ["learning-goal", "session-target"]
+    ? activeAnchor
+      ? [`source-anchor:${activeAnchor.id}`, "learning-goal"]
+      : continuation ? ["learning-goal", "continuation-outcome"] : ["learning-goal", "session-target"]
     : session.askBarContext.includedIds.filter((id) => availableIds.has(id));
   session.askBarContext = {
     items,
     includedIds,
     customized: shouldUseDefaults ? false : session.askBarContext.customized
   };
+}
+
+function continuationOutcomeContext(state: LearningApplicationState, session: LearningSession): {
+  historical: LearningSession;
+  outcome: ConsolidatedSessionOutcome;
+} | null {
+  if (!session.continuationOf) return null;
+  const historical = state.sessions.find((candidate) => candidate.id === session.continuationOf?.sessionId);
+  const outcome = historical?.consolidatedOutcome;
+  return historical && outcome?.id === session.continuationOf.outcomeId ? { historical, outcome } : null;
 }
 
 function selectedAskBarContext(session: LearningSession): QuestionContextItem[] {
@@ -3550,6 +3733,64 @@ function sourceAnchorLocation(anchor: SourceAnchor): string {
 
 function emptyTrailDraft(): TrailDraft {
   return { items: [] };
+}
+
+type NewLearningSession = Pick<LearningSession,
+  | "id" | "workspaceId" | "missionId" | "mathematics" | "sourceIds" | "learningGoal" | "sessionTarget"
+  | "status" | "activityOrder" | "returnContext" | "proposal" | "accessPolicy"
+> & Partial<Pick<LearningSession,
+  | "currentTeachingInput" | "sourceAnchors" | "activeSourceAnchorId" | "learningSlice" | "prerequisiteBranch"
+  | "continuationOf"
+>>;
+
+function createLearningSession(details: NewLearningSession): LearningSession {
+  return {
+    ...details,
+    teachingCard: emptyTeachingCard(),
+    teachingCardHistory: [],
+    submittedPendingQuestions: [],
+    currentTeachingInput: details.currentTeachingInput ?? { kind: "sessionIntake", text: details.mathematics },
+    pendingQuestion: null,
+    askBarContext: emptyAskBarContext(),
+    questionCards: [],
+    activeQuestionCardId: null,
+    accessRequests: [],
+    pendingFullAccessConfirmation: false,
+    sourceAnchors: details.sourceAnchors ?? [],
+    sourceAnchorRequests: [],
+    activeSourceAnchorId: details.activeSourceAnchorId ?? null,
+    anchoredTeachingCards: [],
+    activeTeachingCardId: null,
+    learningArtifacts: [],
+    trailDraft: emptyTrailDraft(),
+    ...emptySessionLifecycle(),
+    continuationOf: details.continuationOf ?? null,
+    learningSlice: details.learningSlice ?? null,
+    conceptPeeks: [],
+    pendingConceptPeek: null,
+    prerequisiteBranchProposals: [],
+    prerequisiteBranch: details.prerequisiteBranch ?? null
+  };
+}
+
+function emptySessionLifecycle(): Pick<LearningSession,
+  "consolidationDraft" | "consolidatedOutcome" | "continuationOf" | "modelStopConfirmation"
+> {
+  return { consolidationDraft: null, consolidatedOutcome: null, continuationOf: null, modelStopConfirmation: null };
+}
+
+function suggestedSessionConsolidation(session: LearningSession): SessionConsolidationDraft {
+  const items = session.trailDraft.items;
+  const centralInsight = items.find((item) => item.kind === "concept" || item.kind === "reasoningStep")?.content
+    ?? session.learningGoal;
+  return {
+    centralInsight,
+    learningProgress: items.filter((item) => item.kind === "evidence").map((item) => item.content).join("\n"),
+    unresolvedQuestions: items.filter((item) => item.kind === "unresolvedQuestion").map((item) => item.content),
+    nextStep: items.find((item) => item.kind === "nextStep")?.content ?? session.returnContext.nextAction,
+    includedArtifactIds: session.learningArtifacts.map((artifact) => artifact.id),
+    targetDisposition: null
+  };
 }
 
 function emptyTrailItemLinks(): TrailItemLinks {
@@ -3965,6 +4206,88 @@ function migrateTrailDraft(value: unknown): TrailDraft {
       return candidate as unknown as TrailItem;
     })
   };
+}
+
+function migrateSessionConsolidationDraft(value: unknown): SessionConsolidationDraft | null {
+  if (value === undefined || value === null) return null;
+  if (!validSessionConsolidation(value, true)) throw new Error("Stored Session Consolidation review is invalid.");
+  return value as unknown as SessionConsolidationDraft;
+}
+
+function migrateConsolidatedSessionOutcome(value: unknown): ConsolidatedSessionOutcome | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.id !== "string" || !validSessionConsolidation(value, false)
+    || !Array.isArray(value.trailItems)) {
+    throw new Error("Stored Consolidated Session Outcome is invalid.");
+  }
+  const trailItems = migrateTrailDraft({ items: value.trailItems }).items;
+  return { ...(value as unknown as ConsolidatedSessionOutcome), trailItems };
+}
+
+function validSessionConsolidation(value: unknown, allowsMissingDisposition: boolean): boolean {
+  if (!isRecord(value) || typeof value.centralInsight !== "string" || !value.centralInsight.trim()
+    || typeof value.learningProgress !== "string" || typeof value.nextStep !== "string" || !value.nextStep.trim()
+    || !Array.isArray(value.unresolvedQuestions)
+    || value.unresolvedQuestions.some((question) => typeof question !== "string" || !question.trim())
+    || !Array.isArray(value.includedArtifactIds)
+    || value.includedArtifactIds.some((artifactId) => typeof artifactId !== "string")) return false;
+  return (allowsMissingDisposition && value.targetDisposition === null)
+    || value.targetDisposition === "addressed"
+    || value.targetDisposition === "deferred"
+    || value.targetDisposition === "unresolved";
+}
+
+function migrateContinuationLink(value: unknown): ContinuationLink | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.sessionId !== "string" || typeof value.outcomeId !== "string") {
+    throw new Error("Stored Continuation Session link is invalid.");
+  }
+  return value as unknown as ContinuationLink;
+}
+
+function migrateModelStopConfirmation(value: unknown): ModelStopConfirmation | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.attemptId !== "string" || !value.attemptId
+    || (value.status !== "pending" && value.status !== "unconfirmed")
+    || typeof value.message !== "string" || !value.message.trim()) {
+    throw new Error("Stored model interruption confirmation is invalid.");
+  }
+  return value.status === "pending" ? unconfirmedModelStop(value.attemptId) : value as unknown as ModelStopConfirmation;
+}
+
+function unconfirmedModelStop(attemptId: string): ModelStopConfirmation {
+  return {
+    attemptId,
+    status: "unconfirmed",
+    message: "Codex did not confirm interruption. Retry interruption or restart Codex before further model work."
+  };
+}
+
+function validateSessionLifecycleReferences(state: LearningApplicationState): void {
+  for (const session of state.sessions) {
+    if (session.status !== "active" && session.status !== "paused" && session.status !== "consolidated") {
+      throw new Error("Stored Learning Session status is invalid.");
+    }
+    if ((session.status === "consolidated") !== Boolean(session.consolidatedOutcome)) {
+      throw new Error("Stored Consolidated Session Outcome does not match its Learning Session status.");
+    }
+    const outcome = session.consolidatedOutcome;
+    if (outcome) {
+      if (outcome.includedArtifactIds.some((artifactId) => !session.learningArtifacts.some((artifact) => artifact.id === artifactId))) {
+        throw new Error("Stored Consolidated Session Outcome references an unknown Learning Artifact.");
+      }
+      const outcomeTrailItemIds = new Set(outcome.trailItems.map((item) => item.id));
+      if (session.trailDraft.items.some((item) => item.required && !outcomeTrailItemIds.has(item.id))) {
+        throw new Error("Stored Consolidated Session Outcome omits a Required Trail Item.");
+      }
+    }
+    if (session.continuationOf) {
+      const origin = state.sessions.find((candidate) => candidate.id === session.continuationOf?.sessionId);
+      if (!origin?.consolidatedOutcome || origin.consolidatedOutcome.id !== session.continuationOf.outcomeId) {
+        throw new Error("Stored Continuation Session link is invalid.");
+      }
+    }
+  }
 }
 
 function validTrailItemLinks(value: unknown): value is TrailItemLinks {
