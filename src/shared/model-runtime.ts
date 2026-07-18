@@ -98,6 +98,18 @@ export interface TeachingRequest {
   signal: AbortSignal;
 }
 
+export interface ConceptPeekRequest {
+  sessionId: string;
+  prerequisite: string;
+  mathematics: string;
+  learningGoal: string;
+  sourceAnchorId: string;
+  sourceId: string;
+  selection: SourceAnchorSelection;
+  signal: AbortSignal;
+  onRuntimeEvent?(event: ModelRuntimeEvent): void;
+}
+
 export interface ModelRuntimeEvent {
   type: "threadStarted" | "turnStarted" | "inputSubmitted" | "outputDelta" | "turnCompleted" | "turnFailed";
   threadId: string;
@@ -110,6 +122,7 @@ export interface ModelRuntime {
   startChatGptLogin(): Promise<ChatGptLogin>;
   loginWithApiKey(apiKey: string): Promise<void>;
   proposeSession(mathematics: string, onRuntimeEvent?: (event: ModelRuntimeEvent) => void): Promise<SessionProposal>;
+  createConceptPeek(request: ConceptPeekRequest): Promise<string>;
   streamTeaching(request: TeachingRequest): Promise<void>;
   cancelTeaching(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;

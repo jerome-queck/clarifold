@@ -163,6 +163,22 @@ describe("Codex app-server contract", () => {
       }
     });
 
+    await expect(runtime.createConceptPeek({
+      sessionId: "learning-session-1",
+      prerequisite: "absolute convergence",
+      mathematics: "Does this alternating series converge?",
+      learningGoal: "Understand the alternating series test",
+      sourceAnchorId: "anchor-1",
+      sourceId: "source-1",
+      selection: {
+        kind: "text", startOffset: 10, endOffset: 28, exactText: "alternating series", prefix: "Does this ", suffix: " converge?"
+      },
+      signal: new AbortController().signal
+    })).resolves.toBe("First check that the term magnitudes decrease. Then check that they tend to zero.");
+    const conceptPeekTurn = transport.messages.filter((message) => message.method === "turn/start").at(-1)!;
+    expect(JSON.stringify(conceptPeekTurn.params)).toContain("compact Concept Peek");
+    expect(JSON.stringify(conceptPeekTurn.params)).toContain("absolute convergence");
+
     const deltas: string[] = [];
     await runtime.streamTeaching({
       sessionId: "learning-session-1",
