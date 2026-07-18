@@ -68,6 +68,29 @@ describe("Ask Bar", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Question context is no longer available.");
   });
 
+  it("announces Question Card retry failures", async () => {
+    const user = userEvent.setup();
+    const session = questionSession();
+    const selectedContext = session.askBarContext.items.slice(0, 2);
+    session.questionCards = [{
+      id: "question-card-1",
+      question: "Where is Hausdorff used?",
+      currentRevision: {
+        id: "question-revision-1", question: "Where is Hausdorff used?", status: "failed", content: "",
+        error: "Codex became unavailable.", retryable: true, selectedContext, contextUsed: selectedContext,
+        agentWorkLogReference: null
+      },
+      revisions: []
+    }];
+    session.activeQuestionCardId = "question-card-1";
+    render(<AskBar session={session} modelAvailable onSetContext={vi.fn()} onSubmit={vi.fn()}
+      onSavePending={vi.fn()} onDiscardPending={vi.fn()} onStartNewQuestion={vi.fn()}
+      onRetry={vi.fn().mockRejectedValue(new Error("Retry is not available."))} />);
+
+    await user.click(screen.getByRole("button", { name: "Retry Question Card" }));
+    expect((await screen.findByText("Retry is not available.")).textContent).toContain("Retry is not available.");
+  });
+
   it("presents one revisable Question Card with its complete Context Used Receipt", async () => {
     const user = userEvent.setup();
     const onStartNewQuestion = vi.fn().mockResolvedValue(undefined);

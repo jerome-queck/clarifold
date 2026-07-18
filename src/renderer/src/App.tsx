@@ -765,6 +765,7 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
   const [direction, setDirection] = useState(session.proposal.initialTeachingDirection);
   const [inspectorCardId, setInspectorCardId] = useState<string | null>(null);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
+  const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const inspectorCard = session.anchoredTeachingCards.find((card) => card.id === inspectorCardId) ?? null;
   const inspectorArtifact = inspectorCard?.artifactId
     ? session.learningArtifacts.find((artifact) => artifact.id === inspectorCard.artifactId) ?? null
@@ -835,8 +836,14 @@ function Workbench({ state, onState }: { state: LearningApplicationState; onStat
                 const card = session.anchoredTeachingCards.find((candidate) => candidate.sourceAnchorId === sourceAnchorId);
                 setFocusAnchorId(null);
                 setInspectorCardId(card?.id ?? null);
-                void window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId }).then(onState);
+                setWorkbenchError(null);
+                void window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId })
+                  .then(onState)
+                  .catch((error: unknown) => setWorkbenchError(
+                    error instanceof Error ? error.message : "The Source Anchor could not be activated."
+                  ));
               }} />
+            {workbenchError && <p className="failure-message" role="alert">{workbenchError}</p>}
             {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} onState={onState} key={artifact.id} />)}
             <SessionAccessPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />

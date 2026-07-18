@@ -115,7 +115,8 @@ export function AskBar({
         </div>
       </form>
       {error && <p className="failure-message" role="alert">{error}</p>}
-      {activeCard && <QuestionCardView card={activeCard} disabled={busy} onRetry={onRetry} />}
+      {activeCard && <QuestionCardView card={activeCard} disabled={busy}
+        onRetry={(cardId) => run(() => onRetry(cardId))} />}
     </section>
   );
 }

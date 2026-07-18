@@ -53,6 +53,10 @@ describe("anchored teaching workbench", () => {
 
     expect(screen.queryByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeNull();
     expect(marker).toBe(document.activeElement);
+
+    vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The Source Anchor is stale."));
+    await user.click(marker);
+    expect((await screen.findByRole("alert")).textContent).toContain("The Source Anchor is stale.");
   });
 });
 
