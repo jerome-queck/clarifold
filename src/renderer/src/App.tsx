@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import type {
   LearningApplicationState,
   LearningSession,
+  LinkedSource,
+  LinkedSourceView,
   SessionSearchResult,
   StudyMission,
   StudyWorkspace
@@ -56,10 +58,127 @@ function Dashboard({ state, onState }: { state: LearningApplicationState; onStat
           <Intake state={state} onState={onState} />
           <SessionSearch onState={onState} />
           <WorkspaceEditor workspace={workspace} mission={mission} state={state} onState={onState} />
+          <SourcesPanel key={workspace.id} workspace={workspace} state={state} onState={onState} />
           <MissionHistory workspace={workspace} mission={mission} state={state} onState={onState} />
         </section>
       </div>
     </main>
+  );
+}
+
+function SourcesPanel({ workspace, state, onState }: {
+  workspace: StudyWorkspace;
+  state: LearningApplicationState;
+  onState: StateHandler;
+}) {
+  const [view, setView] = useState<LinkedSourceView | null>(null);
+  const sources = state.sources.filter((source) => source.workspaceId === workspace.id);
+  const linkedSources = sources.filter((source): source is LinkedSource => source.kind === "linkedSource");
+  const primaryFolder = linkedSources.find((source) => source.role === "primaryFolder");
+  const attachments = linkedSources.filter((source) => source.role === "externalAttachment");
+  const managedAssets = sources.filter((source) => source.kind === "managedAsset");
+  const open = async (sourceId: string) => setView(await window.quickStudy.openLinkedSource(sourceId));
+
+  return (
+    <section className="sources-card" aria-labelledby="sources-title">
+      <div className="card-heading">
+        <div>
+          <p className="eyebrow">Local source ownership</p>
+          <h2 id="sources-title">Sources and Managed Assets</h2>
+        </div>
+        <span className="saved">Originals stay in place</span>
+      </div>
+      <div className="source-actions">
+        {workspace.kind === "named" && (
+          <button
+            className="secondary"
+            disabled={Boolean(primaryFolder)}
+            onClick={() => void window.quickStudy.linkPrimaryFolder(workspace.id).then(onState)}
+          >
+            {primaryFolder ? "Primary Folder linked" : "Link Primary Folder"}
+          </button>
+        )}
+        <button
+          className="secondary"
+          onClick={() => void window.quickStudy.linkExternalAttachment(workspace.id).then(onState)}
+        >Add External Attachment</button>
+      </div>
+      <SourceGroup
+        title="Primary Folder content"
+        empty="No Primary Folder linked."
+        sources={primaryFolder ? [primaryFolder] : []}
+        onOpen={open}
+        onLocateAgain={(sourceId) => window.quickStudy.locateLinkedSourceAgain(sourceId).then(onState)}
+      />
+      <SourceGroup
+        title="External Attachments"
+        empty="No individual files linked outside the Primary Folder."
+        sources={attachments}
+        onOpen={open}
+        onLocateAgain={(sourceId) => window.quickStudy.locateLinkedSourceAgain(sourceId).then(onState)}
+      />
+      <div className="source-group">
+        <h3>Managed Assets</h3>
+        {managedAssets.length === 0 ? <p className="subtle">No fileless input retained here.</p> : (
+          <ul className="source-list">
+            {managedAssets.map((asset) => (
+              <li key={asset.id}>
+                <div><strong>{asset.name}</strong><span className="source-badge managed">Managed Asset</span></div>
+                <p>{asset.content}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {view?.status === "available" && (
+        <section className="source-view" aria-label="Linked Source view">
+          <h3>Read-only Source Layer</h3>
+          <pre>{view.content}</pre>
+        </section>
+      )}
+      {view?.status === "unavailable" && <p className="failure-message" role="alert">{view.error}</p>}
+    </section>
+  );
+}
+
+function SourceGroup({ title, empty, sources, onOpen, onLocateAgain }: {
+  title: string;
+  empty: string;
+  sources: Array<Extract<LearningApplicationState["sources"][number], { kind: "linkedSource" }>>;
+  onOpen(sourceId: string): Promise<void>;
+  onLocateAgain(sourceId: string): Promise<void>;
+}) {
+  return (
+    <div className="source-group">
+      <h3>{title}</h3>
+      {sources.length === 0 ? <p className="subtle">{empty}</p> : (
+        <ul className="source-list">
+          {sources.map((source) => (
+            <li key={source.id}>
+              <div>
+                <strong>{source.name}</strong>
+                <span className="source-badge linked">Linked Source</span>
+                <span className="source-badge">{source.role === "primaryFolder" ? "Primary Folder" : "External Attachment"}</span>
+              </div>
+              <small>{source.link.lastKnownPath}</small>
+              {source.link.error && <p className="failure-message">{source.link.error}</p>}
+              <button
+                className="text-button"
+                aria-label={`${source.link.accessStatus === "unavailable" ? "Retry" : "Open"} Linked Source ${source.name}`}
+                onClick={() => void onOpen(source.id)}
+              >{source.link.accessStatus === "unavailable" ? "Retry access" : "Open read-only"}</button>
+              {source.link.accessStatus === "unavailable" && (
+                <button
+                  className="text-button"
+                  aria-label={`Locate Linked Source ${source.name} again`}
+                  onClick={() => void onLocateAgain(source.id)}
+                >Locate again</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

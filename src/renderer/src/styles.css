@@ -33,7 +33,7 @@ h2 { margin: 0; font-size: 27px; }
 .dashboard-grid, .workbench-layout { display: grid; grid-template-columns: 255px minmax(0, 1fr); gap: 24px; margin-top: 24px; }
 .dashboard-content { width: min(940px, 100%); margin: 0 auto; }
 .dashboard-heading { padding: 24px 4px 28px; }
-.hierarchy, .authentication-card, .model-access, .resume-card, .intake-card, .search-card, .organize-card, .history-card, .session-panel, .math-canvas {
+.hierarchy, .authentication-card, .model-access, .resume-card, .intake-card, .search-card, .organize-card, .sources-card, .history-card, .session-panel, .math-canvas {
   border: 1px solid rgba(105,118,105,.22);
   border-radius: 20px;
   background: rgba(255,255,255,.74);
@@ -55,7 +55,7 @@ h2 { margin: 0; font-size: 27px; }
 .session-nav-list button { width: 100%; padding: 6px 8px; overflow: hidden; border: 0; color: #5f746d; background: transparent; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .session-nav-list button::before { content: "↳ "; color: #b65d38; }
 
-.authentication-card, .model-access, .resume-card, .intake-card, .search-card, .organize-card, .history-card { margin-bottom: 18px; padding: 28px; }
+.authentication-card, .model-access, .resume-card, .intake-card, .search-card, .organize-card, .sources-card, .history-card { margin-bottom: 18px; padding: 28px; }
 .authentication-card { display: flex; align-items: center; justify-content: space-between; gap: 24px; border-color: rgba(182,93,56,.3); }
 .authentication-card h2 { font-size: 25px; }
 .authentication-card .subtle { margin: 8px 0 0; }
@@ -104,6 +104,22 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .search-results li { border-top: 1px solid #deddd4; }
 .search-results button { display: flex; width: 100%; align-items: start; flex-direction: column; gap: 4px; text-align: left; }
 .search-results small { color: #6b7c76; }
+
+.source-actions { display: flex; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
+.source-group { margin-top: 20px; }
+.source-group h3, .source-view h3 { margin: 0 0 9px; color: #385950; font-size: 13px; letter-spacing: .04em; }
+.source-group > .subtle { margin: 0; font-size: 13px; }
+.source-list { margin: 0; padding: 0; list-style: none; }
+.source-list li { padding: 13px 0; border-top: 1px solid #deddd4; }
+.source-list li > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.source-list small { display: block; margin-top: 5px; color: #71837d; overflow-wrap: anywhere; }
+.source-list p { margin: 7px 0 0; color: #557069; line-height: 1.45; }
+.source-list .text-button { margin-top: 5px; padding-left: 0; }
+.source-badge { padding: 3px 7px; border-radius: 999px; color: #6f5a42; background: #eee5d7; font-size: 10px; font-weight: 800; }
+.source-badge.linked { color: #26594c; background: #deece3; }
+.source-badge.managed { color: #6d4634; background: #f4dfd3; }
+.source-view { margin-top: 20px; padding: 16px; border: 1px solid #cbd6cc; border-radius: 12px; background: #f6f8f3; }
+.source-view pre { max-height: 260px; margin: 0; overflow: auto; color: #243d36; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
 
 .history-card { opacity: .9; }
 .session-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0; border-top: 1px solid #deddd4; }

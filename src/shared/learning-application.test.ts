@@ -2,7 +2,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { LearningApplication } from "./learning-application";
+import {
+  LearningApplication,
+  type LinkedSource,
+  type LocalSourceAccess,
+  type SelectedLocalSource
+} from "./learning-application";
 import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type SessionProposal, type TeachingRequest } from "./model-runtime";
 
 describe("Learning Application", () => {
@@ -35,6 +40,136 @@ describe("Learning Application", () => {
       application
     };
   }
+
+  async function launchWithSourceAccess(sourceAccess: LocalSourceAccess) {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(application);
+    return { dataDirectory, application };
+  }
+
+  it("links one Primary Folder to a Study Workspace and restores the grant after relaunch", async () => {
+    const { application, dataDirectory } = await launch();
+    const created = await application.submit({ type: "createWorkspace", name: "Algebra" });
+    const workspaceId = created.navigation.workspaceId;
+    const selection: SelectedLocalSource = {
+      name: "algebra-notes",
+      resourceType: "folder",
+      lastKnownPath: "/Users/learner/Documents/algebra-notes",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
+      fingerprint: { size: 96, modifiedAtMs: 1_726_000_000_000 }
+    };
+
+    const linked = await application.linkPrimaryFolder(workspaceId, selection);
+
+    const primaryFolder = linked.sources.find((source) => source.id === linked.workspaces[1].context.primaryFolderSourceId);
+    expect(primaryFolder).toMatchObject({
+      kind: "linkedSource",
+      role: "primaryFolder",
+      workspaceId,
+      name: "algebra-notes",
+      link: {
+        lastKnownPath: "/Users/learner/Documents/algebra-notes",
+        accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
+        accessStatus: "available"
+      }
+    });
+    expect(linked.workspaces[1].context.sourceIds).toEqual([primaryFolder?.id]);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sources).toEqual(linked.sources);
+    expect(relaunched.getState().workspaces[1].context.primaryFolderSourceId).toBe(primaryFolder?.id);
+  });
+
+  it("keeps disk-backed attachments linked while retaining fileless intake as a Managed Asset", async () => {
+    const { application } = await launch();
+    const created = await application.submit({ type: "createWorkspace", name: "Analysis" });
+    const workspaceId = created.navigation.workspaceId;
+
+    const withAttachment = await application.linkExternalAttachment(workspaceId, {
+      name: "lecture-3.pdf",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/Downloads/lecture-3.pdf",
+      accessGrant: { kind: "directPath" },
+      fingerprint: { size: 4_096, modifiedAtMs: 1_726_000_100_000 }
+    });
+    expect(withAttachment.sources).toContainEqual(expect.objectContaining({
+      kind: "linkedSource",
+      role: "externalAttachment",
+      workspaceId,
+      name: "lecture-3.pdf",
+      link: expect.objectContaining({ lastKnownPath: "/Users/learner/Downloads/lecture-3.pdf" })
+    }));
+
+    const started = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Why is every compact subset of a Hausdorff space closed?"
+    });
+    const managedAsset = started.sources.find((source) => source.kind === "managedAsset");
+    expect(managedAsset).toMatchObject({
+      kind: "managedAsset",
+      workspaceId: "quick-study-workspace",
+      name: "Typed mathematics",
+      mediaType: "text/plain",
+      content: "Why is every compact subset of a Hausdorff space closed?"
+    });
+    expect(started.workspaces[0].context.sourceIds).toContain(managedAsset?.id);
+  });
+
+  it("reopens a Linked Source read-only and preserves its association when access fails", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const created = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const workspaceId = created.navigation.workspaceId;
+    const linked = await application.linkExternalAttachment(workspaceId, {
+      name: "compactness.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/compactness.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "opaque-bookmark" },
+      fingerprint: { size: 64, modifiedAtMs: 1234 }
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+
+    const opened = await application.openLinkedSource(source.id);
+    expect(opened).toMatchObject({
+      status: "available",
+      sourceId: source.id,
+      content: "Every open cover has a finite subcover."
+    });
+    expect(sourceAccess.openedSourceIds).toEqual([source.id]);
+
+    sourceAccess.error = new Error("The source is missing or access is no longer available.");
+    const unavailable = await application.openLinkedSource(source.id);
+    expect(unavailable).toEqual({
+      status: "unavailable",
+      sourceId: source.id,
+      error: "The source is missing or access is no longer available."
+    });
+    expect(application.getState().sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      id: source.id,
+      link: { accessStatus: "unavailable", error: "The source is missing or access is no longer available." }
+    });
+
+    const relocated = await application.relocateLinkedSource(source.id, {
+      name: "compactness-restored.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/restored/compactness.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "replacement-bookmark" },
+      fingerprint: { size: 65, modifiedAtMs: 5678 }
+    });
+    expect(relocated.sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      id: source.id,
+      name: "compactness-restored.txt",
+      link: {
+        lastKnownPath: "/Users/learner/restored/compactness.txt",
+        accessGrant: { kind: "securityScopedBookmark", bookmarkData: "replacement-bookmark" },
+        accessStatus: "available",
+        error: null
+      }
+    });
+  });
 
   it("proposes an editable Learning Session and pauses materially ambiguous input for confirmation", async () => {
     const runtime = new DeterministicModelRuntime({
@@ -770,6 +905,22 @@ describe("Learning Application", () => {
     });
   });
 });
+
+class DeterministicSourceAccess implements LocalSourceAccess {
+  readonly openedSourceIds: string[] = [];
+  error: Error | null = null;
+
+  async read(source: LinkedSource) {
+    this.openedSourceIds.push(source.id);
+    if (this.error) throw this.error;
+    return {
+      sourceId: source.id,
+      resourceType: source.resourceType,
+      content: "Every open cover has a finite subcover.",
+      fingerprint: source.link.fingerprint
+    };
+  }
+}
 
 class DeterministicModelRuntime implements ModelRuntime {
   readonly teachingRequests: TeachingRequest[] = [];

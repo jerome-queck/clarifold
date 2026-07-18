@@ -1,6 +1,6 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,13 @@ const executablePath = join(
 
 test("packaged Quick Study organizes durable work and resumes the latest session", async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-smoke-"));
+  const sourceDirectory = await mkdtemp(join(tmpdir(), "quick-study-source-"));
+  const primaryFolderPath = join(sourceDirectory, "algebra-course");
+  const attachmentPath = join(sourceDirectory, "lecture-3.txt");
+  const attachmentContent = "A finite group action partitions the set into orbits.";
+  await mkdir(primaryFolderPath);
+  await writeFile(join(primaryFolderPath, "problem-set.txt"), "Classify the orbits and stabilizers.", "utf8");
+  await writeFile(attachmentPath, attachmentContent, "utf8");
   const accessStatePath = join(dataDirectory, "fake-codex-access.json");
   let launched: { browser: Browser; page: Page; process: ChildProcess } | undefined;
 
@@ -27,7 +34,9 @@ test("packaged Quick Study organizes durable work and resumes the latest session
         ...process.env,
         ELECTRON_ENABLE_LOGGING: "1",
         QUICK_STUDY_DATA_DIR: dataDirectory,
-        QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs")
+        QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs"),
+        QUICK_STUDY_TEST_PRIMARY_FOLDER: primaryFolderPath,
+        QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath
       },
       stdio: "pipe"
     });
@@ -64,6 +73,18 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByRole("button", { name: "Create Study Mission" }).click();
     await page.getByLabel("New Study Mission name").fill("Group actions");
     await page.getByRole("button", { name: "Create Study Mission" }).click();
+
+    const linkPrimaryFolder = page.getByRole("button", { name: "Link Primary Folder" });
+    await linkPrimaryFolder.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("algebra-course", { exact: true })).toBeVisible();
+    const addAttachment = page.getByRole("button", { name: "Add External Attachment" });
+    await addAttachment.focus();
+    await page.keyboard.press("Enter");
+    const openAttachment = page.getByRole("button", { name: "Open Linked Source lecture-3.txt" });
+    await openAttachment.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("region", { name: "Linked Source view" })).toContainText(attachmentContent);
 
     await page.getByLabel("Typed mathematics").fill("Show that every convergent sequence is bounded.");
     await page.getByRole("button", { name: "Propose Learning Session" }).click();
@@ -107,6 +128,17 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     page = await launch();
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open Study Workspace Abstract Algebra" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Study Workspace Abstract Algebra" }).click();
+    const reopenedPrimaryFolder = page.getByRole("button", { name: "Open Linked Source algebra-course" });
+    await reopenedPrimaryFolder.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("region", { name: "Linked Source view" })).toContainText("problem-set.txt");
+    const reopenedAttachment = page.getByRole("button", { name: "Open Linked Source lecture-3.txt" });
+    await reopenedAttachment.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("region", { name: "Linked Source view" })).toContainText(attachmentContent);
+    expect(await readFile(attachmentPath, "utf8")).toBe(attachmentContent);
+    expect(await readFile(join(primaryFolderPath, "problem-set.txt"), "utf8")).toBe("Classify the orbits and stabilizers.");
     await expect(page.getByText("Bound the sequence using its finite prefix and tail")).toBeVisible();
     const resumeControl = page.getByRole("button", { name: "Resume Learning Session", exact: true });
     await resumeControl.focus();
@@ -159,6 +191,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   } finally {
     await quit();
     await rm(dataDirectory, { recursive: true, force: true });
+    await rm(sourceDirectory, { recursive: true, force: true });
   }
 });
 

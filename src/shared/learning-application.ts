@@ -64,7 +64,67 @@ export interface StudyWorkspace {
 export interface WorkspaceContext {
   sourceIds: string[];
   learnerContextIds: string[];
+  primaryFolderSourceId: string | null;
 }
+
+export interface SourceFingerprint {
+  size: number;
+  modifiedAtMs: number;
+}
+
+export type LocalSourceAccessGrant =
+  | { kind: "securityScopedBookmark"; bookmarkData: string }
+  | { kind: "directPath" };
+
+export interface SelectedLocalSource {
+  name: string;
+  resourceType: "file" | "folder";
+  lastKnownPath: string;
+  accessGrant: LocalSourceAccessGrant;
+  fingerprint: SourceFingerprint;
+}
+
+export interface LinkedSource {
+  id: string;
+  kind: "linkedSource";
+  role: "primaryFolder" | "externalAttachment";
+  workspaceId: string;
+  name: string;
+  resourceType: "file" | "folder";
+  link: {
+    lastKnownPath: string;
+    accessGrant: LocalSourceAccessGrant;
+    fingerprint: SourceFingerprint;
+    accessStatus: "available" | "unavailable";
+    error: string | null;
+  };
+}
+
+export interface ManagedAsset {
+  id: string;
+  kind: "managedAsset";
+  workspaceId: string;
+  name: string;
+  mediaType: "text/plain";
+  content: string;
+}
+
+export type WorkspaceSource = LinkedSource | ManagedAsset;
+
+export interface AvailableLinkedSourceView {
+  sourceId: string;
+  resourceType: "file" | "folder";
+  content: string;
+  fingerprint: SourceFingerprint;
+}
+
+export interface LocalSourceAccess {
+  read(source: LinkedSource): Promise<AvailableLinkedSourceView>;
+}
+
+export type LinkedSourceView =
+  | ({ status: "available" } & AvailableLinkedSourceView)
+  | { status: "unavailable"; sourceId: string; error: string };
 
 export interface StudyMission {
   id: string;
@@ -83,6 +143,7 @@ export interface LearningSession {
   workspaceId: string;
   missionId: string;
   mathematics: string;
+  sourceIds: string[];
   learningGoal: string;
   sessionTarget: string;
   status: SessionStatus;
@@ -111,6 +172,7 @@ export interface LearningApplicationState {
   workspaces: StudyWorkspace[];
   missions: StudyMission[];
   sessions: LearningSession[];
+  sources: WorkspaceSource[];
   activeSessionId: string | null;
   resumeSessionId: string | null;
   navigation: {
@@ -176,13 +238,21 @@ export class LearningApplication {
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
   private agentWorkLogs: Record<string, Array<ModelRuntimeEvent & { sequence: number }>> = {};
 
-  private constructor(dataDirectory: string, modelRuntime: ModelRuntime | null) {
+  private constructor(
+    dataDirectory: string,
+    modelRuntime: ModelRuntime | null,
+    private readonly sourceAccess: LocalSourceAccess | null
+  ) {
     this.statePath = join(dataDirectory, "learning-application.json");
     this.modelRuntime = modelRuntime;
   }
 
-  static async launch(dataDirectory: string, modelRuntime: ModelRuntime | null = null): Promise<LearningApplication> {
-    const application = new LearningApplication(dataDirectory, modelRuntime);
+  static async launch(
+    dataDirectory: string,
+    modelRuntime: ModelRuntime | null = null,
+    sourceAccess: LocalSourceAccess | null = null
+  ): Promise<LearningApplication> {
+    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess);
     try {
       const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
       const { agentWorkLogs, ...storedState } = stored;
@@ -271,6 +341,76 @@ export class LearningApplication {
     return this.publishAndPersist();
   }
 
+  async linkPrimaryFolder(
+    workspaceId: string,
+    selection: SelectedLocalSource
+  ): Promise<LearningApplicationState> {
+    const workspace = this.requireNamedWorkspace(workspaceId);
+    if (selection.resourceType !== "folder") throw new Error("Choose a folder for the Primary Folder.");
+    if (workspace.context.primaryFolderSourceId) throw new Error("This Study Workspace already has a Primary Folder.");
+    const source = linkedSource(workspaceId, "primaryFolder", selection);
+    this.state.sources.push(source);
+    workspace.context.primaryFolderSourceId = source.id;
+    workspace.context.sourceIds.push(source.id);
+    return this.publishAndPersist();
+  }
+
+  async linkExternalAttachment(
+    workspaceId: string,
+    selection: SelectedLocalSource
+  ): Promise<LearningApplicationState> {
+    const workspace = this.requireWorkspace(workspaceId);
+    if (selection.resourceType !== "file") throw new Error("Choose a file for an External Attachment.");
+    const source = linkedSource(workspaceId, "externalAttachment", selection);
+    this.state.sources.push(source);
+    workspace.context.sourceIds.push(source.id);
+    return this.publishAndPersist();
+  }
+
+  async openLinkedSource(sourceId: string): Promise<LinkedSourceView> {
+    const source = this.state.sources.find(
+      (candidate): candidate is LinkedSource => candidate.id === sourceId && candidate.kind === "linkedSource"
+    );
+    if (!source) throw new Error("Choose an existing Linked Source.");
+    if (!this.sourceAccess) throw new Error("Local source access is unavailable.");
+    try {
+      const view = await this.sourceAccess.read(source);
+      source.link.accessStatus = "available";
+      source.link.error = null;
+      source.link.fingerprint = view.fingerprint;
+      await this.publishAndPersist();
+      return { status: "available", ...view };
+    } catch (error) {
+      const message = usefulSourceError(error);
+      source.link.accessStatus = "unavailable";
+      source.link.error = message;
+      await this.publishAndPersist();
+      return { status: "unavailable", sourceId, error: message };
+    }
+  }
+
+  async relocateLinkedSource(
+    sourceId: string,
+    selection: SelectedLocalSource
+  ): Promise<LearningApplicationState> {
+    const source = this.state.sources.find(
+      (candidate): candidate is LinkedSource => candidate.id === sourceId && candidate.kind === "linkedSource"
+    );
+    if (!source) throw new Error("Choose an existing Linked Source.");
+    if (source.resourceType !== selection.resourceType) {
+      throw new Error(source.resourceType === "folder" ? "Choose a replacement folder." : "Choose a replacement file.");
+    }
+    source.name = selection.name;
+    source.link = {
+      lastKnownPath: selection.lastKnownPath,
+      accessGrant: selection.accessGrant,
+      fingerprint: selection.fingerprint,
+      accessStatus: "available",
+      error: null
+    };
+    return this.publishAndPersist();
+  }
+
   async waitForModelWork(): Promise<void> {
     await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
     await this.persistence;
@@ -350,11 +490,13 @@ export class LearningApplication {
         const mathematics = action.mathematics.trim();
         if (!mathematics) throw new Error("Typed mathematics is required to start Quick Study.");
         this.pauseActiveSession();
+        const managedAsset = this.createManagedTextAsset(this.state.quickStudy.workspace.id, mathematics);
         const session: LearningSession = {
           id: crypto.randomUUID(),
           workspaceId: this.state.quickStudy.workspace.id,
           missionId: this.state.quickStudy.mission.id,
           mathematics,
+          sourceIds: [managedAsset.id],
           learningGoal: `Understand ${mathematics}`,
           sessionTarget: "Work through the key mathematical idea",
           status: "active",
@@ -406,11 +548,13 @@ export class LearningApplication {
           break;
         }
         this.pauseActiveSession();
+        const managedAsset = this.createManagedTextAsset(this.state.quickStudy.workspace.id, mathematics);
         const session: LearningSession = {
           id: crypto.randomUUID(),
           workspaceId: this.state.quickStudy.workspace.id,
           missionId: this.state.quickStudy.mission.id,
           mathematics,
+          sourceIds: [managedAsset.id],
           learningGoal: proposal.learningGoal,
           sessionTarget: proposal.scope,
           status: "active",
@@ -595,6 +739,15 @@ export class LearningApplication {
         this.requireMission(action.workspaceId, action.missionId);
         if (session.workspaceId !== this.state.quickStudy.workspace.id) {
           throw new Error("Only Quick Study sessions can be filed.");
+        }
+        const originalWorkspace = this.requireWorkspace(session.workspaceId);
+        const destinationWorkspace = this.requireWorkspace(action.workspaceId);
+        for (const sourceId of session.sourceIds) {
+          const source = this.state.sources.find((candidate) => candidate.id === sourceId);
+          if (!source || source.workspaceId !== originalWorkspace.id) continue;
+          source.workspaceId = destinationWorkspace.id;
+          originalWorkspace.context.sourceIds = originalWorkspace.context.sourceIds.filter((id) => id !== sourceId);
+          if (!destinationWorkspace.context.sourceIds.includes(sourceId)) destinationWorkspace.context.sourceIds.push(sourceId);
         }
         session.workspaceId = action.workspaceId;
         session.missionId = action.missionId;
@@ -793,6 +946,27 @@ export class LearningApplication {
     return workspace;
   }
 
+  private requireWorkspace(workspaceId: string): StudyWorkspace {
+    const workspace = this.state.workspaces.find((candidate) => candidate.id === workspaceId);
+    if (!workspace) throw new Error("Choose an existing Study Workspace.");
+    return workspace;
+  }
+
+  private createManagedTextAsset(workspaceId: string, content: string): ManagedAsset {
+    const workspace = this.requireWorkspace(workspaceId);
+    const asset: ManagedAsset = {
+      id: crypto.randomUUID(),
+      kind: "managedAsset",
+      workspaceId,
+      name: "Typed mathematics",
+      mediaType: "text/plain",
+      content
+    };
+    this.state.sources.push(asset);
+    workspace.context.sourceIds.push(asset.id);
+    return asset;
+  }
+
   private requireMission(workspaceId: string, missionId: string): StudyMission {
     const mission = this.state.missions.find(
       (candidate) => candidate.id === missionId && candidate.workspaceId === workspaceId
@@ -843,6 +1017,12 @@ function usefulRuntimeError(error: unknown): string {
     : "Codex could not complete this Teaching Card. Check authentication and try again.";
 }
 
+function usefulSourceError(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "The source is missing or access is no longer available.";
+}
+
 function mostRecentSessionId(sessions: LearningSession[]): string | null {
   return sessions.reduce<LearningSession | null>(
     (latest, session) => (!latest || session.activityOrder > latest.activityOrder ? session : latest),
@@ -857,8 +1037,12 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     const current = value as LearningApplicationState;
     current.workspaces = current.workspaces.map((workspace) => ({
       ...workspace,
-      context: workspace.context ?? emptyWorkspaceContext()
+      context: {
+        ...(workspace.context ?? emptyWorkspaceContext()),
+        primaryFolderSourceId: workspace.context?.primaryFolderSourceId ?? null
+      }
     }));
+    current.sources ??= [];
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -869,6 +1053,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     };
     current.sessions = current.sessions.map((session) => ({
       ...session,
+      sourceIds: session.sourceIds ?? [],
       proposal: session.proposal ?? defaultAcceptedProposal(),
       teachingCard: session.teachingCard ?? emptyTeachingCard(),
       teachingCardHistory: session.teachingCardHistory ?? [],
@@ -888,6 +1073,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
   if (legacy.session) {
     const session: LearningSession = {
       ...legacy.session,
+      sourceIds: [],
       status: "paused",
       activityOrder: 1,
       proposal: defaultAcceptedProposal(),
@@ -945,7 +1131,29 @@ function replaceTeachingCard(session: LearningSession, teachingCard: TeachingCar
 }
 
 function emptyWorkspaceContext(): WorkspaceContext {
-  return { sourceIds: [], learnerContextIds: [] };
+  return { sourceIds: [], learnerContextIds: [], primaryFolderSourceId: null };
+}
+
+function linkedSource(
+  workspaceId: string,
+  role: LinkedSource["role"],
+  selection: SelectedLocalSource
+): LinkedSource {
+  return {
+    id: crypto.randomUUID(),
+    kind: "linkedSource",
+    role,
+    workspaceId,
+    name: selection.name,
+    resourceType: selection.resourceType,
+    link: {
+      lastKnownPath: selection.lastKnownPath,
+      accessGrant: selection.accessGrant,
+      fingerprint: selection.fingerprint,
+      accessStatus: "available",
+      error: null
+    }
+  };
 }
 
 function initialState(): LearningApplicationState {
@@ -974,6 +1182,7 @@ function initialState(): LearningApplicationState {
       }
     ],
     sessions: [],
+    sources: [],
     activeSessionId: null,
     resumeSessionId: null,
     navigation: {
