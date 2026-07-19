@@ -1,6 +1,6 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ const executablePath = join(
 );
 
 test("packaged Quick Study organizes durable work and resumes the latest session", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   const packagedEnvironment = join(executablePath, "..", "..", "Resources", "verifiers",
     "lean-4.29.1-mathlib-4.29.1-quick-study-v1");
   const packagedManifest = join(packagedEnvironment, "manifest.json");
@@ -53,7 +53,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
         QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath,
         QUICK_STUDY_TEST_RELOCATED_SOURCE: relocatedAttachmentPath,
         QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH: artifactExportPath,
-        QUICK_STUDY_TEST_EXTERNAL_RESEARCH: "stub"
+        QUICK_STUDY_TEST_EXTERNAL_RESEARCH: "stub",
+        QUICK_STUDY_TEST_VERIFIER_REMOVAL_FAILURE: "once"
       },
       stdio: "pipe"
     });
@@ -83,6 +84,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   try {
     let page = await launch();
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Application settings" }))
+      .toContainText("Installed and ready", { timeout: 60_000 });
     const noteSynthesisPreference = page.getByRole("checkbox", { name: "Allow Personal Notes during artifact synthesis" });
     await expect(noteSynthesisPreference).toBeChecked();
     await noteSynthesisPreference.click();
@@ -332,13 +335,47 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(claimTrust.getByRole("region", { name: "Formalization for mathematical claim 1" }))
       .toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
     await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
-    await expect(claimTrust).toContainText("Formally verified", { timeout: 20_000 });
+    await expect(claimTrust).toContainText("Formally verified", { timeout: 60_000 });
     await expect(claimTrust).toContainText("Not independently checked");
     const manifest = claimTrust.getByRole("article", { name: "Verifier Manifest" });
     await expect(manifest).toContainText("accepted");
     await expect(manifest).toContainText("lean-4.29.1-mathlib-4.29.1-quick-study-v1 · Lean 4.29.1 · mathlib 4.29.1");
     await expect(manifest).toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
     await expect(manifest).toContainText("Exact statement statusFormally verified");
+    await page.getByRole("button", { name: "Leave session" }).click();
+    const settings = page.getByRole("region", { name: "Application settings" });
+    await settings.getByRole("button", { name: "Remove Lean environment" }).click();
+    const removalConfirmation = page.getByRole("alertdialog", { name: "Remove the Bundled Lean Runtime?" });
+    await expect(removalConfirmation).toContainText("new formal verification capability");
+    await expect(removalConfirmation).toContainText("Historical verification evidence and labels will be preserved");
+    await removalConfirmation.getByRole("button", { name: "Remove installed Lean copy" }).click();
+    await expect(settings).toContainText("Removal failed", { timeout: 30_000 });
+    await expect(settings.getByRole("alert")).toContainText("Synthetic removal interruption before deactivation.");
+    await settings.getByRole("button", { name: "Retry Lean removal" }).click();
+    await expect(settings).toContainText("Not installed", { timeout: 30_000 });
+    await expect(settings).toContainText("reasoning review, source-grounded checking, and independent corroboration");
+
+    await page.getByRole("button", { name: "Resume Learning Session", exact: true }).click();
+    await expect(claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" })).toBeDisabled();
+    await expect(claimTrust).toContainText("Bundled Lean is not installed");
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toContainText("accepted");
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }))
+      .toContainText("lean-4.29.1-mathlib-4.29.1-quick-study-v1");
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }))
+      .toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    const retainedProofLogs = (await readdir(join(dataDirectory, "verifier-evidence")))
+      .filter((name) => name.endsWith(".lean"));
+    expect(retainedProofLogs.length).toBeGreaterThan(0);
+    expect(await readFile(join(dataDirectory, "verifier-evidence", retainedProofLogs[0]), "utf8"))
+      .toContain("theorem quickStudyNatAddZero");
+
+    await page.getByRole("button", { name: "Leave session" }).click();
+    await settings.getByRole("button", { name: "Reinstall supported Lean environment" }).click();
+    await expect(settings).toContainText("Installed and ready", { timeout: 120_000 });
+    await page.getByRole("button", { name: "Resume Learning Session", exact: true }).click();
+    await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 60_000 });
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }).nth(1)).toContainText("accepted");
     await reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ }).press("Enter");
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await expect(reformulatedProof).toContainText("The learner connects the equation with a finite-choice insight.");
@@ -366,8 +403,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
 
   } finally {
     await quit();
-    await rm(dataDirectory, { recursive: true, force: true });
-    await rm(sourceDirectory, { recursive: true, force: true });
+    await removeTestDirectory(dataDirectory);
+    await removeTestDirectory(sourceDirectory);
   }
 });
 
@@ -480,7 +517,7 @@ test("packaged Quick Study checkpoints Background Agent Tasks and resumes them e
     await expect(agentTask).toContainText("Compactness supplies the finite reduction.", { timeout: 15_000 });
   } finally {
     await quit();
-    await rm(dataDirectory, { recursive: true, force: true });
+    await removeTestDirectory(dataDirectory);
   }
 });
 
@@ -535,4 +572,24 @@ async function waitForExit(child: ChildProcess, timeout: number): Promise<boolea
       resolve(true);
     });
   });
+}
+
+async function removeTestDirectory(path: string): Promise<void> {
+  try {
+    await makeTestTreeWritable(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await rm(path, { recursive: true, force: true });
+}
+
+async function makeTestTreeWritable(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink()) return;
+  if (!info.isDirectory()) {
+    await chmod(path, 0o600);
+    return;
+  }
+  await chmod(path, 0o700);
+  for (const entry of await readdir(path)) await makeTestTreeWritable(join(path, entry));
 }

@@ -6,6 +6,7 @@ import {
   verificationCurrencyLabel,
   verificationLevelLabel,
   type ClaimVerificationState,
+  type VerifierEnvironmentState,
   type VerifierManifest
 } from "../../shared/learning-application";
 import { formalizationForClaim } from "../../shared/verifier-runtime";
@@ -15,10 +16,11 @@ export interface ClaimTrustRevision {
   claims?: ClaimVerificationState[];
 }
 
-export function ClaimTrust({ revision, revisionId, verifierManifests = [], onVerify, onCancel }: {
+export function ClaimTrust({ revision, revisionId, verifierManifests = [], verifierEnvironmentStatus = "installed", onVerify, onCancel }: {
   revision: ClaimTrustRevision;
   revisionId?: string;
   verifierManifests?: VerifierManifest[];
+  verifierEnvironmentStatus?: VerifierEnvironmentState["status"];
   onVerify?: (claimId: string, runId: string) => Promise<void>;
   onCancel?: (runId: string) => Promise<void>;
 }) {
@@ -26,6 +28,7 @@ export function ClaimTrust({ revision, revisionId, verifierManifests = [], onVer
   const [runningClaimId, setRunningClaimId] = useState<string | null>(null);
   const [runningRunId, setRunningRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const verifierAvailable = verifierEnvironmentStatus === "installed";
   const verify = async (claimId: string) => {
     if (!onVerify) return;
     setError(null);
@@ -83,11 +86,13 @@ export function ClaimTrust({ revision, revisionId, verifierManifests = [], onVer
           <p><strong>Assumptions:</strong> {formalization.assumptions.join(", ")}</p>
           <p className="subtle">A successful run applies only to this exact formal statement, not the surrounding explanation or unformalized steps.</p>
         </> : <p className="subtle">No supported formal translation exists for this exact claim. Recording the attempt will preserve an inspectable unsupported outcome.</p>}
-        {onVerify && <button className="secondary" disabled={runningClaimId !== null}
+        {onVerify && <button className="secondary" disabled={runningClaimId !== null || !verifierAvailable}
           aria-label={`Check exact claim ${index + 1} with bundled Lean`}
           onClick={() => void verify(claim.claimId)}>
           {runningClaimId === claim.claimId ? "Checking with bundled Lean…" : "Check exact claim with bundled Lean"}
         </button>}
+        {!verifierAvailable && <p role="status">{verifierUnavailableMessage(verifierEnvironmentStatus)}</p>}
+        {!verifierAvailable && <p className="subtle">You can still use reasoning review, source-grounded checking, or independent corroboration.</p>}
         {runningClaimId === claim.claimId && runningRunId && onCancel && <button className="secondary"
           aria-label={`Cancel exact claim ${index + 1} Lean check`}
           onClick={() => void onCancel(runningRunId)}>Cancel Lean check</button>}
@@ -110,4 +115,12 @@ export function ClaimTrust({ revision, revisionId, verifierManifests = [], onVer
       {error && <p className="failure-message" role="alert">{error}</p>}
     </section>
   );
+}
+
+function verifierUnavailableMessage(status: VerifierEnvironmentState["status"]): string {
+  if (status === "absent") return "Bundled Lean is not installed. Reinstall it in Application settings to run this formal check.";
+  if (status === "installing" || status === "removing") {
+    return "Bundled Lean is unavailable while the current environment operation completes. Review its status in Application settings.";
+  }
+  return "Bundled Lean is unavailable while its environment needs recovery. Use Retry or Clean up in Application settings.";
 }

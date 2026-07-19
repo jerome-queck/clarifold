@@ -57,7 +57,8 @@ export class LeanVerifierRuntime implements VerifierRuntime {
     private readonly executablePath: string,
     private readonly execute: LeanCommandExecutor = executeLean,
     private readonly timeoutMs = 15_000,
-    private readonly loadEnvironment: () => Promise<VerificationEnvironment> = () => loadEnvironmentBeside(this.executablePath)
+    private readonly loadEnvironment: () => Promise<VerificationEnvironment> = () => loadEnvironmentBeside(this.executablePath),
+    private readonly validateInstallation: (signal?: AbortSignal) => Promise<void> = async () => undefined
   ) {}
 
   async run(request: VerifierRunRequest, signal?: AbortSignal): Promise<VerifierRunResult> {
@@ -73,6 +74,12 @@ export class LeanVerifierRuntime implements VerifierRuntime {
       environment = await this.loadEnvironment();
     } catch (error) {
       return this.result("versionMismatch", usefulError(error), evidenceLocation, command, null);
+    }
+    try {
+      await this.validateInstallation(signal);
+    } catch (error) {
+      if (signal?.aborted) return this.result("cancelled", usefulError(error), evidenceLocation, command, environment);
+      return this.result("versionMismatch", usefulError(error), evidenceLocation, command, environment);
     }
 
     let version: LeanCommandResult;
