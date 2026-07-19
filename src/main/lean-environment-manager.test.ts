@@ -123,6 +123,19 @@ describe("LeanEnvironmentManager", () => {
     await expect(manager.assertInstalledIntegrity()).rejects.toThrow("does not match the signed application payload");
     expect(await manager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });
   });
+
+  it("does not follow an active-environment symlink while preparing a managed move", async () => {
+    const { root, registry, manager } = await fixture();
+    const outside = join(root, "outside-environment");
+    const active = join(registry, bundledEnvironment.id);
+    await mkdir(registry, { recursive: true });
+    await mkdir(outside, { mode: 0o500 });
+    await symlink(outside, active);
+
+    await expect(manager.install()).rejects.toThrow("unsafe filesystem link");
+    expect((await stat(outside)).mode & 0o222).toBe(0);
+    await rm(active, { force: true });
+  });
 });
 
 async function makeWritable(path: string): Promise<void> {

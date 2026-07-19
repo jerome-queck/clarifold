@@ -279,6 +279,10 @@ async function removeWritableTree(registryPath: string, path: string): Promise<v
 async function renameReadOnlyTree(registryPath: string, source: string, destination: string): Promise<void> {
   assertManagedPath(registryPath, source);
   assertManagedPath(registryPath, destination);
+  const sourceInfo = await lstat(source);
+  if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
+    throw new Error("The Lean environment contains an unsafe filesystem link.");
+  }
   await chmod(source, 0o700);
   try {
     await rename(source, destination);
