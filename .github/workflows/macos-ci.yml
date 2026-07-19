@@ -8,7 +8,7 @@ on:
 jobs:
   verify:
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -16,4 +16,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: |
+            node_modules/.cache/quick-study-lean
+            dist/verifiers
+          key: bundled-lean-4.29.1-mathlib-4.29.1-foundations-v4-${{ runner.arch }}
       - run: npm run verify

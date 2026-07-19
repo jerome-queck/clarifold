@@ -16,6 +16,7 @@ import {
 } from "./learning-application";
 import { ModelAccessError, type ArtifactSynthesisRequest, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type SpecialistAgentRequest, type SpecialistAgentResult, type TeachingRequest } from "./model-runtime";
 import type { CorroborationResearchEvidence, ExternalResearch, ExternalResearchRequest, ExternalResearchResult } from "./external-research";
+import { BUNDLED_LEAN_ENVIRONMENT, type VerifierRuntime } from "./verifier-runtime";
 
 describe("Learning Application", () => {
   const dataDirectories: string[] = [];
@@ -511,6 +512,123 @@ describe("Learning Application", () => {
     expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
       verificationLevel: "formallyVerified",
       verificationEscalation: { recommended: false, reasons: [] }
+    });
+  });
+
+  it("durably records a precisely scoped Verifier Manifest and promotes only an accepted exact claim", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check one arithmetic identity", scope: "One exact claim",
+      initialTeachingDirection: "Formalize the statement", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const verifier: VerifierRuntime = {
+      run: vi.fn(async (request) => ({
+        outcome: "accepted" as const,
+        diagnostics: "Lean completed without diagnostics.",
+        evidenceLocation: join(request.evidenceDirectory, `${request.runId}.lean`),
+        command: "lean exact-claim.lean",
+        environment: BUNDLED_LEAN_ENVIRONMENT
+      }))
+    };
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, runtime, null, null, null, null, verifier);
+    applications.push(application);
+    const { artifactId } = await createPinnedArtifact(application, runtime);
+    const artifact = application.getState().sessions[0].learningArtifacts[0];
+    await application.submit({
+      type: "editLearningArtifact", artifactId, content: artifact.currentRevision.content,
+      claimEdits: [{
+        claimId: artifact.currentRevision.claims[0].claimId,
+        statement: "For every natural number n, n + 0 = n."
+      }]
+    });
+    const current = application.getState().sessions[0].learningArtifacts[0];
+
+    const checked = await application.runFormalVerification(current.originatingSessionId, {
+      runId: "accepted-run",
+      target: "learningArtifact", targetId: artifactId, claimId: current.currentRevision.claims[0].claimId
+    });
+
+    expect(checked.verifierManifests[0]).toMatchObject({
+      claimRevisionId: current.currentRevision.id,
+      exactClaim: "For every natural number n, n + 0 = n.",
+      formalStatement: "theorem quickStudyNatAddZero (n : Nat) : n + 0 = n",
+      assumptions: ["n : Nat"],
+      environment: BUNDLED_LEAN_ENVIRONMENT,
+      commandOutcome: "accepted",
+      formalStatementVerificationLevel: "formallyVerified",
+      evidenceLocation: expect.stringContaining("verifier-evidence")
+    });
+    expect(checked.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationLevel)
+      .toBe("notIndependentlyChecked");
+
+    await expect(application.runFormalVerification(current.originatingSessionId, {
+      runId: "accepted-run", target: "learningArtifact", targetId: artifactId,
+      claimId: current.currentRevision.claims[0].claimId
+    })).rejects.toThrow("already been used");
+    expect(verifier.run).toHaveBeenCalledTimes(1);
+    expect(application.getState().verifierManifests).toHaveLength(1);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().verifierManifests).toEqual(checked.verifierManifests);
+  });
+
+  it("retains formalization and diagnostics for an incomplete run without calling the claim false", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check one arithmetic identity", scope: "One exact claim",
+      initialTeachingDirection: "Formalize the statement", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const verifier: VerifierRuntime = {
+      run: vi.fn(async (request) => ({
+        outcome: "timedOut" as const, diagnostics: "Lean exceeded 15 seconds.",
+        evidenceLocation: join(request.evidenceDirectory, `${request.runId}.lean`),
+        command: "lean exact-claim.lean", environment: BUNDLED_LEAN_ENVIRONMENT
+      }))
+    };
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, runtime, null, null, null, null, verifier);
+    applications.push(application);
+    const { artifactId } = await createPinnedArtifact(application, runtime);
+    const artifact = application.getState().sessions[0].learningArtifacts[0];
+    await application.submit({
+      type: "editLearningArtifact", artifactId, content: artifact.currentRevision.content,
+      claimEdits: [{ claimId: artifact.currentRevision.claims[0].claimId, statement: "For every natural number n, n + 0 = n." }]
+    });
+    const current = application.getState().sessions[0].learningArtifacts[0];
+    const checked = await application.runFormalVerification(current.originatingSessionId, {
+      runId: "timed-out-run",
+      target: "learningArtifact", targetId: artifactId, claimId: current.currentRevision.claims[0].claimId
+    });
+
+    expect(checked.verifierManifests[0]).toMatchObject({
+      commandOutcome: "timedOut", diagnostics: "Lean exceeded 15 seconds.",
+      formalStatementVerificationLevel: "incomplete",
+      proofSource: expect.stringContaining("quickStudyNatAddZero")
+    });
+    expect(checked.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "notIndependentlyChecked",
+      verificationGaps: [expect.objectContaining({
+        reason: expect.stringContaining("timed out"),
+        affectedConclusion: "For every natural number n, n + 0 = n."
+      })]
+    });
+
+    vi.mocked(verifier.run).mockResolvedValueOnce({
+      outcome: "accepted", diagnostics: "Lean completed without diagnostics.",
+      evidenceLocation: join(dataDirectory, "verifier-evidence", "accepted-rerun.lean"),
+      command: "lean accepted-rerun.lean", environment: BUNDLED_LEAN_ENVIRONMENT
+    });
+    const rerun = await application.runFormalVerification(current.originatingSessionId, {
+      runId: "accepted-rerun", target: "learningArtifact", targetId: artifactId,
+      claimId: current.currentRevision.claims[0].claimId
+    });
+    expect(rerun.verifierManifests.at(-1)).toMatchObject({
+      commandOutcome: "accepted", formalStatementVerificationLevel: "formallyVerified"
+    });
+    expect(rerun.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "notIndependentlyChecked", verificationGaps: []
     });
   });
 

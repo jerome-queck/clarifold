@@ -35,6 +35,13 @@ import {
   type CorroborationResearchEvidence,
   type ResearchExcerpt
 } from "./external-research";
+import {
+  BUNDLED_LEAN_ENVIRONMENT,
+  formalizationForClaim,
+  type VerificationEnvironment,
+  type VerifierCommandOutcome,
+  type VerifierRuntime
+} from "./verifier-runtime";
 export type { SessionAccessPolicy } from "./session-access";
 
 const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
@@ -277,6 +284,33 @@ export interface AcceptedFormalVerification {
   exactStatement: string;
   checker: string;
   verificationEnvironment: string;
+}
+
+export interface FormalVerificationRequest {
+  runId: string;
+  target: AcceptedFormalVerification["target"];
+  targetId: string;
+  claimId: string;
+}
+
+export interface VerifierManifest {
+  id: string;
+  sessionId: string;
+  target: FormalVerificationRequest["target"];
+  targetId: string;
+  claimId: string;
+  claimRevisionId: string;
+  exactClaim: string;
+  formalStatement: string | null;
+  assumptions: string[];
+  proofSource: string | null;
+  environment: Readonly<VerificationEnvironment>;
+  command: string;
+  commandOutcome: VerifierCommandOutcome;
+  formalStatementVerificationLevel: "formallyVerified" | "incomplete";
+  diagnostics: string;
+  evidenceLocation: string | null;
+  createdAt: string;
 }
 
 export interface FormalVerificationAuthority {
@@ -821,6 +855,7 @@ export interface LearningApplicationState {
   sourceIndexes: SourceIndexSummary[];
   sourceRevisions: SourceRevision[];
   reanchoringDecisions: ReanchoringDecision[];
+  verifierManifests: VerifierManifest[];
   activeSessionId: string | null;
   resumeSessionId: string | null;
   navigation: {
@@ -972,6 +1007,7 @@ export class LearningApplication {
   private state: LearningApplicationState = initialState();
   private readonly statePath: string;
   private readonly sourceIndexPath: string;
+  private readonly verifierEvidenceDirectory: string;
   private modelRuntime: ModelRuntime | null;
   private persistence = Promise.resolve();
   private sourceIndexWork = Promise.resolve();
@@ -997,10 +1033,12 @@ export class LearningApplication {
     private readonly sourceAccess: LocalSourceAccess | null,
     private readonly artifactSharing: ArtifactSharing | null,
     private readonly externalResearch: ExternalResearch | null,
-    private readonly formalVerificationAuthority: FormalVerificationAuthority | null
+    private readonly formalVerificationAuthority: FormalVerificationAuthority | null,
+    private readonly verifierRuntime: VerifierRuntime | null
   ) {
     this.statePath = join(dataDirectory, "learning-application.json");
     this.sourceIndexPath = join(dataDirectory, "source-index.json");
+    this.verifierEvidenceDirectory = join(dataDirectory, "verifier-evidence");
     this.modelRuntime = modelRuntime;
   }
 
@@ -1010,10 +1048,11 @@ export class LearningApplication {
     sourceAccess: LocalSourceAccess | null = null,
     artifactSharing: ArtifactSharing | null = null,
     externalResearch: ExternalResearch | null = null,
-    formalVerificationAuthority: FormalVerificationAuthority | null = null
+    formalVerificationAuthority: FormalVerificationAuthority | null = null,
+    verifierRuntime: VerifierRuntime | null = null
   ): Promise<LearningApplication> {
     const application = new LearningApplication(
-      dataDirectory, modelRuntime, sourceAccess, artifactSharing, externalResearch, formalVerificationAuthority
+      dataDirectory, modelRuntime, sourceAccess, artifactSharing, externalResearch, formalVerificationAuthority, verifierRuntime
     );
     try {
       const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
@@ -1199,6 +1238,79 @@ export class LearningApplication {
     return this.publishAndPersist();
   }
 
+  async runFormalVerification(
+    sessionId: string,
+    request: FormalVerificationRequest,
+    signal?: AbortSignal
+  ): Promise<LearningApplicationState> {
+    const session = this.requireSession(sessionId);
+    const revision = claimCheckRevision(session, request.target, request.targetId);
+    const claim = requireClaimVerification(revision, request.claimId);
+    const runId = requireVerifierRunId(request.runId);
+    if (this.state.verifierManifests.some((manifest) => manifest.id === runId)) {
+      throw new Error("Verifier run identifier has already been used.");
+    }
+    const formalization = formalizationForClaim(claim.claimStatement);
+    const result = !formalization
+      ? {
+          outcome: "unsupported" as const,
+          diagnostics: "This exact claim does not yet have a supported formal translation.",
+          evidenceLocation: "",
+          command: "",
+          environment: BUNDLED_LEAN_ENVIRONMENT
+        }
+      : this.verifierRuntime
+        ? await this.verifierRuntime.run({
+            runId,
+            evidenceDirectory: this.verifierEvidenceDirectory,
+            ...formalization
+          }, signal)
+        : {
+            outcome: "unavailable" as const,
+            diagnostics: "The Bundled Lean Runtime is unavailable; the formalization remains saved.",
+            evidenceLocation: "",
+            command: "",
+            environment: BUNDLED_LEAN_ENVIRONMENT
+          };
+    const manifest: VerifierManifest = {
+      id: runId,
+      sessionId,
+      target: request.target,
+      targetId: request.targetId,
+      claimId: request.claimId,
+      claimRevisionId: revision.id,
+      exactClaim: claim.claimStatement,
+      formalStatement: formalization?.formalStatement ?? null,
+      assumptions: formalization?.assumptions ?? [],
+      proofSource: formalization?.proofSource ?? null,
+      environment: result.environment,
+      command: result.command,
+      commandOutcome: result.outcome,
+      formalStatementVerificationLevel: result.outcome === "accepted" && formalization ? "formallyVerified" : "incomplete",
+      diagnostics: result.diagnostics,
+      evidenceLocation: result.evidenceLocation || null,
+      createdAt: new Date().toISOString()
+    };
+    this.state.verifierManifests.push(manifest);
+    if (result.outcome === "accepted" && formalization) {
+      const priorManifestIds = new Set(this.state.verifierManifests
+        .filter((candidate) => candidate.id !== manifest.id && candidate.claimRevisionId === revision.id
+          && candidate.claimId === claim.claimId && candidate.formalStatement === formalization.formalStatement)
+        .map((candidate) => candidate.id));
+      claim.verificationGaps = claim.verificationGaps.filter((gap) => !gap.evidenceId || !priorManifestIds.has(gap.evidenceId));
+      claim.verificationEscalation = escalationForEvidence(claim.verificationEvidence, claim.verificationGaps);
+    } else {
+      claim.verificationGaps.push({
+        id: crypto.randomUUID(),
+        reason: verifierOutcomeMessage(result.outcome, result.diagnostics),
+        affectedConclusion: claim.claimStatement,
+        evidenceId: manifest.id
+      });
+      claim.verificationEscalation = escalationForEvidence(claim.verificationEvidence, claim.verificationGaps);
+    }
+    return this.publishAndPersist();
+  }
+
   async assessVerificationEscalation(
     sessionId: string,
     assessment: VerificationEscalationAssessment
@@ -1239,6 +1351,8 @@ export class LearningApplication {
     const filenameStem = artifact.title.trim().toLocaleLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "learning-artifact";
+    const verifierManifests = this.state.verifierManifests.filter((manifest) => manifest.target === "learningArtifact"
+      && manifest.targetId === artifact.id);
     return {
       artifactId: artifact.id,
       originatingSessionId: artifact.originatingSessionId,
@@ -1285,6 +1399,25 @@ export class LearningApplication {
             evidence.summary,
             ""
           ]))
+        ]),
+        ...(verifierManifests.length === 0 ? [] : [
+          "",
+          "## Verifier Manifests",
+          "",
+          ...verifierManifests.flatMap((manifest) => [
+            `### Verifier Manifest ${manifest.id}`,
+            `- Claim revision: ${manifest.claimRevisionId}`,
+            `- Exact claim: ${manifest.exactClaim}`,
+            `- Exact formal statement: ${manifest.formalStatement ?? "Unsupported translation"}`,
+            `- Exact statement status: ${manifest.formalStatementVerificationLevel === "formallyVerified" ? "Formally verified" : "Incomplete"}`,
+            `- Assumptions: ${manifest.assumptions.join("; ") || "None recorded"}`,
+            `- Command outcome: ${manifest.commandOutcome}`,
+            `- Verification Environment: ${manifest.environment.id} · Lean ${manifest.environment.leanVersion} · mathlib ${manifest.environment.mathlibVersion} · ${manifest.environment.architecture}`,
+            `- Evidence location: ${manifest.evidenceLocation ?? "No proof file was produced"}`,
+            "",
+            manifest.diagnostics,
+            ""
+          ])
         ]),
         ...(artifact.currentRevision.claims.every((claim) => claim.verificationGaps.length === 0) ? [] : [
           "## Verification Gaps",
@@ -5048,6 +5181,20 @@ function verificationRiskReason(value: VerificationRiskFactor): string {
   }[value];
 }
 
+function verifierOutcomeMessage(outcome: VerifierCommandOutcome, diagnostics: string): string {
+  const labels: Record<Exclude<VerifierCommandOutcome, "accepted">, string> = {
+    rejected: "Lean rejected the formal source with a type error; this does not establish mathematical disproof.",
+    timedOut: "The formal check timed out before Lean returned a result.",
+    cancelled: "The formal check was cancelled before Lean returned a result.",
+    unsupported: "This exact claim does not yet have a supported formal translation.",
+    unavailable: "The Bundled Lean Runtime was unavailable.",
+    crashed: "The Lean process stopped unexpectedly before returning a result.",
+    malformedOutput: "Lean returned malformed output that could not be trusted.",
+    versionMismatch: "The available Lean version did not match the recorded Verification Environment."
+  };
+  return outcome === "accepted" ? "Lean accepted the exact formal statement." : `${labels[outcome]} ${diagnostics}`.trim();
+}
+
 export function claimOriginLabel(value: ClaimOrigin): string {
   return {
     learner: "Learner",
@@ -5408,6 +5555,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     current.sourceIndexes = migrateSourceIndexSummaries(stored.sourceIndexes);
     current.sourceRevisions = migrateSourceRevisions(stored.sourceRevisions, current.sources);
     current.reanchoringDecisions = migrateReanchoringDecisions(stored.reanchoringDecisions);
+    current.verifierManifests = migrateVerifierManifests(stored.verifierManifests);
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -5533,6 +5681,47 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     migrated.activityOrder = 1;
   }
   return migrated;
+}
+
+function migrateVerifierManifests(value: unknown): VerifierManifest[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every(validVerifierManifest)) {
+    throw new Error("Stored Verifier Manifests are invalid.");
+  }
+  return structuredClone(value);
+}
+
+function validVerifierManifest(value: unknown): value is VerifierManifest {
+  if (!isRecord(value) || !isRecord(value.environment)) return false;
+  return [value.id, value.sessionId, value.targetId, value.claimId, value.claimRevisionId, value.exactClaim,
+    value.command, value.diagnostics, value.createdAt].every((item) => typeof item === "string")
+    && (value.target === "teachingCard" || value.target === "learningArtifact")
+    && (value.formalStatement === null || typeof value.formalStatement === "string")
+    && Array.isArray(value.assumptions) && value.assumptions.every((item) => typeof item === "string")
+    && (value.proofSource === null || typeof value.proofSource === "string")
+    && (value.evidenceLocation === null || typeof value.evidenceLocation === "string")
+    && (value.formalStatementVerificationLevel === "formallyVerified" || value.formalStatementVerificationLevel === "incomplete")
+    && ["accepted", "rejected", "timedOut", "cancelled", "unsupported", "unavailable", "crashed",
+      "malformedOutput", "versionMismatch"].includes(String(value.commandOutcome))
+    && typeof value.environment.id === "string" && Boolean(value.environment.id.trim())
+    && typeof value.environment.checker === "string" && Boolean(value.environment.checker.trim())
+    && typeof value.environment.leanVersion === "string" && Boolean(value.environment.leanVersion.trim())
+    && typeof value.environment.mathlibVersion === "string" && Boolean(value.environment.mathlibVersion.trim())
+    && typeof value.environment.mathlibCommit === "string" && Boolean(value.environment.mathlibCommit.trim())
+    && typeof value.environment.platform === "string" && Boolean(value.environment.platform.trim())
+    && typeof value.environment.architecture === "string" && Boolean(value.environment.architecture.trim())
+    && typeof value.environment.sourceArchive === "string" && Boolean(value.environment.sourceArchive.trim())
+    && typeof value.environment.sourceSha256 === "string" && Boolean(value.environment.sourceSha256.trim())
+    && typeof value.environment.supportProfile === "string" && Boolean(value.environment.supportProfile.trim())
+    && Array.isArray(value.environment.mathlibModules)
+    && value.environment.mathlibModules.every((module) => typeof module === "string" && Boolean(module.trim()))
+    && typeof value.environment.runtimeFormat === "number";
+}
+
+function requireVerifierRunId(value: string): string {
+  const runId = value.trim();
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(runId)) throw new Error("Verifier run identifier is invalid.");
+  return runId;
 }
 
 function migrateAgentWorkLogs(value: unknown): Record<string, Array<ModelRuntimeEvent & { sequence: number }>> {
@@ -7675,6 +7864,7 @@ function initialState(): LearningApplicationState {
     sourceIndexes: [],
     sourceRevisions: [],
     reanchoringDecisions: [],
+    verifierManifests: [],
     activeSessionId: null,
     resumeSessionId: null,
     navigation: {

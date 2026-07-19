@@ -1065,7 +1065,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
               }} />
             {workbenchError && <p className="failure-message" role="alert">{workbenchError}</p>}
             {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} onState={onState}
-              modelAvailable={state.modelAccess.status === "available"} key={artifact.id} />)}
+              verifierManifests={state.verifierManifests} modelAvailable={state.modelAccess.status === "available"} key={artifact.id} />)}
             {!session.consolidationDraft && <TrailDraft session={session} onAction={async (action) => {
               onState(await window.quickStudy.submit(action));
             }} onActivateSourceAnchor={async (sourceAnchorId) => {
@@ -1347,6 +1347,7 @@ function ConsolidatedOutcome({ state, session, onState }: {
         <h4>Included Learning Artifacts</h4>
         {includedArtifacts.length ? includedArtifacts.map((artifact) => (
           <PinnedLearningArtifact key={artifact.id} artifact={artifact} sessionId={session.id}
+            verifierManifests={state.verifierManifests}
             modelAvailable={state.modelAccess.status === "available"}
             statusLabel="Included in this Consolidated Session Outcome" onState={onState} />
         )) : <p>None included.</p>}
@@ -1735,10 +1736,11 @@ function annotationAnchorLabel(anchor: LearningSession["sourceAnchors"][number])
   return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} Source Anchor: ${anchor.selection.exactText}`;
 }
 
-function PinnedLearningArtifact({ artifact, onState, sessionId, modelAvailable = false, statusLabel = "Pinned on the main canvas" }: {
+function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifests = [], modelAvailable = false, statusLabel = "Pinned on the main canvas" }: {
   artifact: LearningArtifact;
   onState: StateHandler;
   sessionId?: string;
+  verifierManifests?: LearningApplicationState["verifierManifests"];
   modelAvailable?: boolean;
   statusLabel?: string;
 }) {
@@ -1836,7 +1838,13 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, modelAvailable =
         <button className="secondary" aria-label={`Share ${artifactLabel} ${artifact.title}`}
           onClick={() => runPortableAction(shareArtifact)}>Share export</button>
       </div>
-      <ClaimTrust revision={artifact.currentRevision} />
+      <ClaimTrust revision={artifact.currentRevision} revisionId={artifact.currentRevision.id}
+        verifierManifests={verifierManifests.filter((manifest) => manifest.target === "learningArtifact"
+          && manifest.targetId === artifact.id)}
+        onVerify={async (claimId, runId) => onState(await window.quickStudy.verifyClaim(originatingSessionId, {
+          runId, target: "learningArtifact", targetId: artifact.id, claimId
+        }))}
+        onCancel={(runId) => window.quickStudy.cancelClaimVerification(runId)} />
       <dl className="artifact-evidence">
         <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor{artifact.sourceAnchorIds.length === 1 ? "" : "s"}</dd></div>
         <div><dt>Revision provenance</dt><dd>{artifactRevisionProvenance(artifact.currentRevision)}</dd></div>
