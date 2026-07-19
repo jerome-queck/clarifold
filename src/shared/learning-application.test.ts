@@ -1911,6 +1911,15 @@ describe("Learning Application", () => {
     });
     state = await application.submit({ type: "activateSourceAnchor", sourceAnchorId: uncertainAnchorId });
     expect(state.sessions[0].askBarContext.items.some((item) => item.sourceAnchorId === uncertainAnchorId)).toBe(false);
+    state = await application.submit({
+      type: "resolveReanchoring", decisionId: missing.id, resolution: "leaveUnresolved"
+    });
+    expect(state.reanchoringDecisions.find((decision) => decision.id === missing.id)?.status).toBe("leftUnresolved");
+    const unresolvedRelaunch = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(unresolvedRelaunch);
+    expect(unresolvedRelaunch.getState().reanchoringDecisions.find(
+      (decision) => decision.id === missing.id
+    )?.status).toBe("leftUnresolved");
 
     state = await application.submit({
       type: "resolveReanchoring", decisionId: uncertain.id, resolution: "acceptProposal"
@@ -1941,6 +1950,58 @@ describe("Learning Application", () => {
     expect(relaunched.getState().reanchoringDecisions.filter(
       (decision) => [uncertain.id, missing.id].includes(decision.id)
     ).every((decision) => decision.status === "learnerConfirmed")).toBe(true);
+  });
+
+  it("migrates a legacy anchor with ambiguous Source Revision provenance into unresolved review", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const original = "Every compact subset is closed.";
+    sourceAccess.contentBySourceName.set("legacy.txt", original);
+    sourceAccess.indexBySourceName.set("legacy.txt", textExtraction(original));
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const mission = await application.submit({
+      type: "createMission", workspaceId: workspace.navigation.workspaceId, name: "Legacy notes"
+    });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "legacy.txt", resourceType: "file", lastKnownPath: "/Users/learner/legacy.txt",
+      canonicalPath: "/Users/learner/legacy.txt", accessGrant: null, fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.submit({
+      type: "startQuickStudy", mathematics: "Review legacy notes.",
+      location: { workspaceId: workspace.navigation.workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    await application.submit({
+      type: "createSourceAnchor", sourceId: source.id,
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " is closed."
+      },
+      paletteAction: "addNote"
+    });
+    sourceAccess.fingerprint = { size: 72, modifiedAtMs: 5678 };
+    sourceAccess.contentBySourceName.set("legacy.txt", "Recall: Every compact subset is closed.");
+    sourceAccess.indexBySourceName.set("legacy.txt", textExtraction("Recall: Every compact subset is closed."));
+    await application.openLinkedSource(source.id);
+    await application.waitForModelWork();
+    const statePath = join(dataDirectory, "learning-application.json");
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    delete persisted.sessions[0].sourceAnchors[0].sourceRevisionId;
+    delete persisted.reanchoringDecisions;
+    await writeFile(statePath, JSON.stringify(persisted), "utf8");
+
+    const migrated = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(migrated);
+    expect(migrated.getState().sessions[0].sourceAnchors[0].sourceRevisionId).toBeNull();
+    expect(migrated.getState().reanchoringDecisions).toContainEqual(expect.objectContaining({
+      sourceAnchorId: migrated.getState().sessions[0].sourceAnchors[0].id,
+      fromRevisionId: null,
+      toRevisionId: migrated.getState().sources.find(
+        (candidate): candidate is LinkedSource => candidate.id === source.id && candidate.kind === "linkedSource"
+      )!.link.currentRevisionId,
+      status: "unresolved"
+    }));
   });
 
   it("serializes automatic and learner-requested Source Index rebuilds", async () => {

@@ -126,7 +126,8 @@ function SourcesPanel({ workspace, state, onState }: {
   const primaryFolder = linkedSources.find((source) => source.role === "primaryFolder");
   const attachments = linkedSources.filter((source) => source.role === "externalAttachment");
   const managedAssets = sources.filter((source) => source.kind === "managedAsset");
-  const reanchoringReviews = state.reanchoringDecisions.filter((decision) => decision.status === "unresolved"
+  const reanchoringReviews = state.reanchoringDecisions.filter(
+    (decision) => (decision.status === "unresolved" || decision.status === "leftUnresolved")
     && linkedSources.some((source) => source.id === decision.sourceId));
   const runSourceAction = async (action: () => Promise<LearningApplicationState>) => {
     setSourceError(null);
@@ -192,7 +193,7 @@ function SourcesPanel({ workspace, state, onState }: {
       {reanchoringReviews.length > 0 && <section className="reanchoring-reviews" aria-labelledby="reanchoring-reviews-title">
         <div className="card-heading">
           <div><p className="eyebrow">Changed source protection</p><h3 id="reanchoring-reviews-title">Unresolved Anchors</h3></div>
-          <span className="source-badge">{reanchoringReviews.length} to review</span>
+          <span className="source-badge">{reanchoringReviews.filter((review) => review.status === "unresolved").length} to review</span>
         </div>
         <p className="subtle">These old locations are discoverable but are not used as current source context until you confirm a match.</p>
         {reanchoringReviews.map((decision) => {
@@ -1583,7 +1584,8 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTea
           sourceId={source.id}
           content={content}
           mediaType={mediaType}
-          anchors={session.sourceAnchors.filter((anchor) => anchor.sourceId === source.id)}
+          anchors={session.sourceAnchors.filter((anchor) => anchor.sourceId === source.id
+            && (source.kind === "managedAsset" || anchor.sourceRevisionId === source.link.currentRevisionId))}
           onActivateAnchor={onActivateAnchor}
           focusAnchorId={focusAnchorId}
           onChooseAction={(selection, paletteAction) => {

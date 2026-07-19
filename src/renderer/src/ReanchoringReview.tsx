@@ -70,7 +70,7 @@ export function ReanchoringReview({
     <section className="reanchoring-review" role="region" aria-label={`Unresolved Anchor review for ${sourceName}`}>
       <div className="card-heading">
         <div><p className="eyebrow">Re-anchoring review</p><h3>Unresolved Anchor · {label}</h3></div>
-        <span className="source-badge">Learner review required</span>
+        <span className="source-badge">{decision.status === "leftUnresolved" ? "Left unresolved" : "Learner review required"}</span>
       </div>
       <dl>
         <div><dt>Old location</dt><dd>{locationLabel(decision.oldSelection)}</dd></div>
