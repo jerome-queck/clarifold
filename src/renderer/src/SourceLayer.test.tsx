@@ -133,6 +133,7 @@ describe("Source Layer selection", () => {
       anchors={[{
         id: "anchor-1",
         sourceId: "source-1",
+        sourceRevisionId: null,
         selection: {
           kind: "text",
           startOffset: 6,
@@ -158,6 +159,7 @@ describe("Source Layer selection", () => {
       anchors={[{
         id: "anchor-1",
         sourceId: "source-1",
+        sourceRevisionId: null,
         selection: {
           kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset", prefix: "Every ", suffix: " is closed."
         }
@@ -189,6 +191,7 @@ describe("Source Layer selection", () => {
       anchors={[{
         id: "anchor-1",
         sourceId: "source-1",
+        sourceRevisionId: null,
         selection: { kind: "diagramRegion", bounds: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 } }
       }]}
       onChooseAction={vi.fn()}

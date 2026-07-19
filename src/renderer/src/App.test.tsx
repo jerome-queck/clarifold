@@ -518,6 +518,55 @@ describe("Linked Source recovery", () => {
     expect(window.quickStudy.locateLinkedSource).toHaveBeenCalledWith("linked-source-1");
     expect(screen.queryByRole("button", { name: "Preserve current Source Revision for proof.txt" })).toBeNull();
   });
+
+  it("does not paint an Unresolved Anchor over the current Linked Source layer", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.sources.push({
+      id: "linked-source-1", kind: "linkedSource", role: "externalAttachment",
+      workspaceId: "quick-study-workspace", name: "notes.txt", resourceType: "file",
+      link: {
+        lastKnownPath: "/Users/learner/notes.txt", canonicalPath: "/Users/learner/notes.txt", accessGrant: null,
+        fingerprint: { size: 80, modifiedAtMs: 6789 }, accessStatus: "available", error: null,
+        currentRevisionId: "source-revision-2"
+      }
+    });
+    state.workspaces[0].context.sourceIds.push("linked-source-1");
+    state.sessions[0].sourceIds.push("linked-source-1");
+    state.sessions[0].sourceAnchors.push({
+      id: "stale-anchor", sourceId: "linked-source-1", sourceRevisionId: "source-revision-1",
+      selection: {
+        kind: "text", startOffset: 15, endOffset: 25, exactText: "Beta lemma",
+        prefix: "Alpha theorem. ", suffix: ". Gamma claim."
+      }
+    }, {
+      id: "current-anchor", sourceId: "linked-source-1", sourceRevisionId: "source-revision-2",
+      selection: {
+        kind: "text", startOffset: 35, endOffset: 46, exactText: "Delta claim",
+        prefix: "Beta lemma. ", suffix: "."
+      }
+    });
+    state.sourceRevisions = [
+      { id: "source-revision-1", sourceId: "linked-source-1", fingerprint: { size: 64, modifiedAtMs: 1234 }, snapshotAssetId: null },
+      { id: "source-revision-2", sourceId: "linked-source-1", fingerprint: { size: 80, modifiedAtMs: 6789 }, snapshotAssetId: null }
+    ];
+    state.reanchoringDecisions = [{
+      id: "review-1", sessionId: "session-1", sourceId: "linked-source-1", sourceAnchorId: "stale-anchor",
+      fromRevisionId: "source-revision-1", toRevisionId: "source-revision-2", status: "unresolved",
+      oldSelection: state.sessions[0].sourceAnchors.at(-2)!.selection, proposedSelection: null
+    }];
+    window.quickStudy = quickStudyApi(state);
+    vi.mocked(window.quickStudy.openLinkedSource).mockResolvedValue({
+      status: "available", sourceId: "linked-source-1", resourceType: "file", mediaType: "text/plain",
+      content: "Alpha theorem changed. Beta lemma. Delta claim.", fingerprint: { size: 80, modifiedAtMs: 6789 }
+    });
+
+    render(<App />);
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Workbench Source Layer" }), "linked-source-1");
+
+    expect(await screen.findByRole("button", { name: /Open Anchor Marker for Text Source Anchor: Delta claim/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Open Anchor Marker for Text Source Anchor: Beta lemma/ })).toBeNull();
+  });
 });
 
 function quickStudyApi(state: LearningApplicationState): typeof window.quickStudy {
@@ -538,6 +587,7 @@ function workbenchState(): LearningApplicationState {
   const anchor = {
     id: "anchor-1",
     sourceId: "source-1",
+    sourceRevisionId: null,
     selection: {
       kind: "text" as const,
       startOffset: 6,
@@ -637,6 +687,7 @@ function workbenchState(): LearningApplicationState {
     }],
     sourceIndexes: [],
     sourceRevisions: [],
+    reanchoringDecisions: [],
     activeSessionId: "session-1",
     resumeSessionId: "session-1",
     navigation: { workspaceId: "quick-study-workspace", missionId: "quick-study-unfiled-mission" },

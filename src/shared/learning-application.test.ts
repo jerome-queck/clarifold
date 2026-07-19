@@ -1798,6 +1798,212 @@ describe("Learning Application", () => {
     expect(state.sources.filter((candidate) => candidate.kind === "managedAsset")).toEqual([]);
   });
 
+  it("automatically re-anchors a uniquely context-matching text location onto a changed Source Revision", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const original = "Every compact subset of a Hausdorff space is closed.";
+    sourceAccess.contentBySourceName.set("proof.txt", original);
+    sourceAccess.indexBySourceName.set("proof.txt", textExtraction(original));
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const mission = await application.submit({
+      type: "createMission", workspaceId: workspace.navigation.workspaceId, name: "Separation axioms"
+    });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "proof.txt", resourceType: "file", lastKnownPath: "/Users/learner/proof.txt",
+      canonicalPath: "/Users/learner/proof.txt", accessGrant: null, fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.submit({
+      type: "startQuickStudy", mathematics: "Study the compactness argument.",
+      location: { workspaceId: workspace.navigation.workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    const anchored = await application.submit({
+      type: "createSourceAnchor", sourceId: source.id,
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "addNote"
+    });
+    const oldRevisionId = source.link.currentRevisionId;
+    const anchorId = anchored.sessions[0].sourceAnchors[0].id;
+    const revised = "Recall: Every compact subset of a Hausdorff space is closed.";
+    sourceAccess.fingerprint = { size: 72, modifiedAtMs: 5678 };
+    sourceAccess.contentBySourceName.set("proof.txt", revised);
+    sourceAccess.indexBySourceName.set("proof.txt", textExtraction(revised));
+
+    await application.openLinkedSource(source.id);
+
+    const state = application.getState();
+    const currentRevisionId = state.sources.find(
+      (candidate): candidate is LinkedSource => candidate.id === source.id && candidate.kind === "linkedSource"
+    )!.link.currentRevisionId;
+    expect(state.sessions[0].sourceAnchors).toContainEqual(expect.objectContaining({
+      id: anchorId,
+      sourceRevisionId: currentRevisionId,
+      selection: expect.objectContaining({ startOffset: 14, endOffset: 28, exactText: "compact subset" })
+    }));
+    expect(state.reanchoringDecisions).toContainEqual(expect.objectContaining({
+      sourceAnchorId: anchorId,
+      fromRevisionId: oldRevisionId,
+      toRevisionId: currentRevisionId,
+      status: "automatic"
+    }));
+  });
+
+  it("keeps uncertain and missing matches unresolved until the learner confirms a replacement, across relaunch", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const original = "Alpha theorem. Beta lemma. Gamma claim.";
+    sourceAccess.contentBySourceName.set("notes.txt", original);
+    sourceAccess.indexBySourceName.set("notes.txt", textExtraction(original));
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Algebra" });
+    const mission = await application.submit({
+      type: "createMission", workspaceId: workspace.navigation.workspaceId, name: "Core lemmas"
+    });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "notes.txt", resourceType: "file", lastKnownPath: "/Users/learner/notes.txt",
+      canonicalPath: "/Users/learner/notes.txt", accessGrant: null, fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.submit({
+      type: "startQuickStudy", mathematics: "Review the lemmas.",
+      location: { workspaceId: workspace.navigation.workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    let state = await application.submit({
+      type: "createSourceAnchor", sourceId: source.id,
+      selection: {
+        kind: "text", startOffset: 15, endOffset: 25, exactText: "Beta lemma",
+        prefix: "Alpha theorem. ", suffix: ". Gamma claim."
+      },
+      paletteAction: "question"
+    });
+    const uncertainAnchorId = state.sessions[0].activeSourceAnchorId!;
+    state = await application.submit({
+      type: "createAnnotation", sourceAnchorId: uncertainAnchorId, purpose: "personalNote", content: "Check this step."
+    });
+    state = await application.submit({
+      type: "createSourceAnchor", sourceId: source.id,
+      selection: {
+        kind: "text", startOffset: 27, endOffset: 38, exactText: "Gamma claim",
+        prefix: "Beta lemma. ", suffix: "."
+      },
+      paletteAction: "addToLearningTrail"
+    });
+    const missingAnchorId = state.sessions[0].activeSourceAnchorId!;
+    const revised = "Alpha theorem changed. Beta lemma. Delta claim.";
+    sourceAccess.fingerprint = { size: 80, modifiedAtMs: 6789 };
+    sourceAccess.contentBySourceName.set("notes.txt", revised);
+    sourceAccess.indexBySourceName.set("notes.txt", textExtraction(revised));
+
+    await application.openLinkedSource(source.id);
+
+    state = application.getState();
+    const uncertain = state.reanchoringDecisions.find((decision) => decision.sourceAnchorId === uncertainAnchorId)!;
+    const missing = state.reanchoringDecisions.find((decision) => decision.sourceAnchorId === missingAnchorId)!;
+    expect(uncertain).toMatchObject({ status: "unresolved", proposedSelection: { exactText: "Beta lemma" } });
+    expect(missing).toMatchObject({ status: "unresolved", proposedSelection: null });
+    expect(state.sessions[0].sourceAnchors.find((anchor) => anchor.id === uncertainAnchorId)).toMatchObject({
+      sourceRevisionId: uncertain.fromRevisionId,
+      selection: { startOffset: 15, endOffset: 25 }
+    });
+    state = await application.submit({ type: "activateSourceAnchor", sourceAnchorId: uncertainAnchorId });
+    expect(state.sessions[0].askBarContext.items.some((item) => item.sourceAnchorId === uncertainAnchorId)).toBe(false);
+    state = await application.submit({
+      type: "resolveReanchoring", decisionId: missing.id, resolution: "leaveUnresolved"
+    });
+    expect(state.reanchoringDecisions.find((decision) => decision.id === missing.id)?.status).toBe("leftUnresolved");
+    const unresolvedRelaunch = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(unresolvedRelaunch);
+    expect(unresolvedRelaunch.getState().reanchoringDecisions.find(
+      (decision) => decision.id === missing.id
+    )?.status).toBe("leftUnresolved");
+
+    state = await application.submit({
+      type: "resolveReanchoring", decisionId: uncertain.id, resolution: "acceptProposal"
+    });
+    state = await application.submit({
+      type: "resolveReanchoring", decisionId: missing.id, resolution: "selectReplacement",
+      selection: {
+        kind: "text", startOffset: 35, endOffset: 46, exactText: "Delta claim",
+        prefix: "Beta lemma. ", suffix: "."
+      }
+    });
+    expect(state.reanchoringDecisions.filter((decision) => [uncertain.id, missing.id].includes(decision.id)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: uncertain.id, status: "learnerConfirmed" }),
+        expect.objectContaining({ id: missing.id, status: "learnerConfirmed" })
+      ]));
+    expect(state.sessions[0].annotations).toContainEqual(expect.objectContaining({ sourceAnchorId: uncertainAnchorId }));
+    expect(state.sessions[0].trailDraft.items).toContainEqual(expect.objectContaining({
+      links: expect.objectContaining({ sourceAnchorIds: [missingAnchorId] })
+    }));
+    state = await application.submit({ type: "activateSourceAnchor", sourceAnchorId: uncertainAnchorId });
+    expect(state.sessions[0].askBarContext.items).toContainEqual(expect.objectContaining({
+      kind: "sourceAnchor", sourceAnchorId: uncertainAnchorId, preview: "Beta lemma"
+    }));
+
+    const relaunched = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(relaunched);
+    expect(relaunched.getState().reanchoringDecisions.filter(
+      (decision) => [uncertain.id, missing.id].includes(decision.id)
+    ).every((decision) => decision.status === "learnerConfirmed")).toBe(true);
+  });
+
+  it("migrates a legacy anchor with ambiguous Source Revision provenance into unresolved review", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const original = "Every compact subset is closed.";
+    sourceAccess.contentBySourceName.set("legacy.txt", original);
+    sourceAccess.indexBySourceName.set("legacy.txt", textExtraction(original));
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const mission = await application.submit({
+      type: "createMission", workspaceId: workspace.navigation.workspaceId, name: "Legacy notes"
+    });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "legacy.txt", resourceType: "file", lastKnownPath: "/Users/learner/legacy.txt",
+      canonicalPath: "/Users/learner/legacy.txt", accessGrant: null, fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.submit({
+      type: "startQuickStudy", mathematics: "Review legacy notes.",
+      location: { workspaceId: workspace.navigation.workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    await application.submit({
+      type: "createSourceAnchor", sourceId: source.id,
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " is closed."
+      },
+      paletteAction: "addNote"
+    });
+    sourceAccess.fingerprint = { size: 72, modifiedAtMs: 5678 };
+    sourceAccess.contentBySourceName.set("legacy.txt", "Recall: Every compact subset is closed.");
+    sourceAccess.indexBySourceName.set("legacy.txt", textExtraction("Recall: Every compact subset is closed."));
+    await application.openLinkedSource(source.id);
+    await application.waitForModelWork();
+    const statePath = join(dataDirectory, "learning-application.json");
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    delete persisted.sessions[0].sourceAnchors[0].sourceRevisionId;
+    delete persisted.reanchoringDecisions;
+    await writeFile(statePath, JSON.stringify(persisted), "utf8");
+
+    const migrated = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(migrated);
+    expect(migrated.getState().sessions[0].sourceAnchors[0].sourceRevisionId).toBeNull();
+    expect(migrated.getState().reanchoringDecisions).toContainEqual(expect.objectContaining({
+      sourceAnchorId: migrated.getState().sessions[0].sourceAnchors[0].id,
+      fromRevisionId: null,
+      toRevisionId: migrated.getState().sources.find(
+        (candidate): candidate is LinkedSource => candidate.id === source.id && candidate.kind === "linkedSource"
+      )!.link.currentRevisionId,
+      status: "unresolved"
+    }));
+  });
+
   it("serializes automatic and learner-requested Source Index rebuilds", async () => {
     const sourceAccess = new DeterministicSourceAccess();
     sourceAccess.indexBySourceName.set("lemma.txt", textExtraction("Revised lemma."));

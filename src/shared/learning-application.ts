@@ -117,7 +117,20 @@ export type SourceAnchorSelection =
 export interface SourceAnchor {
   id: string;
   sourceId: string;
+  sourceRevisionId: string | null;
   selection: SourceAnchorSelection;
+}
+
+export interface ReanchoringDecision {
+  id: string;
+  sessionId: string;
+  sourceId: string;
+  sourceAnchorId: string;
+  fromRevisionId: string | null;
+  toRevisionId: string;
+  oldSelection: SourceAnchorSelection;
+  proposedSelection: SourceAnchorSelection | null;
+  status: "automatic" | "learnerConfirmed" | "unresolved" | "leftUnresolved";
 }
 
 export interface SourceAnchorRequest {
@@ -617,6 +630,7 @@ export interface LearningApplicationState {
   sources: WorkspaceSource[];
   sourceIndexes: SourceIndexSummary[];
   sourceRevisions: SourceRevision[];
+  reanchoringDecisions: ReanchoringDecision[];
   activeSessionId: string | null;
   resumeSessionId: string | null;
   navigation: {
@@ -661,6 +675,13 @@ export type LearnerAction =
   | { type: "startNewQuestion" }
   | { type: "retryQuestionCard"; cardId: string }
   | { type: "activateSourceAnchor"; sourceAnchorId: string }
+  | { type: "resolveReanchoring"; decisionId: string; resolution: "acceptProposal" | "leaveUnresolved" }
+  | {
+      type: "resolveReanchoring";
+      decisionId: string;
+      resolution: "selectReplacement";
+      selection: SourceAnchorSelection;
+    }
   | { type: "addSourceToSession"; sourceId: string }
   | {
       type: "createSourceAnchor";
@@ -1070,6 +1091,7 @@ export class LearningApplication {
       const extraction = validatedSourceIndexExtractionResult(await this.sourceAccess!.extractForIndex(source));
       if (extraction.linkRefresh) Object.assign(source.link, extraction.linkRefresh);
       this.recordSourceFingerprint(source, extraction.fingerprint);
+      this.reanchorSourceAnchors(source, extraction);
       source.link.accessStatus = "available";
       source.link.error = null;
       const document: SourceIndexDocument = {
@@ -1400,6 +1422,32 @@ export class LearningApplication {
         this.state.navigation = { workspaceId: action.workspaceId, missionId: mission.id };
         break;
       }
+      case "resolveReanchoring": {
+        const decision = this.state.reanchoringDecisions.find((candidate) => candidate.id === action.decisionId);
+        if (!decision || (decision.status !== "unresolved" && decision.status !== "leftUnresolved")) {
+          throw new Error("Choose an unresolved Re-anchoring review.");
+        }
+        if (action.resolution === "leaveUnresolved") {
+          decision.status = "leftUnresolved";
+          break;
+        }
+        const session = this.state.sessions.find((candidate) => candidate.id === decision.sessionId);
+        const anchor = session?.sourceAnchors.find((candidate) => candidate.id === decision.sourceAnchorId);
+        const source = this.state.sources.find((candidate) => candidate.id === decision.sourceId);
+        if (!session || !anchor || !source || source.kind !== "linkedSource"
+          || source.link.currentRevisionId !== decision.toRevisionId) {
+          throw new Error("This Re-anchoring review no longer matches the current Source Revision.");
+        }
+        const requested = action.resolution === "selectReplacement" ? action.selection : decision.proposedSelection;
+        if (!requested) throw new Error("Select a replacement location for this Unresolved Anchor.");
+        const selection = await this.validatedSourceAnchorSelection(requested, source);
+        anchor.selection = selection;
+        anchor.sourceRevisionId = decision.toRevisionId;
+        decision.proposedSelection = structuredClone(selection);
+        decision.status = "learnerConfirmed";
+        refreshAskBarContext(this.state, session, true);
+        break;
+      }
       case "createSourceAnchor": {
         const session = this.requireActiveSession();
         if (!isSourceAnchorPaletteAction(action.paletteAction)) throw new Error("Choose an available Selection Palette action.");
@@ -1414,6 +1462,7 @@ export class LearningApplication {
         const anchor: SourceAnchor = {
           id: crypto.randomUUID(),
           sourceId: source.id,
+          sourceRevisionId: source.kind === "linkedSource" ? source.link.currentRevisionId : null,
           selection
         };
         session.sourceAnchors.push(anchor);
@@ -2650,6 +2699,9 @@ export class LearningApplication {
     variantName: string | null = null
   ): Promise<void> {
     this.requireModelAccess();
+    if (!sourceAnchorIsCurrent(this.state, anchor)) {
+      throw new Error("Review this Unresolved Anchor before using it as current source context.");
+    }
     if (this.modelWorks.has(session.id)) throw new Error("Model teaching is already active for this Learning Session.");
     const focus: NonNullable<TeachingRequest["focus"]> = {
       kind: "sourceAnchor",
@@ -2927,6 +2979,8 @@ export class LearningApplication {
       for (const item of questionContext) {
         if (item.kind !== "sourceAnchor" || !item.sourceId || !authorizedSourceIds.has(item.sourceId)
           || wholeSourceIds.has(item.sourceId)) continue;
+        const anchor = session.sourceAnchors.find((candidate) => candidate.id === item.sourceAnchorId);
+        if (!anchor || !sourceAnchorIsCurrent(this.state, anchor)) continue;
         const source = this.state.sources.find((candidate) => candidate.id === item.sourceId);
         if (!source) continue;
         addContext({
@@ -3180,6 +3234,7 @@ export class LearningApplication {
       return {
         id: crypto.randomUUID(),
         sourceId: source.id,
+        sourceRevisionId: null,
         selection: {
           kind: "text" as const,
           startOffset,
@@ -3294,11 +3349,93 @@ export class LearningApplication {
 
   private recordSourceFingerprint(source: LinkedSource, fingerprint: SourceFingerprint): boolean {
     if (sameFingerprint(source.link.fingerprint, fingerprint)) return false;
+    const fromRevisionId = source.link.currentRevisionId;
     source.link.fingerprint = structuredClone(fingerprint);
     source.link.currentRevisionId = crypto.randomUUID();
     this.state.sourceRevisions.push(sourceRevision(source));
+    this.markSourceAnchorsUnresolved(source, fromRevisionId);
     this.removeSourceSearchResults(source.id);
     return true;
+  }
+
+  private markSourceAnchorsUnresolved(source: LinkedSource, fromRevisionId: string): void {
+    this.visitStaleSourceAnchors(source, (session, anchor) => {
+      const existing = this.state.reanchoringDecisions.find(
+        (decision) => decision.sourceAnchorId === anchor.id
+          && (decision.status === "unresolved" || decision.status === "leftUnresolved")
+      );
+      this.upsertReanchoringDecision(existing, {
+        id: existing?.id ?? crypto.randomUUID(),
+        sessionId: session.id,
+        sourceId: source.id,
+        sourceAnchorId: anchor.id,
+        fromRevisionId: existing ? existing.fromRevisionId : anchor.sourceRevisionId ?? fromRevisionId,
+        toRevisionId: source.link.currentRevisionId,
+        oldSelection: structuredClone(existing?.oldSelection ?? anchor.selection),
+        proposedSelection: null,
+        status: "unresolved"
+      });
+      return true;
+    });
+  }
+
+  private reanchorSourceAnchors(source: LinkedSource, extraction: SourceIndexExtraction): void {
+    this.visitStaleSourceAnchors(source, (session, anchor) => {
+      const existing = this.state.reanchoringDecisions.find(
+        (decision) => decision.sourceAnchorId === anchor.id && (decision.status === "unresolved"
+          || decision.status === "leftUnresolved"
+          || decision.toRevisionId === source.link.currentRevisionId)
+      );
+      if (existing?.status === "leftUnresolved" && existing.toRevisionId === source.link.currentRevisionId) return false;
+      const fromRevisionId = existing
+        ? existing.fromRevisionId
+        : anchor.sourceRevisionId ?? this.previousSourceRevisionId(source);
+      const oldSelection = structuredClone(existing?.oldSelection ?? anchor.selection);
+      const match = reanchoringMatch(anchor.selection, extraction);
+      if (match.strong) {
+        anchor.selection = match.selection!;
+        anchor.sourceRevisionId = source.link.currentRevisionId;
+      }
+      this.upsertReanchoringDecision(existing, {
+        id: existing?.id ?? crypto.randomUUID(),
+        sessionId: session.id,
+        sourceId: source.id,
+        sourceAnchorId: anchor.id,
+        fromRevisionId,
+        toRevisionId: source.link.currentRevisionId,
+        oldSelection,
+        proposedSelection: match.selection,
+        status: match.strong ? "automatic" : "unresolved"
+      });
+      return true;
+    });
+  }
+
+  private visitStaleSourceAnchors(
+    source: LinkedSource,
+    visit: (session: LearningSession, anchor: SourceAnchor) => boolean
+  ): void {
+    for (const session of this.state.sessions) {
+      let changed = false;
+      for (const anchor of session.sourceAnchors) {
+        if (anchor.sourceId !== source.id || anchor.sourceRevisionId === source.link.currentRevisionId) continue;
+        if (visit(session, anchor)) changed = true;
+      }
+      if (changed) refreshAskBarContext(this.state, session, true);
+    }
+  }
+
+  private upsertReanchoringDecision(
+    existing: ReanchoringDecision | undefined,
+    decision: ReanchoringDecision
+  ): void {
+    if (existing) Object.assign(existing, decision);
+    else this.state.reanchoringDecisions.push(decision);
+  }
+
+  private previousSourceRevisionId(source: LinkedSource): string | null {
+    const revisions = this.state.sourceRevisions.filter((revision) => revision.sourceId === source.id);
+    return revisions.length > 1 ? revisions.at(-2)!.id : null;
   }
 
   private createManagedTextAsset(workspaceId: string, content: string): ManagedAsset {
@@ -3595,6 +3732,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     current.sources = migrateWorkspaceSources(current.sources);
     current.sourceIndexes = migrateSourceIndexSummaries(stored.sourceIndexes);
     current.sourceRevisions = migrateSourceRevisions(stored.sourceRevisions, current.sources);
+    current.reanchoringDecisions = migrateReanchoringDecisions(stored.reanchoringDecisions);
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -3621,7 +3759,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       accessPolicy: migrateSessionAccessPolicy(session.accessPolicy),
       accessRequests: migrateAccessRequests(session.accessRequests),
       pendingFullAccessConfirmation: false,
-      sourceAnchors: migrateSourceAnchors(session.sourceAnchors),
+      sourceAnchors: migrateSourceAnchors(session.sourceAnchors, current.sources, current.sourceRevisions),
       sourceAnchorRequests: migrateSourceAnchorRequests(session.sourceAnchorRequests),
       annotations: migrateAnnotations(session.annotations),
       activeSourceAnchorId: typeof session.activeSourceAnchorId === "string" ? session.activeSourceAnchorId : null,
@@ -3639,12 +3777,14 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       prerequisiteBranchProposals: migratePrerequisiteBranchProposals(session.prerequisiteBranchProposals),
       prerequisiteBranch: migratePrerequisiteBranch(session.prerequisiteBranch)
     }));
+    addLegacyUnresolvedReanchoringDecisions(current);
     attachManagedSourcesToLegacySessions(current);
     for (const session of current.sessions) {
       validateSessionSourceAnchorReferences(current, session);
       validateQuestionCardReferences(current, session);
       refreshAskBarContext(current, session);
     }
+    validateReanchoringDecisionReferences(current);
     validateSessionLifecycleReferences(current);
     validateArgumentRoadmapReferences(current);
     validatePrerequisiteBranchReferences(current);
@@ -4019,7 +4159,9 @@ function emptyAskBarContext(): AskBarContext {
 
 function refreshAskBarContext(state: LearningApplicationState, session: LearningSession, reset = false): void {
   const items: QuestionContextItem[] = [];
-  const activeAnchor = session.sourceAnchors.find((anchor) => anchor.id === session.activeSourceAnchorId) ?? null;
+  const activeAnchor = session.sourceAnchors.find(
+    (anchor) => anchor.id === session.activeSourceAnchorId && sourceAnchorIsCurrent(state, anchor)
+  ) ?? null;
   if (activeAnchor) {
     items.push({
       id: `source-anchor:${activeAnchor.id}`,
@@ -4139,6 +4281,12 @@ function refreshAskBarContext(state: LearningApplicationState, session: Learning
     includedIds,
     customized: shouldUseDefaults ? false : session.askBarContext.customized
   };
+}
+
+function sourceAnchorIsCurrent(state: LearningApplicationState, anchor: SourceAnchor): boolean {
+  const source = state.sources.find((candidate) => candidate.id === anchor.sourceId);
+  if (!source) return false;
+  return source.kind !== "linkedSource" || anchor.sourceRevisionId === source.link.currentRevisionId;
 }
 
 function continuationOutcomeContext(state: LearningApplicationState, session: LearningSession): {
@@ -4679,7 +4827,11 @@ function sameIndexMatch(region: SourceIndexRegion, match: SourceSearchResult["ma
     && region.sourceStartOffset === match.sourceStartOffset && region.sourceEndOffset === match.sourceEndOffset;
 }
 
-function migrateSourceAnchors(value: unknown): SourceAnchor[] {
+function migrateSourceAnchors(
+  value: unknown,
+  sources: WorkspaceSource[],
+  revisions: SourceRevision[]
+): SourceAnchor[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("Stored Source Anchors are invalid.");
   return value.map((candidate) => {
@@ -4690,7 +4842,75 @@ function migrateSourceAnchors(value: unknown): SourceAnchor[] {
     return {
       id: candidate.id,
       sourceId: candidate.sourceId,
+      sourceRevisionId: migratedSourceAnchorRevisionId(candidate, sources, revisions),
       selection: validatedSourceAnchorSelection(candidate.selection)
+    };
+  });
+}
+
+function migratedSourceAnchorRevisionId(
+  candidate: Record<string, unknown>,
+  sources: WorkspaceSource[],
+  revisions: SourceRevision[]
+): string | null {
+  if (typeof candidate.sourceRevisionId === "string") return candidate.sourceRevisionId;
+  const source = sources.find(
+    (item): item is LinkedSource => item.id === candidate.sourceId && item.kind === "linkedSource"
+  );
+  if (!source) return null;
+  return revisions.filter((revision) => revision.sourceId === source.id).length === 1
+    ? source.link.currentRevisionId
+    : null;
+}
+
+function addLegacyUnresolvedReanchoringDecisions(state: LearningApplicationState): void {
+  for (const session of state.sessions) {
+    for (const anchor of session.sourceAnchors) {
+      if (anchor.sourceRevisionId !== null || state.reanchoringDecisions.some(
+        (decision) => decision.sourceAnchorId === anchor.id
+      )) continue;
+      const source = state.sources.find(
+        (candidate): candidate is LinkedSource => candidate.id === anchor.sourceId && candidate.kind === "linkedSource"
+      );
+      if (!source) continue;
+      state.reanchoringDecisions.push({
+        id: crypto.randomUUID(),
+        sessionId: session.id,
+        sourceId: source.id,
+        sourceAnchorId: anchor.id,
+        fromRevisionId: null,
+        toRevisionId: source.link.currentRevisionId,
+        oldSelection: structuredClone(anchor.selection),
+        proposedSelection: null,
+        status: "unresolved"
+      });
+    }
+  }
+}
+
+function migrateReanchoringDecisions(value: unknown): ReanchoringDecision[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Re-anchoring decisions are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.sessionId !== "string"
+      || typeof candidate.sourceId !== "string" || typeof candidate.sourceAnchorId !== "string"
+      || !(candidate.fromRevisionId === null || typeof candidate.fromRevisionId === "string")
+      || typeof candidate.toRevisionId !== "string"
+      || !["automatic", "learnerConfirmed", "unresolved", "leftUnresolved"].includes(String(candidate.status))) {
+      throw new Error("Stored Re-anchoring decision is invalid.");
+    }
+    return {
+      id: candidate.id,
+      sessionId: candidate.sessionId,
+      sourceId: candidate.sourceId,
+      sourceAnchorId: candidate.sourceAnchorId,
+      fromRevisionId: candidate.fromRevisionId,
+      toRevisionId: candidate.toRevisionId,
+      oldSelection: validatedSourceAnchorSelection(candidate.oldSelection),
+      proposedSelection: candidate.proposedSelection === null
+        ? null
+        : validatedSourceAnchorSelection(candidate.proposedSelection),
+      status: candidate.status as ReanchoringDecision["status"]
     };
   });
 }
@@ -4994,7 +5214,15 @@ function validateSessionSourceAnchorReferences(state: LearningApplicationState, 
   const annotationsAreValid = session.annotations.every((annotation) => anchorsById.has(annotation.sourceAnchorId));
   const anchorsAreValid = session.sourceAnchors.every((anchor) => {
     const source = stateSources.get(anchor.sourceId);
-    return sourceIds.has(anchor.sourceId) && source?.workspaceId === session.workspaceId;
+    const revisionIsValid = source?.kind === "linkedSource"
+      ? (typeof anchor.sourceRevisionId === "string" && state.sourceRevisions.some(
+        (revision) => revision.id === anchor.sourceRevisionId && revision.sourceId === source.id
+      )) || (anchor.sourceRevisionId === null && state.reanchoringDecisions.some(
+        (decision) => decision.sourceAnchorId === anchor.id
+          && (decision.status === "unresolved" || decision.status === "leftUnresolved")
+      ))
+      : anchor.sourceRevisionId === null;
+    return sourceIds.has(anchor.sourceId) && source?.workspaceId === session.workspaceId && revisionIsValid;
   });
   const activeAnchorIsValid = session.activeSourceAnchorId === null || anchorsById.has(session.activeSourceAnchorId);
   const cardsAreValid = session.anchoredTeachingCards.every((card) => anchorsById.has(card.sourceAnchorId)
@@ -5025,6 +5253,25 @@ function validateSessionSourceAnchorReferences(state: LearningApplicationState, 
   if (!requestsAreValid || !anchorsAreValid || !activeAnchorIsValid || !cardsAreValid || !artifactsAreValid || !trailItemsAreValid
     || !annotationsAreValid || !activeCardIsValid || !identifiersAreUnique) {
     throw new Error("Stored Source Anchor references are invalid.");
+  }
+}
+
+function validateReanchoringDecisionReferences(state: LearningApplicationState): void {
+  const valid = state.reanchoringDecisions.every((decision) => {
+    const session = state.sessions.find((candidate) => candidate.id === decision.sessionId);
+    const anchor = session?.sourceAnchors.find((candidate) => candidate.id === decision.sourceAnchorId);
+    const source = state.sources.find((candidate) => candidate.id === decision.sourceId);
+    const revisionsExist = (decision.fromRevisionId === null || state.sourceRevisions.some(
+      (revision) => revision.id === decision.fromRevisionId && revision.sourceId === decision.sourceId
+    )) && state.sourceRevisions.some(
+      (revision) => revision.id === decision.toRevisionId && revision.sourceId === decision.sourceId
+    );
+    return Boolean(session && anchor && source?.kind === "linkedSource" && anchor.sourceId === source.id
+      && revisionsExist && (!["unresolved", "leftUnresolved"].includes(decision.status)
+        || anchor.sourceRevisionId === decision.fromRevisionId));
+  });
+  if (!valid || new Set(state.reanchoringDecisions.map((decision) => decision.id)).size !== state.reanchoringDecisions.length) {
+    throw new Error("Stored Re-anchoring decision references are invalid.");
   }
 }
 
@@ -5085,6 +5332,42 @@ function matchesSourceTextLocation(
   return content.slice(selection.startOffset, selection.endOffset) === selection.exactText
     && content.slice(Math.max(0, selection.startOffset - selection.prefix.length), selection.startOffset) === selection.prefix
     && content.slice(selection.endOffset, selection.endOffset + selection.suffix.length) === selection.suffix;
+}
+
+function reanchoringMatch(
+  selection: SourceAnchorSelection,
+  extraction: SourceIndexExtraction
+): { selection: SourceAnchorSelection | null; strong: boolean } {
+  if (selection.kind === "diagramRegion") return { selection: null, strong: false };
+  const candidates: Array<{ selection: SourceAnchorSelection; contextMatches: boolean }> = [];
+  for (const page of extraction.pages) {
+    for (const region of page.regions) {
+      if (region.kind !== selection.kind && !(selection.kind === "text" && region.kind === "text")) continue;
+      let localOffset = region.text.indexOf(selection.exactText);
+      while (localOffset >= 0) {
+        const regionStart = region.sourceStartOffset ?? 0;
+        const startOffset = regionStart + localOffset;
+        const endOffset = startOffset + selection.exactText.length;
+        const prefix = region.text.slice(Math.max(0, localOffset - selection.prefix.length), localOffset);
+        const suffix = region.text.slice(localOffset + selection.exactText.length,
+          localOffset + selection.exactText.length + selection.suffix.length);
+        candidates.push({
+          selection: {
+            ...selection,
+            startOffset,
+            endOffset,
+            prefix,
+            suffix
+          },
+          contextMatches: prefix === selection.prefix && suffix === selection.suffix
+        });
+        localOffset = region.text.indexOf(selection.exactText, localOffset + 1);
+      }
+    }
+  }
+  const strong = candidates.filter((candidate) => candidate.contextMatches);
+  if (strong.length === 1 && candidates.length === 1) return { selection: strong[0].selection, strong: true };
+  return { selection: candidates.length === 1 ? candidates[0].selection : null, strong: false };
 }
 
 export function isSourceAnchorPaletteAction(value: unknown): value is SourceAnchorPaletteAction {
@@ -5170,6 +5453,7 @@ function initialState(): LearningApplicationState {
     sources: [],
     sourceIndexes: [],
     sourceRevisions: [],
+    reanchoringDecisions: [],
     activeSessionId: null,
     resumeSessionId: null,
     navigation: {

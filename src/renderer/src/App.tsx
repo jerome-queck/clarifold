@@ -22,6 +22,7 @@ import { ContextualInspector } from "./ContextualInspector";
 import { AskBar } from "./AskBar";
 import { TrailDraft } from "./TrailDraft";
 import { AnnotationInspector } from "./AnnotationInspector";
+import { ReanchoringReview } from "./ReanchoringReview";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -125,6 +126,9 @@ function SourcesPanel({ workspace, state, onState }: {
   const primaryFolder = linkedSources.find((source) => source.role === "primaryFolder");
   const attachments = linkedSources.filter((source) => source.role === "externalAttachment");
   const managedAssets = sources.filter((source) => source.kind === "managedAsset");
+  const reanchoringReviews = state.reanchoringDecisions.filter(
+    (decision) => (decision.status === "unresolved" || decision.status === "leftUnresolved")
+    && linkedSources.some((source) => source.id === decision.sourceId));
   const runSourceAction = async (action: () => Promise<LearningApplicationState>) => {
     setSourceError(null);
     try {
@@ -186,6 +190,29 @@ function SourcesPanel({ workspace, state, onState }: {
         onLocate={locate}
         onPreserveSnapshot={preserveSnapshot}
       />
+      {reanchoringReviews.length > 0 && <section className="reanchoring-reviews" aria-labelledby="reanchoring-reviews-title">
+        <div className="card-heading">
+          <div><p className="eyebrow">Changed source protection</p><h3 id="reanchoring-reviews-title">Unresolved Anchors</h3></div>
+          <span className="source-badge">{reanchoringReviews.filter((review) => review.status === "unresolved").length} to review</span>
+        </div>
+        <p className="subtle">These old locations are discoverable but are not used as current source context until you confirm a match.</p>
+        {reanchoringReviews.map((decision) => {
+          const session = state.sessions.find((candidate) => candidate.id === decision.sessionId);
+          const source = linkedSources.find((candidate) => candidate.id === decision.sourceId)!;
+          const cards = session?.anchoredTeachingCards.filter((card) => card.sourceAnchorId === decision.sourceAnchorId)
+            .map((card) => card.title) ?? [];
+          const annotations = session?.annotations.filter((annotation) => annotation.sourceAnchorId === decision.sourceAnchorId)
+            .map((annotation) => `${annotationPurposeLabel(annotation.purpose)}: ${annotation.content}`) ?? [];
+          const trailItems = session?.trailDraft.items.filter(
+            (item) => item.links.sourceAnchorIds.includes(decision.sourceAnchorId)
+          ).map((item) => `${item.kind}: ${item.content}`) ?? [];
+          return <ReanchoringReview key={decision.id} decision={decision} sourceName={source.name}
+            affectedTeachingCards={cards} affectedAnnotations={annotations} affectedTrailItems={trailItems}
+            sourceView={view?.status === "available" && view.sourceId === source.id ? view : null}
+            onOpenSource={() => open(source.id)}
+            onResolve={async (action) => onState(await window.quickStudy.submit(action))} />;
+        })}
+      </section>}
       <div className="source-group">
         <h3>Managed Assets</h3>
         {managedAssets.length === 0 ? <p className="subtle">No fileless input retained here.</p> : (
@@ -1559,7 +1586,8 @@ function WorkbenchSourceLayer({ state, session, onState, onActivateAnchor, onTea
           sourceId={source.id}
           content={content}
           mediaType={mediaType}
-          anchors={session.sourceAnchors.filter((anchor) => anchor.sourceId === source.id)}
+          anchors={session.sourceAnchors.filter((anchor) => anchor.sourceId === source.id
+            && (source.kind === "managedAsset" || anchor.sourceRevisionId === source.link.currentRevisionId))}
           onActivateAnchor={onActivateAnchor}
           focusAnchorId={focusAnchorId}
           onChooseAction={(selection, paletteAction) => {

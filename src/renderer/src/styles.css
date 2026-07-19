@@ -128,6 +128,13 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .source-group { margin-top: 20px; }
 .source-group h3, .source-view h3 { margin: 0 0 9px; color: #385950; font-size: 13px; letter-spacing: .04em; }
 .source-group > .subtle { margin: 0; font-size: 13px; }
+.reanchoring-reviews { margin: 18px 0; padding: 18px; border: 1px solid #c89b77; border-radius: 14px; background: #fff8ed; }
+.reanchoring-review { margin-top: 14px; padding: 16px; border: 1px solid #dfbaa9; border-radius: 12px; background: #fffdf8; }
+.reanchoring-review dl { display: grid; gap: 8px; }
+.reanchoring-review dl div { display: grid; grid-template-columns: minmax(130px, .35fr) 1fr; gap: 12px; }
+.reanchoring-review dt { font-weight: 750; }
+.reanchoring-review dd { margin: 0; }
+.replacement-source-layer { margin: 14px 0; padding: 14px; border: 1px solid #d5d4ca; border-radius: 10px; }
 .source-list { margin: 0; padding: 0; list-style: none; }
 .source-list li { padding: 13px 0; border-top: 1px solid #deddd4; }
 .source-list li > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
