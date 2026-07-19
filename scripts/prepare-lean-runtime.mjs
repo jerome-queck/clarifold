@@ -20,7 +20,8 @@ if (await preparedRuntimeIsCurrent(destination)) {
 const cacheDirectory = join(projectRoot, "node_modules", ".cache", "quick-study-lean");
 const archivePath = join(cacheDirectory, release.archive);
 const extractionDirectory = join(cacheDirectory, `${specification.id}-${process.arch}-extracted`);
-const mathlibDirectory = join(cacheDirectory, `mathlib-${specification.mathlibCommit}`);
+const mathlibSourceDirectory = join(cacheDirectory, `mathlib-source-${specification.mathlibCommit}`);
+const mathlibWorkingDirectory = join(cacheDirectory, `.mathlib-work-${process.pid}`);
 const staging = join(verifiersDirectory, `.${specification.id}.staging-${process.pid}`);
 await mkdir(cacheDirectory, { recursive: true });
 await mkdir(verifiersDirectory, { recursive: true });
@@ -50,20 +51,25 @@ if (extractedNames.length !== 1) {
 if (extractedNames.length !== 1) throw new Error("The pinned Lean archive has an unexpected layout.");
 const leanSource = join(extractionDirectory, extractedNames[0]);
 
-if (!await mathlibCheckoutIsCurrent(mathlibDirectory)) {
-  await rm(mathlibDirectory, { recursive: true, force: true });
+if (!await mathlibCheckoutIsCurrent(mathlibSourceDirectory)) {
+  await rm(mathlibSourceDirectory, { recursive: true, force: true });
   await run("/usr/bin/git", ["clone", "--depth", "1", "--branch", `v${specification.mathlibVersion}`,
-    "https://github.com/leanprover-community/mathlib4.git", mathlibDirectory]);
-  const commit = (await run("/usr/bin/git", ["rev-parse", "HEAD"], true, mathlibDirectory)).trim();
+    "https://github.com/leanprover-community/mathlib4.git", mathlibSourceDirectory]);
+  const commit = (await run("/usr/bin/git", ["rev-parse", "HEAD"], true, mathlibSourceDirectory)).trim();
   if (commit !== specification.mathlibCommit) throw new Error(`Pinned mathlib tag resolved to unexpected commit ${commit}.`);
 }
 
+await rm(mathlibWorkingDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+await run("/usr/bin/git", ["clone", "--shared", "--no-checkout", mathlibSourceDirectory, mathlibWorkingDirectory]);
+await run("/usr/bin/git", ["remote", "set-url", "origin", "https://github.com/leanprover-community/mathlib4.git"], false,
+  mathlibWorkingDirectory);
+await run("/usr/bin/git", ["checkout", "--detach", specification.mathlibCommit], false, mathlibWorkingDirectory);
 const lake = join(leanSource, "bin", "lake");
-await run(lake, ["exe", "cache", "get", ...specification.mathlibModules], false, mathlibDirectory);
+await run(lake, ["exe", "cache", "get", ...specification.mathlibModules], false, mathlibWorkingDirectory);
 
 await rm(staging, { recursive: true, force: true });
 await copySelectedLeanRuntime(leanSource, staging);
-await copyMathlibSupport(mathlibDirectory, staging);
+await copyMathlibSupport(mathlibWorkingDirectory, staging);
 await chmod(join(staging, "bin", "lean"), 0o755);
 await mkdir(join(staging, "app-support"), { recursive: true });
 await writeFile(join(staging, "app-support", "QuickStudyNatAddZero.lean"), proofSource(), "utf8");
@@ -103,6 +109,8 @@ try {
   throw error;
 }
 await rm(backup, { recursive: true, force: true });
+await rm(mathlibWorkingDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  .catch((error) => console.warn(`Validated environment activated; temporary mathlib cleanup will be retried by the operating system: ${error.message}`));
 for (const entry of await readdir(verifiersDirectory, { withFileTypes: true })) {
   if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== specification.id) {
     await rm(join(verifiersDirectory, entry.name), { recursive: true, force: true });

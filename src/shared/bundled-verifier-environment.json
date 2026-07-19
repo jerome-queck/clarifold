@@ -13,7 +13,7 @@
     "Mathlib.Topology.Basic",
     "Mathlib.Analysis.Calculus.Deriv.Basic"
   ],
-  "runtimeFormat": 6,
+  "runtimeFormat": 8,
   "releases": {
     "arm64": {
       "archive": "lean-4.29.1-darwin_aarch64.zip",
