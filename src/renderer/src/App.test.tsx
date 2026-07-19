@@ -219,6 +219,22 @@ describe("anchored teaching workbench", () => {
     const user = userEvent.setup();
     const state = workbenchState();
     state.sessions[0].learningArtifacts[0].kind = "reformulatedProof";
+    Object.assign(state.sessions[0].learningArtifacts[0].currentRevision.claims[0], {
+      verificationLevel: "notIndependentlyChecked",
+      verificationCurrency: "changedSinceCheck",
+      verificationEvidence: [{
+        id: "evidence-1", method: "independentCorroboration", outcome: "disagrees",
+        summary: "An independent route needs a missing Hausdorff assumption.", limitation: null,
+        reference: { kind: "researchEvidence", researchActionId: "research-1" },
+        currency: "changedSinceCheck", changedBecause: "A semantic edit changed the claim.",
+        createdAt: "2026-07-19T00:00:00.000Z"
+      }],
+      verificationGaps: [{
+        id: "gap-1", reason: "A Hausdorff assumption is unresolved.",
+        affectedConclusion: "Every compact subset is closed.", evidenceId: "evidence-1"
+      }],
+      verificationEscalation: { recommended: true, reasons: ["Independent checking disagreed with the claim."] }
+    });
     const api = quickStudyApi(state);
     window.quickStudy = api;
 
@@ -227,6 +243,11 @@ describe("anchored teaching workbench", () => {
     expect(artifact.textContent).toContain("Promoted");
     expect(artifact.textContent).toContain("19 Jul 2026");
     expect(artifact.textContent).toContain("1 retained Source Anchor");
+    expect(artifact.textContent).toContain("Changed since check");
+    expect(within(artifact).getByRole("alert", { name: "Verification Gap" }).textContent)
+      .toContain("A Hausdorff assumption is unresolved.");
+    expect(within(artifact).getByRole("status", { name: "Verification Escalation" }).textContent)
+      .toContain("Independent checking disagreed with the claim.");
 
     const exportButton = screen.getByRole("button", { name: "Export Reformulated Proof Explain compact subset" });
     exportButton.focus();
@@ -687,7 +708,8 @@ describe("anchored teaching workbench", () => {
       type: "editLearningArtifact",
       sessionId: "session-1",
       artifactId: "artifact-1",
-      content: "A learner revision retained after consolidation."
+      content: "A learner revision retained after consolidation.",
+      claimEdits: [{ claimId: "claim-1", statement: "Use a finite subcover." }]
     });
     vi.mocked(api.submit).mockRejectedValueOnce(new Error("Codex did not confirm interruption."));
     await user.click(screen.getByRole("button", { name: "Continue this work from Understand compactness" }));
@@ -963,9 +985,18 @@ function workbenchState(): LearningApplicationState {
         currentRevision: {
           id: "artifact-revision-1",
           content: "Use a finite subcover.",
-          claimOrigin: "modelGenerated",
-          verificationLevel: "notIndependentlyChecked",
-          verificationCurrency: "current",
+          claims: [{
+            claimId: "claim-1", claimStatement: "Use a finite subcover.",
+            claimOrigin: "modelGenerated",
+            claimOriginReferences: [
+              { kind: "sourceAnchor", sourceAnchorId: "anchor-1" },
+              { kind: "agentWork", sessionId: "session-1", fromSequence: 1, toSequence: 2 }
+            ],
+            verificationLevel: "notIndependentlyChecked",
+            verificationCurrency: "current",
+            verificationEvidence: [], verificationGaps: [],
+            verificationEscalation: { recommended: false, reasons: [] }
+          }],
           personalNoteContributions: [],
           provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
         },

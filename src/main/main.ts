@@ -73,6 +73,12 @@ function isTrustedSender(frameUrl: string | undefined): boolean {
   return frameUrl === pathToFileURL(join(__dirname, "../renderer/index.html")).href;
 }
 
+function isClaimEdits(value: unknown): value is Array<{ claimId: string | null; statement: string }> {
+  return Array.isArray(value) && value.every((edit) => Boolean(edit) && typeof edit === "object"
+    && "claimId" in edit && (edit.claimId === null || typeof edit.claimId === "string")
+    && "statement" in edit && typeof edit.statement === "string");
+}
+
 function isLearnerAction(value: unknown): value is LearnerAction {
   if (!value || typeof value !== "object" || !("type" in value)) return false;
   const action = value as Partial<LearnerAction>;
@@ -121,6 +127,9 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "reviseTeachingCard":
       return "cardId" in action && typeof action.cardId === "string"
         && "instruction" in action && typeof action.instruction === "string";
+    case "editTeachingCardClaims":
+      return "cardId" in action && typeof action.cardId === "string"
+        && "claimEdits" in action && isClaimEdits(action.claimEdits);
     case "restoreTeachingCardRevision":
       return "cardId" in action && typeof action.cardId === "string"
         && "revisionId" in action && typeof action.revisionId === "string";
@@ -140,7 +149,8 @@ function isLearnerAction(value: unknown): value is LearnerAction {
         && (!("sessionId" in action) || action.sessionId === undefined || typeof action.sessionId === "string");
     case "editLearningArtifact":
       return "artifactId" in action && typeof action.artifactId === "string"
-        && "content" in action && typeof action.content === "string";
+        && "content" in action && typeof action.content === "string"
+        && (!("claimEdits" in action) || action.claimEdits === undefined || isClaimEdits(action.claimEdits));
     case "restoreLearningArtifactRevision":
       return "artifactId" in action && typeof action.artifactId === "string"
         && "revisionId" in action && typeof action.revisionId === "string";

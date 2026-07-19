@@ -315,6 +315,12 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await inspector.getByRole("button", { name: "Save as Reformulated Proof" }).press("Enter");
     const reformulatedProof = page.getByRole("article", { name: /Reformulated Proof/ });
     await expect(reformulatedProof).toContainText("1 retained Source Anchor");
+    const claimTrust = reformulatedProof.getByRole("region", { name: "Claim provenance and verification" });
+    await expect(claimTrust).toContainText("Exact claim:");
+    await expect(claimTrust).toContainText("Model-generated");
+    await expect(claimTrust).toContainText("Not independently checked");
+    await expect(claimTrust).toContainText("Current");
+    await expect(claimTrust).toContainText("Agent Work");
     await reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ }).press("Enter");
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await expect(reformulatedProof).toContainText("The learner connects the equation with a finite-choice insight.");
@@ -323,6 +329,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(reformulatedProof.getByText(`Artifact Export saved to ${artifactExportPath}`)).toBeVisible();
     const exportedArtifact = await readFile(artifactExportPath, "utf8");
     expect(exportedArtifact).toContain("# Reformulated Proof");
+    expect(exportedArtifact).toContain("- Exact Claim:");
+    expect(exportedArtifact).toContain("- Verification Currency: Current");
     expect(exportedArtifact).toContain("`$a=b$`");
     expect(exportedArtifact).toContain("Start from the key definition, then preserve the learner's finite-choice insight.");
     expect(exportedArtifact).toContain("  My exact finite-choice insight.\n");
@@ -333,6 +341,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(page.getByRole("article", { name: "Read-only Source Layer" })).toContainText(
       "Adapt the source proof around $a=b$ without changing the supplied source."
     );
+
   } finally {
     await quit();
     await rm(dataDirectory, { recursive: true, force: true });

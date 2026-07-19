@@ -15,6 +15,7 @@ describe("Contextual Inspector", () => {
     const onRevise = vi.fn().mockResolvedValue(undefined);
     const onRestore = vi.fn().mockResolvedValue(undefined);
     const onPin = vi.fn().mockResolvedValue(undefined);
+    const onEditClaims = vi.fn().mockResolvedValue(undefined);
     const card: AnchoredTeachingCard = {
       id: "card-1",
       sourceAnchorId: "anchor-1",
@@ -27,7 +28,26 @@ describe("Contextual Inspector", () => {
         error: null,
         retryable: false,
         contextUsed: [{ sourceId: "source-1", sourceName: "Typed mathematics", location: "Text at characters 6–20" }],
-        agentWorkLogReference: { sessionId: "session-1", fromSequence: 1, toSequence: 4 }
+        agentWorkLogReference: { sessionId: "session-1", fromSequence: 1, toSequence: 4 },
+        claims: [{
+          claimId: "claim-1", claimStatement: "Separate an outside point, then take a finite subcover.",
+          claimOrigin: "modelGenerated",
+          claimOriginReferences: [
+            { kind: "sourceAnchor", sourceAnchorId: "anchor-1" },
+            { kind: "agentWork", sessionId: "session-1", fromSequence: 1, toSequence: 4 }
+          ],
+          verificationLevel: "sourceGrounded",
+          verificationCurrency: "current",
+          verificationEvidence: [{
+            id: "evidence-1", method: "sourceGrounded", outcome: "supports",
+            summary: "The exact assumptions and conclusion are consistent with the cited source.",
+            limitation: "Consistent with the cited source; this does not prove that the claim or source is correct.",
+            reference: { kind: "sourceAnchor", sourceAnchorId: "anchor-1" },
+            currency: "current", changedBecause: null, createdAt: "2026-07-19T00:00:00.000Z"
+          }],
+          verificationGaps: [],
+          verificationEscalation: { recommended: false, reasons: [] }
+        }]
       },
       revisions: [{
         id: "revision-1",
@@ -61,6 +81,7 @@ describe("Contextual Inspector", () => {
       artifact={null}
       onClose={onClose}
       onRevise={onRevise}
+      onEditClaims={onEditClaims}
       onRestore={onRestore}
       onCreateVariant={vi.fn()}
       onRetry={vi.fn()}
@@ -69,8 +90,20 @@ describe("Contextual Inspector", () => {
 
     expect(screen.getByRole("complementary", { name: "Contextual Inspector for Explain compact subset" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close Contextual Inspector" })).toBe(document.activeElement);
-    expect(screen.getByText("Separate an outside point, then take a finite subcover.")).toBeTruthy();
+    expect(screen.getAllByText("Separate an outside point, then take a finite subcover.")).toHaveLength(3);
     expect(screen.getByText("Typed mathematics").parentElement?.textContent).toContain("Text at characters 6–20");
+    const trust = screen.getByRole("region", { name: "Claim provenance and verification" });
+    expect(trust.textContent).toContain("Model-generated");
+    expect(trust.textContent).toContain("Source-grounded");
+    expect(trust.textContent).toContain("Source Anchor anchor-1");
+    expect(trust.textContent).toContain("does not prove that the claim or source is correct");
+    await user.click(screen.getByRole("button", { name: "Add exact claim" }));
+    await user.type(screen.getByLabelText("Exact claim 2"), "The complement is open.");
+    await user.click(screen.getByRole("button", { name: "Save exact claims" }));
+    expect(onEditClaims).toHaveBeenCalledWith([
+      { claimId: "claim-1", statement: "Separate an outside point, then take a finite subcover." },
+      { claimId: null, statement: "The complement is open." }
+    ]);
     expect(screen.getByRole("region", { name: "Teaching Variant Closed-map route" }).textContent).toContain(
       "Projection gives a genuinely different route."
     );
@@ -100,9 +133,15 @@ describe("Contextual Inspector", () => {
       currentRevision: {
         id: "artifact-revision-1",
         content: "A substantial explanation.",
-        claimOrigin: "modelGenerated",
-        verificationLevel: "notIndependentlyChecked",
-        verificationCurrency: "current",
+        claims: [{
+          claimId: "claim-1", claimStatement: "A substantial explanation.",
+          claimOrigin: "modelGenerated",
+          claimOriginReferences: [{ kind: "sourceAnchor", sourceAnchorId: "anchor-1" }],
+          verificationLevel: "notIndependentlyChecked",
+          verificationCurrency: "current",
+          verificationEvidence: [], verificationGaps: [],
+          verificationEscalation: { recommended: false, reasons: [] }
+        }],
         personalNoteContributions: [],
         provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
       },
@@ -123,6 +162,7 @@ describe("Contextual Inspector", () => {
       artifactId: artifact.id
     } satisfies AnchoredTeachingCard;
     render(<ContextualInspector card={card} artifact={artifact} onClose={() => undefined}
+      onEditClaims={async () => undefined}
       onRevise={async () => undefined} onRestore={async () => undefined}
       onCreateVariant={async () => undefined} onRetry={async () => undefined} onPin={async () => undefined} />);
     expect(screen.getByRole("status").textContent).toContain("Pinned Learning Artifact retains this Source Anchor");
@@ -143,6 +183,7 @@ describe("Contextual Inspector", () => {
       revisions: [], variants: [], artifactId: null
     } satisfies AnchoredTeachingCard;
     render(<ContextualInspector card={card} artifact={null} onClose={() => undefined}
+      onEditClaims={async () => undefined}
       onRevise={async () => undefined} onRestore={async () => undefined}
       onCreateVariant={async () => undefined} onRetry={onRetry} onPin={async () => undefined} />);
     expect(screen.getByRole("alert").textContent).toContain("Anchored teaching timed out.");
@@ -162,6 +203,7 @@ describe("Contextual Inspector", () => {
       revisions: [], variants: [], artifactId: null
     } satisfies AnchoredTeachingCard;
     render(<ContextualInspector card={card} artifact={null} onClose={() => undefined} onRevise={onRevise}
+      onEditClaims={async () => undefined}
       onRestore={async () => undefined} onCreateVariant={async () => undefined}
       onRetry={async () => undefined} onPin={async () => undefined} />);
     await user.type(screen.getByRole("textbox", { name: "Question about this Source Anchor" }), "Where is Hausdorff used?");
