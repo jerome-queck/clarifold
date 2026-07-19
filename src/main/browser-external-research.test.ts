@@ -35,6 +35,33 @@ describe("Browser External Research", () => {
     }
   });
 
+  it("marks an automatic corroboration browser handoff as an unassessed evidence lead", async () => {
+    const research = new BrowserExternalResearch(vi.fn().mockResolvedValue(undefined));
+    const destination = "https://duckduckgo.com/?q=orbit-stabilizer";
+    const result = await research.research({
+      query: buildDerivedResearchQuery({ theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] }),
+      queryOrigin: "automaticCorroboration",
+      researchDepth: "lightweight",
+      informedBySourceIds: [],
+      destination,
+      excerpts: [],
+      signal: new AbortController().signal
+    });
+
+    expect(result.corroboration).toMatchObject({
+      relevantResult: "Orbit-stabilizer theorem",
+      errataCheck: "unavailable",
+      evidence: [{
+        sourceUrl: destination,
+        authority: "unknown",
+        relevance: "weak",
+        relation: "unassessed",
+        assumptions: "notAssessed",
+        conclusion: "notAssessed"
+      }]
+    });
+  });
+
   it("observes cancellation while the browser handoff is pending", async () => {
     const controller = new AbortController();
     const research = new BrowserExternalResearch(() => new Promise<void>(() => undefined));

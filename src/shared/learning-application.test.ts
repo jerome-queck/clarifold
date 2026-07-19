@@ -4655,6 +4655,25 @@ describe("Learning Application", () => {
     }, true);
     const research = new DeterministicExternalResearch();
     research.result = {
+      title: "Arithmetic reference",
+      summary: "The calculation was checked.",
+      sources: [{ title: "Authoritative arithmetic reference", url: "https://example.test/arithmetic" }],
+      corroboration: {
+        relevantResult: "2 + 2 = 4",
+        errataCheck: "noneFound",
+        proposedApproachDeparture: false,
+        evidence: [authoritativeEvidence({
+          sourceTitle: "Authoritative arithmetic reference",
+          sourceUrl: "https://example.test/arithmetic",
+          proofApproaches: ["Direct calculation"]
+        })]
+      }
+    };
+    const { application } = await launchWithRuntimeAndExternalResearch(runtime, research);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Compute 2 + 2." });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    research.result = {
       title: "Irrationality references",
       summary: "A standard proof was found.",
       sources: [{ title: "Authoritative number theory reference", url: "https://example.test/irrationality" }],
@@ -4669,15 +4688,11 @@ describe("Learning Application", () => {
         })]
       }
     };
-    const { application } = await launchWithRuntimeAndExternalResearch(runtime, research);
-    await application.submit({ type: "submitSessionIntake", mathematics: "Compute 2 + 2." });
-    runtime.completeTeaching();
-    await application.waitForModelWork();
     let releaseResearch!: () => void;
     research.gate = new Promise<void>((resolve) => { releaseResearch = resolve; });
 
     const question = application.submit({ type: "submitQuestion", text: "Prove that sqrt 2 is irrational." });
-    await vi.waitFor(() => expect(research.requests).toHaveLength(1));
+    await vi.waitFor(() => expect(research.requests).toHaveLength(2));
     expect(runtime.teachingRequests).toHaveLength(1);
     expect(application.getState().sessions[0].corroborationPass).toMatchObject({
       status: "running",
@@ -4699,6 +4714,7 @@ describe("Learning Application", () => {
     expect(application.getState().sessions[0]).toMatchObject({
       corroborationPass: { currentUse: { conclusion: "Prove the orbit-stabilizer theorem." } },
       corroborationPassHistory: [
+        { currentUse: { conclusion: "Compute 2 + 2." }, status: "completed" },
         { currentUse: { conclusion: "Prove that sqrt 2 is irrational." }, status: "completed" }
       ]
     });
@@ -4737,6 +4753,62 @@ describe("Learning Application", () => {
         status: "incomplete",
         deeperResearch: { required: true, performed: true }
       }
+    });
+  });
+
+  it("preserves a lightweight Source Discrepancy when deeper research only finds support", async () => {
+    const research = new DeterministicExternalResearch();
+    research.resultsByDepth.set("lightweight", {
+      title: "Conflicting reference",
+      summary: "An authoritative counterexample was found.",
+      sources: [{ title: "Counterexample reference", url: "https://example.test/counterexample" }],
+      corroboration: {
+        relevantResult: "Orbit-stabilizer theorem",
+        errataCheck: "noneFound",
+        proposedApproachDeparture: false,
+        evidence: [authoritativeEvidence({
+          sourceTitle: "Counterexample reference",
+          sourceUrl: "https://example.test/counterexample",
+          relation: "conflicts",
+          conclusion: "mismatch",
+          detail: "The stated conclusion fails under the supplied assumptions."
+        })]
+      }
+    });
+    research.resultsByDepth.set("deep", {
+      title: "Supporting reference",
+      summary: "A standard proof was also found.",
+      sources: [{ title: "Supporting reference", url: "https://example.test/support" }],
+      corroboration: {
+        relevantResult: "Orbit-stabilizer theorem",
+        errataCheck: "noneFound",
+        proposedApproachDeparture: false,
+        evidence: [authoritativeEvidence({
+          sourceTitle: "Supporting reference",
+          sourceUrl: "https://example.test/support"
+        })]
+      }
+    });
+    const { application } = await launchWithExternalResearch(research);
+
+    await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Prove the orbit-stabilizer theorem for a finite group acting on a set."
+    });
+    await application.waitForModelWork();
+
+    expect(application.getState().sessions[0].corroborationPass).toMatchObject({
+      status: "disputed",
+      independentSupport: "conflicting",
+      deeperResearch: { required: true, performed: true },
+      evidence: [
+        expect.objectContaining({ relation: "conflicts" }),
+        expect.objectContaining({ relation: "supports" })
+      ],
+      sourceDiscrepancies: [{ competingEvidence: [
+        expect.objectContaining({ relation: "conflicts" }),
+        expect.objectContaining({ relation: "supports" })
+      ] }]
     });
   });
 
@@ -5552,6 +5624,7 @@ function textExtraction(text: string): SourceIndexExtraction {
 
 class DeterministicExternalResearch implements ExternalResearch {
   readonly requests: ExternalResearchRequest[] = [];
+  readonly resultsByDepth = new Map<ExternalResearchRequest["researchDepth"], ExternalResearchResult>();
   result: ExternalResearchResult = {
     title: "Research references",
     summary: "A browser search was prepared from minimized mathematical terms.",
@@ -5570,7 +5643,7 @@ class DeterministicExternalResearch implements ExternalResearch {
         "abort", () => reject(new DOMException("External research was stopped.", "AbortError")), { once: true }
       ));
     }
-    return structuredClone(this.result);
+    return structuredClone(this.resultsByDepth.get(request.researchDepth) ?? this.result);
   }
 }
 

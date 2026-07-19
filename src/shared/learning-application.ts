@@ -3411,7 +3411,8 @@ export class LearningApplication {
     const corroborationPass = await this.beginAutomaticCorroboration(
       session,
       corroborationMathematics,
-      focus ? [focus.sourceId] : []
+      focus ? [focus.sourceId] : [],
+      true
     );
     const sourceContext = await this.buildTeachingSourceContext(session, undefined, questionContext);
     const log = this.agentWorkLogs[session.id] ??= [];
@@ -3757,9 +3758,10 @@ export class LearningApplication {
   private async beginAutomaticCorroboration(
     session: LearningSession,
     mathematics = session.mathematics,
-    informedSourceIds: string[] = []
+    informedSourceIds: string[] = [],
+    requirePass = false
   ): Promise<CorroborationPass | null> {
-    const query = automaticCorroborationQuery(mathematics);
+    const query = automaticCorroborationQuery(mathematics, requirePass);
     if (!query) return null;
     const existing = [session.corroborationPass, ...session.corroborationPassHistory]
       .find((pass) => pass?.currentUse.conclusion === mathematics) ?? null;
@@ -4449,12 +4451,12 @@ function usefulResearchError(error: unknown): string {
   return `${detail} No access was elevated and no retry was attempted.`;
 }
 
-function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery | null {
+function automaticCorroborationQuery(mathematics: string, requirePass = false): DerivedResearchQuery | null {
   const namedTheorem = mathematics.match(
     /(?:prove|disprove|show|verify|study|understand|explain|establish|demonstrate|justify|derive|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
   )?.[1];
   const substantive = /\b(prove|disprove|proof|show\s+that|establish|demonstrate|justify|derive|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary|counterexample)\b/i.test(mathematics);
-  if (!substantive) return null;
+  if (!substantive && !requirePass) return null;
   const assumptions = Array.from(mathematics.matchAll(
     /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi
   )).map(([assumption]) => assumption.toLocaleLowerCase())
@@ -4477,7 +4479,9 @@ function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery 
   return buildDerivedResearchQuery({
     theoremNames: [],
     assumptions,
-    keywords: assumptions.length === 0 && keywords.length === 0 ? ["mathematical proof"] : keywords
+    keywords: assumptions.length === 0 && keywords.length === 0
+      ? [substantive ? "mathematical proof" : "mathematical claim"]
+      : keywords
   });
 }
 
@@ -4500,6 +4504,17 @@ function suppliedPedagogicalBaselinePresent(mathematics: string): boolean {
 }
 
 function completeUnavailableCorroboration(pass: CorroborationPass): void {
+  if (pass.sourceDiscrepancies.length > 0) {
+    pass.status = "disputed";
+    pass.independentSupport = "conflicting";
+    pass.deeperResearch = {
+      required: true,
+      performed: pass.deeperResearch.performed,
+      reason: "Authoritative evidence remains disputed or conflicting; further external research was unavailable."
+    };
+    pass.message = "A Source Discrepancy preserves material disagreement. The affected claim is not presented as settled.";
+    return;
+  }
   pass.status = "incomplete";
   pass.deeperResearch = {
     required: true,
@@ -4517,8 +4532,13 @@ function completeCorroborationPass(pass: CorroborationPass, research: ResearchAc
   }
   const corroboration = research.result.corroboration;
   pass.relevantResult = corroboration.relevantResult;
-  pass.evidence = structuredClone(corroboration.evidence);
-  const strong = corroboration.evidence.filter((item) =>
+  pass.evidence = [...pass.evidence, ...structuredClone(corroboration.evidence)].filter((item, index, evidence) =>
+    evidence.findIndex((candidate) => candidate.sourceUrl === item.sourceUrl
+      && candidate.sourceTitle === item.sourceTitle
+      && candidate.relation === item.relation
+      && candidate.detail === item.detail) === index
+  );
+  const strong = pass.evidence.filter((item) =>
     (item.authority === "primary" || item.authority === "authoritative") && item.relevance === "direct"
   );
   const assumptionMismatch = strong.some((item) => item.assumptions === "mismatch");
@@ -4528,23 +4548,26 @@ function completeCorroborationPass(pass: CorroborationPass, research: ResearchAc
   const errata = strong.filter((item) => item.relation === "erratum");
   const conflicts = strong.filter((item) => item.relation === "conflicts"
     || item.assumptions === "mismatch" || item.conclusion === "mismatch" || item.relation === "erratum");
-  const anySupport = corroboration.evidence.some((item) => item.relation === "supports");
+  const anySupport = pass.evidence.some((item) => item.relation === "supports");
   pass.assumptionComparison = assumptionMismatch ? "mismatch" : matchingSupport ? "matches" : "unchecked";
   pass.conclusionComparison = conclusionMismatch ? "mismatch" : matchingSupport ? "matches" : "unchecked";
-  pass.errataCheck = corroboration.errataCheck === "found"
-    ? "found" : corroboration.errataCheck === "noneFound" ? "noneFound" : "unchecked";
+  pass.errataCheck = pass.errataCheck === "found" || corroboration.errataCheck === "found"
+    ? "found"
+    : pass.errataCheck === "noneFound" || corroboration.errataCheck === "noneFound" ? "noneFound" : "unchecked";
   pass.independentSupport = conflicts.length > 0 ? "conflicting" : matchingSupport ? "sufficient" : anySupport ? "weakOnly" : "missing";
   const establishedApproaches = strong.flatMap((item) => item.proofApproaches);
   pass.proofApproachResearch = pass.pedagogicalBaselinePresent
     ? "notRequired"
     : establishedApproaches.length > 0 ? "established" : "incomplete";
   if (conflicts.length > 0) {
-    pass.sourceDiscrepancies = [{
+    const discrepancy = pass.sourceDiscrepancies[0] ?? {
       id: crypto.randomUUID(),
       relevantResult: pass.relevantResult,
       summary: "Authoritative evidence materially disagrees with the current use or reports a correction.",
-      competingEvidence: structuredClone(corroboration.evidence)
-    }];
+      competingEvidence: []
+    };
+    discrepancy.competingEvidence = structuredClone(pass.evidence);
+    pass.sourceDiscrepancies = [discrepancy];
   }
   const deeperReasons = [
     ...(!matchingSupport && conflicts.length === 0 ? [anySupport

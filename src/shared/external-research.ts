@@ -45,7 +45,7 @@ export interface CorroborationResearchEvidence {
   sourceUrl: string;
   authority: "primary" | "authoritative" | "derivative" | "unknown";
   relevance: "direct" | "related" | "weak";
-  relation: "supports" | "conflicts" | "erratum";
+  relation: "supports" | "conflicts" | "erratum" | "unassessed";
   assumptions: "matches" | "mismatch" | "notAssessed";
   conclusion: "matches" | "mismatch" | "notAssessed";
   proofApproaches: string[];
@@ -93,7 +93,7 @@ export function validatedCorroborationResearchResult(value: unknown): Corroborat
       || typeof candidate.sourceUrl !== "string" || typeof candidate.detail !== "string" || !candidate.detail.trim()
       || !["primary", "authoritative", "derivative", "unknown"].includes(String(candidate.authority))
       || !["direct", "related", "weak"].includes(String(candidate.relevance))
-      || !["supports", "conflicts", "erratum"].includes(String(candidate.relation))
+      || !["supports", "conflicts", "erratum", "unassessed"].includes(String(candidate.relation))
       || !["matches", "mismatch", "notAssessed"].includes(String(candidate.assumptions))
       || !["matches", "mismatch", "notAssessed"].includes(String(candidate.conclusion))
       || !Array.isArray(candidate.proofApproaches)
