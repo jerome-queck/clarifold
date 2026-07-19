@@ -30,6 +30,11 @@ interface SourceAccessDependencies {
   readFile(path: string): Promise<Buffer>;
   readdir(path: string): Promise<string[]>;
   startAccessingSecurityScopedResource(bookmarkData: string): () => void;
+  resolveSecurityScopedBookmark?(bookmarkData: string): Promise<{
+    path: string;
+    stale: boolean;
+    refreshedBookmarkData?: string;
+  } | null>;
   extractDocument?(path: string): Promise<SourceIndexExtraction>;
 }
 
@@ -52,36 +57,24 @@ export class MacOsSourceAccess implements LocalSourceAccess {
   }
 
   async read(source: LinkedSource): Promise<AvailableLinkedSourceView> {
-    const stopAccess = source.link.accessGrant
-      ? this.dependencies.startAccessingSecurityScopedResource(source.link.accessGrant.bookmarkData)
+    const location = await this.resolveSourceLocation(source);
+    const stopAccess = location.bookmarkData
+      ? this.dependencies.startAccessingSecurityScopedResource(location.bookmarkData)
       : null;
     try {
-      const stat = await this.dependencies.stat(source.link.lastKnownPath);
-      if (source.resourceType === "file" && stat.size > MAX_SOURCE_VIEW_BYTES) {
-        throw new Error("This source is too large for the read-only preview.");
-      }
-      const mediaType = source.resourceType === "folder" ? "text/plain" : sourceMediaType(source.name);
-      const content = source.resourceType === "folder"
-        ? await this.readSupportedFolder(source.link.lastKnownPath)
-        : sourceContent(await this.dependencies.readFile(source.link.lastKnownPath), mediaType);
-      return {
-        sourceId: source.id,
-        resourceType: source.resourceType,
-        content,
-        mediaType,
-        fingerprint: fingerprint(stat, source.resourceType === "folder" ? content : undefined)
-      };
+      return this.readAtLocation(source, location);
     } finally {
       stopAccess?.();
     }
   }
 
   async extractForIndex(source: LinkedSource): Promise<SourceIndexExtraction> {
-    const stopAccess = source.link.accessGrant
-      ? this.dependencies.startAccessingSecurityScopedResource(source.link.accessGrant.bookmarkData)
+    const location = await this.resolveSourceLocation(source);
+    const stopAccess = location.bookmarkData
+      ? this.dependencies.startAccessingSecurityScopedResource(location.bookmarkData)
       : null;
     try {
-      const view = await this.read(source);
+      const view = await this.readAtLocation(source, location);
       const extractionMethod = view.mediaType === "text/plain"
         ? "embeddedText"
         : view.mediaType === "application/pdf"
@@ -92,12 +85,106 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       if (!extractionMethod) throw new Error("This source type does not have indexable mathematical content.");
       if (view.mediaType !== "text/plain") {
         if (!this.dependencies.extractDocument) throw new Error("Native document indexing is unavailable.");
-        return this.dependencies.extractDocument(source.link.lastKnownPath);
+        return this.dependencies.extractDocument(location.path);
       }
       return textSourceIndexExtraction(view.content, EMPTY_THUMBNAIL_DATA_URL);
     } finally {
       stopAccess?.();
     }
+  }
+
+  async snapshot(source: LinkedSource) {
+    const location = await this.resolveSourceLocation(source);
+    const stopAccess = location.bookmarkData
+      ? this.dependencies.startAccessingSecurityScopedResource(location.bookmarkData)
+      : null;
+    try {
+      const view = await this.readAtLocation(source, location);
+      if (source.resourceType === "file") {
+        return { mediaType: view.mediaType, content: view.content, fingerprint: view.fingerprint };
+      }
+      const canonicalRoot = await this.dependencies.realpath(location.path);
+      const files: Array<{ path: string; contentBase64: string }> = [];
+      let totalBytes = 0;
+      const visitedDirectories = new Set<string>();
+      const visit = async (directoryPath: string): Promise<void> => {
+        const canonicalDirectory = await this.dependencies.realpath(directoryPath);
+        if (visitedDirectories.has(canonicalDirectory)) return;
+        visitedDirectories.add(canonicalDirectory);
+        for (const name of (await this.dependencies.readdir(directoryPath)).sort()) {
+          const candidatePath = join(directoryPath, name);
+          const canonicalPath = await this.dependencies.realpath(candidatePath);
+          const relativePath = relative(canonicalRoot, canonicalPath);
+          if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`)) continue;
+          const stat = await this.dependencies.stat(canonicalPath);
+          if (stat.isDirectory()) {
+            await visit(canonicalPath);
+            continue;
+          }
+          if (!stat.isFile()) continue;
+          totalBytes += stat.size;
+          if (totalBytes > MAX_SOURCE_VIEW_BYTES) throw new Error("This folder is too large to preserve as a Source Snapshot.");
+          files.push({ path: relativePath, contentBase64: (await this.dependencies.readFile(canonicalPath)).toString("base64") });
+        }
+      };
+      await visit(canonicalRoot);
+      return {
+        mediaType: "application/vnd.quick-study.folder-snapshot+json" as const,
+        content: JSON.stringify({ format: "quick-study-folder-snapshot-v1", files }),
+        fingerprint: view.fingerprint
+      };
+    } finally {
+      stopAccess?.();
+    }
+  }
+
+  private async resolveSourceLocation(source: LinkedSource): Promise<{
+    path: string;
+    bookmarkData?: string;
+    refreshed: boolean;
+  }> {
+    const resolved = source.link.accessGrant && this.dependencies.resolveSecurityScopedBookmark
+      ? await this.dependencies.resolveSecurityScopedBookmark(source.link.accessGrant.bookmarkData)
+      : null;
+    const bookmarkData = resolved?.stale
+      ? resolved.refreshedBookmarkData
+      : source.link.accessGrant?.bookmarkData;
+    if (resolved?.stale && !bookmarkData) throw new Error("The stale source bookmark could not be refreshed.");
+    return {
+      path: resolved?.path ?? source.link.lastKnownPath,
+      ...(bookmarkData ? { bookmarkData } : {}),
+      refreshed: Boolean(resolved)
+    };
+  }
+
+  private async readAtLocation(
+    source: LinkedSource,
+    location: { path: string; bookmarkData?: string; refreshed: boolean }
+  ): Promise<AvailableLinkedSourceView> {
+    const stat = await this.dependencies.stat(location.path);
+    if (source.resourceType === "file" && stat.size > MAX_SOURCE_VIEW_BYTES) {
+      throw new Error("This source is too large for the read-only preview.");
+    }
+    const mediaType = source.resourceType === "folder" ? "text/plain" : sourceMediaType(source.name);
+    const content = source.resourceType === "folder"
+      ? await this.readSupportedFolder(location.path)
+      : sourceContent(await this.dependencies.readFile(location.path), mediaType);
+    return {
+      sourceId: source.id,
+      resourceType: source.resourceType,
+      content,
+      mediaType,
+      fingerprint: fingerprint(stat, source.resourceType === "folder" ? content : undefined),
+      ...(location.refreshed ? {
+        linkRefresh: {
+          lastKnownPath: location.path,
+          canonicalPath: await this.dependencies.realpath(location.path),
+          accessGrant: location.bookmarkData
+            ? { kind: "securityScopedBookmark" as const, bookmarkData: location.bookmarkData }
+            : null
+        }
+      } : {})
+    };
   }
 
   private async readSupportedFolder(rootPath: string): Promise<string> {

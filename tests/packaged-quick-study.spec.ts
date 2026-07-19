@@ -1,6 +1,6 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,9 +21,12 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   const sourceDirectory = await mkdtemp(join(tmpdir(), "quick-study-source-"));
   const primaryFolderPath = join(sourceDirectory, "algebra-course");
   const attachmentPath = join(sourceDirectory, "lecture-3.pdf");
+  const relocatedDirectory = join(sourceDirectory, "relocated");
+  const relocatedAttachmentPath = join(relocatedDirectory, "lecture-3.pdf");
   const unrelatedPath = join(sourceDirectory, "private-unrelated.txt");
   const artifactExportPath = join(sourceDirectory, "reformulated-proof.md");
   await mkdir(primaryFolderPath);
+  await mkdir(relocatedDirectory);
   execFileSync("/usr/bin/xcrun", ["swift", join(process.cwd(), "tests/fixtures/create-scanned-pdf.swift"), attachmentPath], {
     timeout: 30_000
   });
@@ -43,6 +46,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
         QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs"),
         QUICK_STUDY_TEST_PRIMARY_FOLDER: primaryFolderPath,
         QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath,
+        QUICK_STUDY_TEST_RELOCATED_SOURCE: relocatedAttachmentPath,
         QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH: artifactExportPath
       },
       stdio: "pipe"
@@ -113,6 +117,21 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await page.getByRole("button", { name: /Open source result lecture-3.pdf, Page 1: Heine Borel/ }).press("Enter");
     await expect(page.getByLabel("Opened Source Index visual match")).toBeVisible();
     await expect(page.getByText(/Page 1: Heine Borel compactness theorem/)).toBeVisible();
+
+    await rename(attachmentPath, relocatedAttachmentPath);
+    await openAttachment.press("Enter");
+    await expect(page.getByRole("alert")).toContainText(/no such file|missing|not available/i);
+    await expect(page.getByRole("button", { name: "Retry Linked Source lecture-3.pdf" })).toBeVisible();
+    await page.getByRole("button", { name: "Locate Linked Source lecture-3.pdf again" }).press("Enter");
+    await expect(page.getByText(relocatedAttachmentPath, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Preserve current Source Revision for lecture-3.pdf" }).press("Enter");
+    await expect(page.getByText("lecture-3.pdf — Source Snapshot", { exact: true })).toBeVisible();
+
+    const changedProblemSet = "Classify the orbits and stabilizers. Compare the revised orbit decomposition.";
+    await writeFile(join(primaryFolderPath, "problem-set.txt"), changedProblemSet, "utf8");
+    await page.getByRole("button", { name: "Open Linked Source algebra-course" }).press("Enter");
+    await expect(page.getByText(/Historical content unavailable/)).toContainText("Source Index and Source Fingerprint are not backups");
+    await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true }).first()).toBeVisible();
 
     await expect(page.getByText("Workspace Access · Abstract Algebra · Group actions", { exact: true })).toBeVisible();
     await page.getByLabel("Typed mathematics").fill("TRIGGER_ACCESS_REQUEST: Explain orbit-stabilizer using the workspace sources.");
@@ -218,8 +237,9 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     const reopenedAttachment = page.getByRole("button", { name: "Open Linked Source lecture-3.pdf" });
     await reopenedAttachment.press("Enter");
     await expect(page.locator('object[aria-label="Linked PDF Source Layer"]')).toHaveAttribute("data", /^data:application\/pdf;base64,/);
-    expect(await readFile(attachmentPath)).toEqual(attachmentContent);
-    expect(await readFile(join(primaryFolderPath, "problem-set.txt"), "utf8")).toBe("Classify the orbits and stabilizers.");
+    expect(await readFile(relocatedAttachmentPath)).toEqual(attachmentContent);
+    expect(await readFile(join(primaryFolderPath, "problem-set.txt"), "utf8")).toBe(changedProblemSet);
+    await expect(page.getByText("lecture-3.pdf — Source Snapshot", { exact: true })).toBeVisible();
     await expect(page.getByText("Bound the sequence using its finite prefix and tail")).toBeVisible();
     await page.getByRole("button", { name: "Open Study Mission Finite group structure" }).click();
     await page.getByRole("button", {

@@ -1656,14 +1656,14 @@ describe("Learning Application", () => {
 
     sourceAccess.fingerprint = { size: 65, modifiedAtMs: 4321 };
     const changed = await application.openLinkedSource(source.id);
-    expect(changed).toEqual({
-      status: "unavailable",
-      sourceId: source.id,
-      error: "This source has changed since it was linked. Its original association is retained, but changed-source recovery is not available yet."
-    });
+    expect(changed).toMatchObject({ status: "available", sourceId: source.id });
     expect(application.getState().sources.find((candidate) => candidate.id === source.id)).toMatchObject({
-      link: { fingerprint: { size: 64, modifiedAtMs: 1234 } }
+      link: { fingerprint: { size: 65, modifiedAtMs: 4321 } }
     });
+    expect(application.getState().sourceRevisions).toEqual([
+      expect.objectContaining({ sourceId: source.id, fingerprint: { size: 64, modifiedAtMs: 1234 }, snapshotAssetId: null }),
+      expect.objectContaining({ sourceId: source.id, fingerprint: { size: 65, modifiedAtMs: 4321 }, snapshotAssetId: null })
+    ]);
 
     sourceAccess.error = new Error("The source is missing or access is no longer available.");
     const unavailable = await application.openLinkedSource(source.id);
@@ -1677,6 +1677,156 @@ describe("Learning Application", () => {
       link: { accessStatus: "unavailable", error: "The source is missing or access is no longer available." }
     });
 
+  });
+
+  it("persists a refreshed Linked Source bookmark without learner reselection", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "compactness.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/old/compactness.txt",
+      canonicalPath: "/Users/learner/old/compactness.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "stale-bookmark" },
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    sourceAccess.linkRefresh = {
+      lastKnownPath: "/Users/learner/moved/compactness.txt",
+      canonicalPath: "/Users/learner/moved/compactness.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "fresh-bookmark" }
+    };
+
+    await expect(application.openLinkedSource(source.id)).resolves.toMatchObject({ status: "available" });
+    const relaunched = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(relaunched);
+    expect(relaunched.getState().sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      id: source.id,
+      link: {
+        lastKnownPath: "/Users/learner/moved/compactness.txt",
+        canonicalPath: "/Users/learner/moved/compactness.txt",
+        accessGrant: { kind: "securityScopedBookmark", bookmarkData: "fresh-bookmark" }
+      }
+    });
+  });
+
+  it("locates a missing Linked Source again without replacing its identity or Learning Session associations", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const mission = await application.submit({
+      type: "createMission",
+      workspaceId: workspace.navigation.workspaceId,
+      name: "Compactness"
+    });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "compactness.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/missing/compactness.txt",
+      canonicalPath: "/Users/learner/missing/compactness.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "failed-bookmark" },
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Study compactness.",
+      location: { workspaceId: workspace.navigation.workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    sourceAccess.error = new Error("The source is missing or access is no longer available.");
+    await application.openLinkedSource(source.id);
+    sourceAccess.error = null;
+
+    const recovered = await application.relocateLinkedSource(source.id, {
+      name: "compactness-restored.txt",
+      resourceType: "file",
+      lastKnownPath: "/Volumes/Archive/compactness-restored.txt",
+      canonicalPath: "/Volumes/Archive/compactness-restored.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "replacement-bookmark" },
+      fingerprint: sourceAccess.fingerprint
+    });
+
+    expect(recovered.sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      id: source.id,
+      name: "compactness-restored.txt",
+      link: {
+        accessStatus: "available",
+        lastKnownPath: "/Volumes/Archive/compactness-restored.txt",
+        accessGrant: { kind: "securityScopedBookmark", bookmarkData: "replacement-bookmark" }
+      }
+    });
+    expect(recovered.sessions[0].sourceIds).toContain(source.id);
+    const relaunched = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(relaunched);
+    await expect(relaunched.openLinkedSource(source.id)).resolves.toMatchObject({ status: "available", sourceId: source.id });
+    expect(relaunched.getState().sessions[0].sourceIds).toContain(source.id);
+  });
+
+  it("creates a visible Source Revision, rebuilds its Source Index, and never snapshots a change automatically", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.indexBySourceName.set("lemma.txt", textExtraction("Old lemma statement."));
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Algebra" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "lemma.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/lemma.txt",
+      canonicalPath: "/Users/learner/lemma.txt",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.indexSource(source.id);
+    sourceAccess.fingerprint = { size: 72, modifiedAtMs: 5678 };
+    sourceAccess.contentBySourceName.set("lemma.txt", "New lemma statement.");
+    sourceAccess.indexBySourceName.set("lemma.txt", textExtraction("New lemma statement."));
+
+    await expect(application.openLinkedSource(source.id)).resolves.toMatchObject({ status: "available" });
+
+    const state = application.getState();
+    expect(state.sourceRevisions.filter((revision) => revision.sourceId === source.id)).toEqual([
+      expect.objectContaining({ fingerprint: { size: 64, modifiedAtMs: 1234 }, snapshotAssetId: null }),
+      expect.objectContaining({ fingerprint: { size: 72, modifiedAtMs: 5678 }, snapshotAssetId: null })
+    ]);
+    expect(state.sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "ready" }));
+    await expect(application.searchSourceIndex(workspace.navigation.workspaceId, "New lemma")).resolves.toHaveLength(1);
+    expect(state.sources.filter((candidate) => candidate.kind === "managedAsset")).toEqual([]);
+  });
+
+  it("preserves only the current Source Revision as an explicit Source Snapshot", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.snapshotContent = "Exact learner-requested revision.";
+    const { application, dataDirectory } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Analysis" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "proof.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/proof.txt",
+      canonicalPath: "/Users/learner/proof.txt",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    const revisionId = source.link.currentRevisionId;
+
+    const snapshotted = await application.preserveSourceSnapshot(source.id);
+
+    const revision = snapshotted.sourceRevisions.find((candidate) => candidate.id === revisionId)!;
+    const snapshot = snapshotted.sources.find((candidate) => candidate.id === revision.snapshotAssetId)!;
+    expect(snapshot).toMatchObject({
+      kind: "managedAsset",
+      name: "proof.txt — Source Snapshot",
+      mediaType: "text/plain",
+      content: "Exact learner-requested revision.",
+      sourceSnapshot: { linkedSourceId: source.id, sourceRevisionId: revisionId }
+    });
+    expect(sourceAccess.snapshotSourceIds).toEqual([source.id]);
+    const relaunched = await LearningApplication.launch(dataDirectory, null, sourceAccess);
+    applications.push(relaunched);
+    expect(relaunched.getState().sourceRevisions.find((candidate) => candidate.id === revisionId)?.snapshotAssetId)
+      .toBe(snapshot.id);
   });
 
   it("indexes, searches, clears, and rebuilds source content without disturbing anchors or canonical records", async () => {
@@ -1898,7 +2048,7 @@ describe("Learning Application", () => {
     expect(JSON.parse(await readFile(join(dataDirectory, "source-index.json"), "utf8"))).toEqual([]);
   });
 
-  it("refuses a legacy Primary Folder until its descendant fingerprint can be re-established", async () => {
+  it("records a new Source Revision when a legacy Primary Folder descendant fingerprint is established", async () => {
     const sourceAccess = new DeterministicSourceAccess();
     sourceAccess.fingerprint = {
       size: 64,
@@ -1917,11 +2067,8 @@ describe("Learning Application", () => {
     });
     const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
 
-    await expect(application.openLinkedSource(source.id)).resolves.toEqual({
-      status: "unavailable",
-      sourceId: source.id,
-      error: "This source has changed since it was linked. Its original association is retained, but changed-source recovery is not available yet."
-    });
+    await expect(application.openLinkedSource(source.id)).resolves.toMatchObject({ status: "available", sourceId: source.id });
+    expect(application.getState().sourceRevisions.filter((revision) => revision.sourceId === source.id)).toHaveLength(2);
   });
 
   it("proposes an editable Learning Session and pauses materially ambiguous input for confirmation", async () => {
@@ -3600,11 +3747,14 @@ async function createPinnedArtifact(application: LearningApplication, runtime: D
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
   readonly indexedSourceIds: string[] = [];
+  readonly snapshotSourceIds: string[] = [];
   readonly contentBySourceName = new Map<string, string>();
   readonly mediaTypeBySourceName = new Map<string, "text/plain" | "image/png">();
   readonly indexBySourceName = new Map<string, SourceIndexExtraction>();
   error: Error | null = null;
   fingerprint: SourceFingerprint = { size: 64, modifiedAtMs: 1234 };
+  linkRefresh: Awaited<ReturnType<LocalSourceAccess["read"]>>["linkRefresh"];
+  snapshotContent = "Every open cover has a finite subcover.";
 
   async read(source: LinkedSource) {
     this.openedSourceIds.push(source.id);
@@ -3614,7 +3764,8 @@ class DeterministicSourceAccess implements LocalSourceAccess {
       resourceType: source.resourceType,
       content: this.contentBySourceName.get(source.name) ?? "Every open cover has a finite subcover.",
       fingerprint: this.fingerprint,
-      mediaType: this.mediaTypeBySourceName.get(source.name) ?? "text/plain"
+      mediaType: this.mediaTypeBySourceName.get(source.name) ?? "text/plain",
+      ...(this.linkRefresh ? { linkRefresh: this.linkRefresh } : {})
     };
   }
 
@@ -3625,6 +3776,31 @@ class DeterministicSourceAccess implements LocalSourceAccess {
     if (!extraction) throw new Error("This source does not have indexable content.");
     return structuredClone(extraction);
   }
+
+  async snapshot(source: LinkedSource) {
+    this.snapshotSourceIds.push(source.id);
+    if (this.error) throw this.error;
+    return { mediaType: "text/plain" as const, content: this.snapshotContent, fingerprint: this.fingerprint };
+  }
+}
+
+function textExtraction(text: string): SourceIndexExtraction {
+  return {
+    extractionMethod: "embeddedText",
+    pages: [{
+      pageNumber: 1,
+      width: 1000,
+      height: 1400,
+      thumbnailDataUrl: "data:image/png;base64,c21hbGw=",
+      regions: [{
+        kind: "text",
+        text,
+        bounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+        sourceStartOffset: 0,
+        sourceEndOffset: text.length
+      }]
+    }]
+  };
 }
 
 class DeterministicModelRuntime implements ModelRuntime {

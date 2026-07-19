@@ -99,6 +99,51 @@ describe("macOS source access", () => {
     expect(stopAccess).toHaveBeenCalledOnce();
   });
 
+  it("refreshes a stale bookmark that still resolves before opening the source", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.resolveSecurityScopedBookmark = vi.fn().mockResolvedValue({
+      path: "/Users/learner/moved/lecture.txt",
+      stale: true,
+      refreshedBookmarkData: "refreshed-bookmark"
+    });
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("recovered without reselection"));
+    const access = new MacOsSourceAccess(sourceDependencies);
+
+    const view = await access.read(linkedFile());
+
+    expect(sourceDependencies.startAccessingSecurityScopedResource).toHaveBeenCalledWith("refreshed-bookmark");
+    expect(sourceDependencies.readFile).toHaveBeenCalledWith("/Users/learner/moved/lecture.txt");
+    expect(view.linkRefresh).toEqual({
+      lastKnownPath: "/Users/learner/moved/lecture.txt",
+      canonicalPath: "/Users/learner/moved/lecture.txt",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "refreshed-bookmark" }
+    });
+  });
+
+  it("uses the refreshed bookmark and resolved path for native Source Index extraction", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.resolveSecurityScopedBookmark = vi.fn().mockResolvedValue({
+      path: "/Users/learner/moved/lecture.pdf",
+      stale: true,
+      refreshedBookmarkData: "refreshed-bookmark"
+    });
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("synthetic-pdf"));
+    sourceDependencies.extractDocument = vi.fn().mockResolvedValue({
+      extractionMethod: "pdfText",
+      pages: []
+    });
+    const access = new MacOsSourceAccess(sourceDependencies);
+
+    await access.extractForIndex({
+      ...linkedFile(),
+      name: "lecture.pdf",
+      link: { ...linkedFile().link, lastKnownPath: "/Users/learner/old/lecture.pdf" }
+    });
+
+    expect(sourceDependencies.extractDocument).toHaveBeenCalledWith("/Users/learner/moved/lecture.pdf");
+    expect(sourceDependencies.startAccessingSecurityScopedResource).toHaveBeenCalledWith("refreshed-bookmark");
+  });
+
   it("returns PDFs as a binary Source Layer instead of decoding them as UTF-8", async () => {
     const sourceDependencies = dependencies();
     sourceDependencies.readFile.mockResolvedValue(Buffer.from("%PDF-1.7\n"));
@@ -188,6 +233,22 @@ describe("macOS source access", () => {
     expect(stopAccess).toHaveBeenCalledOnce();
   });
 
+  it("captures an exact read-only file payload only when a Source Snapshot is requested", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.readFile.mockResolvedValue(Buffer.from("Exact preserved proof.\n", "utf8"));
+    const access = new MacOsSourceAccess(sourceDependencies);
+
+    const snapshot = await access.snapshot(linkedFile());
+
+    expect(snapshot).toEqual({
+      mediaType: "text/plain",
+      content: "Exact preserved proof.\n",
+      fingerprint: { size: 128, modifiedAtMs: 1234 }
+    });
+    expect(sourceDependencies.readFile).toHaveBeenCalledOnce();
+    expect(sourceDependencies.readFile).toHaveBeenCalledWith("/Users/learner/notes/lecture.txt");
+  });
+
   it("extracts searchable text, equation geometry, page geometry, and a small thumbnail", async () => {
     const sourceDependencies = dependencies();
     sourceDependencies.readFile.mockResolvedValue(Buffer.from("First page has $x^2$.\fSecond page proves compactness."));
@@ -262,7 +323,8 @@ function dependencies() {
     realpath: vi.fn().mockImplementation(async (path) => path),
     readFile: vi.fn(),
     readdir: vi.fn().mockResolvedValue([]),
-    startAccessingSecurityScopedResource: vi.fn()
+    startAccessingSecurityScopedResource: vi.fn(),
+    resolveSecurityScopedBookmark: vi.fn().mockResolvedValue(null)
   };
 }
 

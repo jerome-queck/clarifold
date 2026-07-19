@@ -24,6 +24,8 @@ describe("anchored teaching workbench", () => {
       linkPrimaryFolder: vi.fn(),
       linkExternalAttachment: vi.fn(),
       openLinkedSource: vi.fn(),
+      locateLinkedSource: vi.fn(),
+      preserveSourceSnapshot: vi.fn(),
       indexSource: vi.fn(),
       clearSourceIndex: vi.fn(),
       rebuildSourceIndex: vi.fn(),
@@ -464,11 +466,67 @@ describe("anchored teaching workbench", () => {
   });
 });
 
+describe("Linked Source recovery", () => {
+  afterEach(cleanup);
+
+  it("offers Retry and Locate again while explaining unsnapshotted history and explicit snapshots", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    state.sources = [{
+      id: "linked-source-1",
+      kind: "linkedSource",
+      role: "externalAttachment",
+      workspaceId: "quick-study-workspace",
+      name: "proof.txt",
+      resourceType: "file",
+      link: {
+        lastKnownPath: "/Users/learner/missing/proof.txt",
+        canonicalPath: "/Users/learner/missing/proof.txt",
+        accessGrant: { kind: "securityScopedBookmark", bookmarkData: "failed-bookmark" },
+        fingerprint: { size: 72, modifiedAtMs: 5678 },
+        accessStatus: "unavailable",
+        error: "The source is missing or access is no longer available.",
+        currentRevisionId: "source-revision-2"
+      }
+    }];
+    state.workspaces[0].context.sourceIds = ["linked-source-1"];
+    state.sourceRevisions = [
+      {
+        id: "source-revision-1",
+        sourceId: "linked-source-1",
+        fingerprint: { size: 64, modifiedAtMs: 1234 },
+        snapshotAssetId: null
+      },
+      {
+        id: "source-revision-2",
+        sourceId: "linked-source-1",
+        fingerprint: { size: 72, modifiedAtMs: 5678 },
+        snapshotAssetId: null
+      }
+    ];
+    window.quickStudy = quickStudyApi(state);
+    vi.mocked(window.quickStudy.locateLinkedSource).mockResolvedValue(state);
+    vi.mocked(window.quickStudy.preserveSourceSnapshot).mockResolvedValue(state);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Retry Linked Source proof.txt" })).toBeTruthy();
+    expect(screen.getByText(/Historical content unavailable/).textContent).toContain("Source Index and Source Fingerprint are not backups");
+    await user.click(screen.getByRole("button", { name: "Locate Linked Source proof.txt again" }));
+    expect(window.quickStudy.locateLinkedSource).toHaveBeenCalledWith("linked-source-1");
+    await user.click(screen.getByRole("button", { name: "Preserve current Source Revision for proof.txt" }));
+    expect(window.quickStudy.preserveSourceSnapshot).toHaveBeenCalledWith("linked-source-1");
+  });
+});
+
 function quickStudyApi(state: LearningApplicationState): typeof window.quickStudy {
   return {
     getState: vi.fn().mockResolvedValue(state), submit: vi.fn().mockResolvedValue(state),
     getAgentWorkLogEvidence: vi.fn().mockResolvedValue([]), searchSessions: vi.fn().mockResolvedValue([]),
     linkPrimaryFolder: vi.fn(), linkExternalAttachment: vi.fn(), openLinkedSource: vi.fn(),
+    locateLinkedSource: vi.fn(), preserveSourceSnapshot: vi.fn(),
     indexSource: vi.fn(), clearSourceIndex: vi.fn(), rebuildSourceIndex: vi.fn(),
     searchSourceIndex: vi.fn().mockResolvedValue([]), openSourceSearchResult: vi.fn(),
     exportLearningArtifact: vi.fn().mockResolvedValue({ status: "exported", path: "/tmp/artifact.md" }),
@@ -579,6 +637,7 @@ function workbenchState(): LearningApplicationState {
       mediaType: "text/plain", content: "Every compact subset is closed."
     }],
     sourceIndexes: [],
+    sourceRevisions: [],
     activeSessionId: "session-1",
     resumeSessionId: "session-1",
     navigation: { workspaceId: "quick-study-workspace", missionId: "quick-study-unfiled-mission" },

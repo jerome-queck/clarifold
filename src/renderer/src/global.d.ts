@@ -20,6 +20,8 @@ declare global {
       linkPrimaryFolder(workspaceId: string): Promise<LearningApplicationState>;
       linkExternalAttachment(workspaceId: string): Promise<LearningApplicationState>;
       openLinkedSource(sourceId: string): Promise<LinkedSourceView>;
+      locateLinkedSource(sourceId: string): Promise<LearningApplicationState>;
+      preserveSourceSnapshot(sourceId: string): Promise<LearningApplicationState>;
       indexSource(sourceId: string): Promise<LearningApplicationState>;
       clearSourceIndex(sourceId: string): Promise<LearningApplicationState>;
       rebuildSourceIndex(sourceId: string): Promise<LearningApplicationState>;
