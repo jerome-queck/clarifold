@@ -43,12 +43,22 @@ describe("Learning Application", () => {
   }
 
   it("records skippable reasoning checks as contextual Understanding Evidence and explains the adaptive next Teaching Move", async () => {
-    const { application, dataDirectory } = await launch();
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain the proof", initialTeachingDirection: "Start from separation",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
     let state = await application.submit({
-      type: "startQuickStudy",
+      type: "submitSessionIntake",
       mathematics: "Show that a compact subset of a Hausdorff space is closed."
     });
-    const session = state.sessions[0];
+    await expect(application.submit({
+      type: "offerUnderstandingCheck", kind: "apply", prompt: "Try the separation step.",
+      concept: "compactness in Hausdorff spaces", representation: "proofStructural"
+    })).rejects.toThrow("Complete a substantive Teaching Card");
+    runtime.emitTeaching("Use Hausdorff separation and compactness.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
 
     state = await application.submit({
       type: "offerUnderstandingCheck",
@@ -85,6 +95,14 @@ describe("Learning Application", () => {
       kind: "demonstrate",
       reason: expect.stringContaining("specific gap")
     });
+    await application.submit({ type: "submitQuestion", text: "Show me the finite-subcover step." });
+    expect(runtime.teachingRequests.at(-1)?.adaptiveTeaching).toEqual({
+      kind: "demonstrate",
+      route: "proofStructural",
+      reason: adapted.currentTeachingMove.reason
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
 
     state = await application.submit({
       type: "offerUnderstandingCheck",
@@ -105,11 +123,18 @@ describe("Learning Application", () => {
   });
 
   it("keeps representation preferences contextual and lets the learner correct adaptation or test another route", async () => {
-    const { application } = await launch();
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain the proof", initialTeachingDirection: "Start from separation",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
     let state = await application.submit({
-      type: "startQuickStudy",
+      type: "submitSessionIntake",
       mathematics: "Explain why every compact subset of a Hausdorff space is closed."
     });
+    runtime.emitTeaching("Use disjoint neighbourhoods and a finite subcover.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
     state = await application.submit({
       type: "offerUnderstandingCheck",
       kind: "explain",

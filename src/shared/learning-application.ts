@@ -230,6 +230,28 @@ export type TeachingRoute = typeof TEACHING_ROUTES[number];
 export type UnderstandingInterpretation = "specificGap" | "secureUnderstanding" | "excessivePace";
 export type TeachingMoveKind = "explain" | "demonstrate" | "apply" | "compare" | "slowDown" | "visualize";
 
+interface TeachingContext {
+  concept: string;
+  task: string;
+}
+
+const UNDERSTANDING_INTERPRETATION_POLICIES: Record<UnderstandingInterpretation, {
+  kind: TeachingMoveKind;
+  summary: string;
+  signal: string;
+  direction: string;
+}> = {
+  specificGap: {
+    kind: "demonstrate", summary: "specific gap", signal: "a specific gap", direction: "demonstrate the missing reasoning step"
+  },
+  secureUnderstanding: {
+    kind: "apply", summary: "secure understanding", signal: "secure understanding", direction: "move to an application or comparison"
+  },
+  excessivePace: {
+    kind: "slowDown", summary: "excessive pace", signal: "excessive pace", direction: "slow down and make the route explicit"
+  }
+};
+
 export interface TeachingMove {
   id: string;
   kind: TeachingMoveKind;
@@ -267,7 +289,7 @@ export interface TeachingExperiment {
   id: string;
   route: TeachingRoute;
   reason: string;
-  context: { concept: string; task: string };
+  context: TeachingContext;
   evidenceIds: string[];
   status: "active" | "completed";
   outcome: "helpful" | "notHelpful" | "inconclusive" | null;
@@ -276,7 +298,7 @@ export interface TeachingExperiment {
 export interface InteractionPreference {
   id: string;
   route: TeachingRoute;
-  context: { concept: string; task: string };
+  context: TeachingContext;
   status: "supported" | "notSupported" | "uncertain";
   evidenceIds: string[];
   experimentId: string;
@@ -2337,6 +2359,9 @@ export class LearningApplication {
       }
       case "offerUnderstandingCheck": {
         const session = this.requireActiveSession();
+        if (!hasSubstantiveTeaching(session)) {
+          throw new Error("Complete a substantive Teaching Card before offering an Understanding Check.");
+        }
         if (!isUnderstandingCheckKind(action.kind)) throw new Error("Choose a reasoning-focused Understanding Check.");
         const representation = requireTeachingRoute(action.representation);
         const sourceAnchorId = action.sourceAnchorId ?? session.activeSourceAnchorId;
@@ -4369,6 +4394,11 @@ export class LearningApplication {
       learningGoal: session.learningGoal,
       scope: session.proposal.scope,
       initialTeachingDirection: session.proposal.initialTeachingDirection,
+      adaptiveTeaching: {
+        kind: session.currentTeachingMove.kind,
+        route: session.currentTeachingMove.route,
+        reason: session.currentTeachingMove.reason
+      },
       corroboration: teachingCorroborationContext(corroborationPass),
       ...(roadmap && stage && session.learningSlice ? {
         learningSlice: {
@@ -7140,30 +7170,26 @@ function setAdaptiveTeachingMove(
   evidence: UnderstandingEvidence,
   prefix: string
 ): void {
-  const move = evidence.interpretation === "specificGap"
-    ? {
-        kind: "demonstrate" as const,
-        route: evidence.representation,
-        reason: `${prefix} a specific gap in ${evidence.concept}; demonstrate the missing reasoning step.`,
-      }
-    : evidence.interpretation === "secureUnderstanding"
-      ? {
-          kind: "apply" as const,
-          route: evidence.representation,
-          reason: `${prefix} secure understanding of ${evidence.concept}; move to an application or comparison.`,
-        }
-      : {
-          kind: "slowDown" as const,
-          route: evidence.representation,
-          reason: `${prefix} excessive pace for ${evidence.concept}; slow down and make the route explicit.`,
-        };
-  appendTeachingMove(session, { ...move, evidenceIds: [evidence.id], experimentId: null });
+  const policy = UNDERSTANDING_INTERPRETATION_POLICIES[evidence.interpretation];
+  appendTeachingMove(session, {
+    kind: policy.kind,
+    route: evidence.representation,
+    reason: `${prefix} ${policy.signal} in ${evidence.concept}; ${policy.direction}.`,
+    evidenceIds: [evidence.id],
+    experimentId: null
+  });
 }
 
 function understandingEvidenceSummary(evidence: UnderstandingEvidence): string {
-  const status = evidence.interpretation === "specificGap" ? "specific gap"
-    : evidence.interpretation === "secureUnderstanding" ? "secure understanding" : "excessive pace";
-  return `Understanding Evidence for ${evidence.concept}: ${status}.`;
+  return `Understanding Evidence for ${evidence.concept}: ${UNDERSTANDING_INTERPRETATION_POLICIES[evidence.interpretation].summary}.`;
+}
+
+function hasSubstantiveTeaching(session: LearningSession): boolean {
+  return (session.teachingCard.status === "completed" && Boolean(session.teachingCard.content.trim()))
+    || session.anchoredTeachingCards.some((card) => card.currentRevision.status === "completed"
+      && Boolean(card.currentRevision.content.trim()))
+    || session.questionCards.some((card) => card.currentRevision.status === "completed"
+      && Boolean(card.currentRevision.content.trim()));
 }
 
 function isUnderstandingCheckKind(value: unknown): value is UnderstandingCheckKind {
@@ -8652,8 +8678,7 @@ function migrateTeachingExperiments(value: unknown): TeachingExperiment[] {
   if (!Array.isArray(value) || !value.every((experiment) => isRecord(experiment)
     && typeof experiment.id === "string" && TEACHING_ROUTES.includes(experiment.route as TeachingRoute)
     && typeof experiment.reason === "string" && Boolean(experiment.reason.trim())
-    && isRecord(experiment.context) && typeof experiment.context.concept === "string" && Boolean(experiment.context.concept.trim())
-    && typeof experiment.context.task === "string" && Boolean(experiment.context.task.trim())
+    && validTeachingContext(experiment.context)
     && Array.isArray(experiment.evidenceIds) && experiment.evidenceIds.every((id) => typeof id === "string")
     && ["active", "completed"].includes(String(experiment.status))
     && (experiment.outcome === null || isTeachingExperimentOutcome(experiment.outcome)))) {
@@ -8666,14 +8691,18 @@ function migrateInteractionPreferences(value: unknown): InteractionPreference[] 
   if (value === undefined) return [];
   if (!Array.isArray(value) || !value.every((preference) => isRecord(preference)
     && typeof preference.id === "string" && TEACHING_ROUTES.includes(preference.route as TeachingRoute)
-    && isRecord(preference.context) && typeof preference.context.concept === "string" && Boolean(preference.context.concept.trim())
-    && typeof preference.context.task === "string" && Boolean(preference.context.task.trim())
+    && validTeachingContext(preference.context)
     && ["supported", "notSupported", "uncertain"].includes(String(preference.status))
     && Array.isArray(preference.evidenceIds) && preference.evidenceIds.every((id) => typeof id === "string")
     && typeof preference.experimentId === "string")) {
     throw new Error("Stored Interaction Preferences are invalid.");
   }
   return structuredClone(value) as InteractionPreference[];
+}
+
+function validTeachingContext(value: unknown): value is TeachingContext {
+  return isRecord(value) && typeof value.concept === "string" && Boolean(value.concept.trim())
+    && typeof value.task === "string" && Boolean(value.task.trim());
 }
 
 function validateAdaptiveTeachingReferences(session: LearningSession): void {

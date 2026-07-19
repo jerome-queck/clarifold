@@ -47,11 +47,20 @@ export function AdaptiveTeaching({ session, onState }: {
   const [error, setError] = useState<string | null>(null);
   const offered = session.understandingChecks.find((check) => check.status === "offered") ?? null;
   const activeExperiment = session.teachingExperiments.find((experiment) => experiment.status === "active") ?? null;
+  const canOfferCheck = (session.teachingCard.status === "completed" && Boolean(session.teachingCard.content.trim()))
+    || session.anchoredTeachingCards.some((card) => card.currentRevision.status === "completed" && Boolean(card.currentRevision.content.trim()))
+    || session.questionCards.some((card) => card.currentRevision.status === "completed" && Boolean(card.currentRevision.content.trim()));
 
   useEffect(() => {
+    setKind("explain");
+    setRoute("proofStructural");
     setConcept(session.learningGoal);
     setPrompt("");
     setResponse("");
+    setInterpretation("specificGap");
+    setExperimentRoute("visual");
+    setExperimentReason("");
+    setCorrectionDrafts({});
     setError(null);
   }, [session.id]);
 
@@ -106,7 +115,7 @@ export function AdaptiveTeaching({ session, onState }: {
             <button type="button" className="secondary" onClick={() => void submit({ type: "skipUnderstandingCheck", checkId: offered.id })}>Skip without penalty</button>
           </div>
         </form>
-      ) : (
+      ) : canOfferCheck ? (
         <form className="adaptive-form" onSubmit={offer}>
           <label htmlFor="understanding-check-kind">Reasoning check</label>
           <select id="understanding-check-kind" value={kind} onChange={(event) => setKind(event.target.value as UnderstandingCheckKind)}>
@@ -122,6 +131,8 @@ export function AdaptiveTeaching({ session, onState }: {
           <textarea id="understanding-check-prompt" className="field" value={prompt} onChange={(event) => setPrompt(event.target.value)} />
           <button className="secondary" disabled={!concept.trim() || !prompt.trim()}>Offer Understanding Check</button>
         </form>
+      ) : (
+        <p className="subtle">Complete a substantive Teaching Card before offering an Understanding Check.</p>
       )}
 
       {activeExperiment ? (
