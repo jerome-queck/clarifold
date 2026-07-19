@@ -98,7 +98,7 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
   const [confirmLeanRemoval, setConfirmLeanRemoval] = useState(false);
   const [leanActionError, setLeanActionError] = useState<string | null>(null);
   const environment = state.verifierEnvironment;
-  const storage = formatStorage(environment.installedBytes || environment.lastReclaimedBytes);
+  const storage = formatStorage(environment.installedBytes || environment.lastRemovedLogicalBytes);
   const updateEnvironment = async (action: LearnerAction) => {
     setLeanActionError(null);
     try {
@@ -129,13 +129,13 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
         <p className="subtle">Default environment: {environment.environment.id}</p>
         {leanActionError && <p className="failure-message" role="alert">{leanActionError}</p>}
         {environment.status === "installed" && <>
-          <p>Formal checks are available. Installed storage: {storage}.</p>
+          <p>Formal checks are available. Logical installed size: {storage}.</p>
           <button className="secondary" onClick={() => setConfirmLeanRemoval(true)}>Remove Lean environment</button>
         </>}
         {environment.status === "absent" && <>
           <p>New formal verification is unavailable. Existing Verifier Manifests, formal statements, proof logs, and historical labels remain unchanged.</p>
           <p className="subtle">Available non-formal paths: reasoning review, source-grounded checking, and independent corroboration.</p>
-          {environment.lastReclaimedBytes > 0 && <p>Last removal reclaimed {formatStorage(environment.lastReclaimedBytes)}.</p>}
+          {environment.lastRemovedLogicalBytes > 0 && <p>Removed a {formatStorage(environment.lastRemovedLogicalBytes)} logical-size registry copy. Actual disk space freed is determined by macOS.</p>}
           <button onClick={() => void updateEnvironment({ type: "installVerifierEnvironment" })}>
             Reinstall supported Lean environment
           </button>
@@ -151,11 +151,11 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
         {confirmLeanRemoval && <div role="alertdialog" aria-modal="true" aria-labelledby="confirm-lean-removal-title">
           <h4 id="confirm-lean-removal-title">Remove the Bundled Lean Runtime?</h4>
           <p>This removes new formal verification capability until you reinstall the supported environment.</p>
-          <p>Quick Study will reclaim approximately {storage}. Historical verification evidence and labels will be preserved.</p>
+          <p>This removes the {storage} logical-size installed registry copy. Actual disk space freed is determined by macOS; the bundled installer payload remains in the application. Historical verification evidence and labels will be preserved.</p>
           <button onClick={() => {
             setConfirmLeanRemoval(false);
             void updateEnvironment({ type: "removeVerifierEnvironment" });
-          }}>Remove Lean and reclaim storage</button>
+          }}>Remove installed Lean copy</button>
           <button className="secondary" onClick={() => setConfirmLeanRemoval(false)}>Keep Lean installed</button>
         </div>}
       </div>

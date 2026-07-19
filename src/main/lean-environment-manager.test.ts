@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -56,9 +56,11 @@ describe("LeanEnvironmentManager", () => {
       installed: true, installedBytes: installed.installedBytes, cleanupRequired: false
     });
     expect(await manager.defaultInstallationNeeded()).toBe(false);
+    expect((await stat(join(registry, bundledEnvironment.id))).mode & 0o222).toBe(0);
+    expect((await stat(join(registry, bundledEnvironment.id, "bin", "lean"))).mode & 0o222).toBe(0);
 
     const removed = await manager.remove();
-    expect(removed.reclaimedBytes).toBe(installed.installedBytes);
+    expect(removed.removedLogicalBytes).toBe(installed.installedBytes);
     expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: false });
     expect(await manager.defaultInstallationNeeded()).toBe(false);
 
@@ -67,23 +69,33 @@ describe("LeanEnvironmentManager", () => {
   });
 
   it("reports and cleans interrupted staging without activating a half-installed checker", async () => {
-    const { registry, manager } = await fixture();
-    await mkdir(join(registry, `.${bundledEnvironment.id}.installing-interrupted`), { recursive: true });
-    await writeFile(join(registry, `.${bundledEnvironment.id}.installing-interrupted`, "partial"), "partial", "utf8");
+    const { root, registry, manager } = await fixture();
+    const interrupted = join(registry, `.${bundledEnvironment.id}.installing-interrupted`);
+    const outside = join(root, "outside");
+    await mkdir(interrupted, { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(interrupted, "partial"), "partial", "utf8");
+    await writeFile(join(outside, "must-stay-read-only"), "outside", { encoding: "utf8", mode: 0o400 });
+    await symlink(outside, join(interrupted, "unsafe-link"));
 
     expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: true });
     expect(await manager.cleanup()).toEqual({ installed: false, installedBytes: 0 });
     expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: false });
+    expect((await stat(join(outside, "must-stay-read-only"))).mode & 0o222).toBe(0);
   });
 
   it("keeps a failed validation in inactive staging for explicit cleanup", async () => {
     const { registry, seedRoot } = await fixture();
+    let rejectReferenceProof = true;
     const manager = new LeanEnvironmentManager(registry, seedRoot, async () => {
-      throw new Error("Reference proof was rejected.");
+      if (rejectReferenceProof) throw new Error("Reference proof was rejected.");
     });
 
     await expect(manager.install()).rejects.toThrow("Reference proof was rejected");
     expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: true });
+    rejectReferenceProof = false;
+    await manager.install();
+    expect(await manager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });
   });
 });
 

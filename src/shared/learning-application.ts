@@ -891,7 +891,7 @@ export interface VerifierEnvironmentState {
   status: "installed" | "absent" | "installing" | "removing" | "installFailed" | "removeFailed" | "cleanupRequired";
   environment: Readonly<VerificationEnvironment>;
   installedBytes: number;
-  lastReclaimedBytes: number;
+  lastRemovedLogicalBytes: number;
   error: string | null;
 }
 
@@ -1203,7 +1203,7 @@ export class LearningApplication {
         ...this.state.verifierEnvironment,
         status: "absent",
         installedBytes: 0,
-        lastReclaimedBytes: result.reclaimedBytes,
+        lastRemovedLogicalBytes: result.removedLogicalBytes,
         error: null
       };
     } catch (error) {
@@ -8040,7 +8040,7 @@ function defaultVerifierEnvironmentState(): VerifierEnvironmentState {
     status: "absent",
     environment: BUNDLED_LEAN_ENVIRONMENT,
     installedBytes: 0,
-    lastReclaimedBytes: 0,
+    lastRemovedLogicalBytes: 0,
     error: null
   };
 }
@@ -8053,8 +8053,9 @@ function migrateVerifierEnvironmentState(value: unknown): VerifierEnvironmentSta
     status,
     environment: BUNDLED_LEAN_ENVIRONMENT,
     installedBytes: typeof value.installedBytes === "number" && value.installedBytes >= 0 ? value.installedBytes : 0,
-    lastReclaimedBytes: typeof value.lastReclaimedBytes === "number" && value.lastReclaimedBytes >= 0
-      ? value.lastReclaimedBytes : 0,
+    lastRemovedLogicalBytes: typeof value.lastRemovedLogicalBytes === "number" && value.lastRemovedLogicalBytes >= 0
+      ? value.lastRemovedLogicalBytes
+      : typeof value.lastReclaimedBytes === "number" && value.lastReclaimedBytes >= 0 ? value.lastReclaimedBytes : 0,
     error: typeof value.error === "string" ? value.error : null
   };
 }

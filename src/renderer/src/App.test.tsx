@@ -19,7 +19,7 @@ describe("anchored teaching workbench", () => {
       ...absent.verifierEnvironment,
       status: "absent",
       installedBytes: 0,
-      lastReclaimedBytes: 734_003_200
+      lastRemovedLogicalBytes: 734_003_200
     };
     const api = quickStudyApi(installed);
     vi.mocked(api.submit).mockImplementation(async (action) =>
@@ -34,7 +34,7 @@ describe("anchored teaching workbench", () => {
     expect(confirmation.textContent).toContain("new formal verification capability");
     expect(confirmation.textContent).toContain("700 MB");
     expect(confirmation.textContent).toContain("Historical verification evidence and labels will be preserved");
-    await user.click(within(confirmation).getByRole("button", { name: "Remove Lean and reclaim storage" }));
+    await user.click(within(confirmation).getByRole("button", { name: "Remove installed Lean copy" }));
 
     expect(await within(settings).findByText("Not installed")).toBeTruthy();
     expect(settings.textContent).toContain("reasoning review, source-grounded checking, and independent corroboration");
@@ -1102,7 +1102,7 @@ function workbenchState(): LearningApplicationState {
         platform: "darwin", architecture: "arm64", sourceArchive: "lean.zip", sourceSha256: "fixture",
         supportProfile: "Quick Study undergraduate foundations v1", mathlibModules: [], runtimeFormat: 8
       },
-      installedBytes: 734_003_200, lastReclaimedBytes: 0, error: null
+      installedBytes: 734_003_200, lastRemovedLogicalBytes: 0, error: null
     },
     activeSessionId: "session-1",
     resumeSessionId: "session-1",

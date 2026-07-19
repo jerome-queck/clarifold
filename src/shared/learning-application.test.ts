@@ -597,7 +597,7 @@ describe("Learning Application", () => {
       inspect: vi.fn(async () => ({ installed, installedBytes: installed ? 734_003_200 : 0, cleanupRequired: false })),
       remove: vi.fn(async () => {
         installed = false;
-        return { reclaimedBytes: 734_003_200 };
+        return { removedLogicalBytes: 734_003_200 };
       }),
       install: vi.fn(async () => {
         installed = true;
@@ -632,7 +632,7 @@ describe("Learning Application", () => {
     const removed = await application.submit({ type: "removeVerifierEnvironment" });
 
     expect(removed.verifierEnvironment).toMatchObject({
-      status: "absent", installedBytes: 0, lastReclaimedBytes: 734_003_200, error: null,
+      status: "absent", installedBytes: 0, lastRemovedLogicalBytes: 734_003_200, error: null,
       environment: BUNDLED_LEAN_ENVIRONMENT
     });
     expect(removed.verifierManifests[0]).toEqual(historicalManifest);

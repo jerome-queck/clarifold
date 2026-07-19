@@ -59,7 +59,7 @@ export interface VerifierEnvironmentInspection {
 
 export interface VerifierEnvironmentManager {
   inspect(): Promise<VerifierEnvironmentInspection>;
-  remove(): Promise<{ reclaimedBytes: number }>;
+  remove(): Promise<{ removedLogicalBytes: number }>;
   install(): Promise<{ installedBytes: number }>;
   cleanup(): Promise<{ installed: boolean; installedBytes: number }>;
 }

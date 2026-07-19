@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import {
   BUNDLED_LEAN_ENVIRONMENT,
   validVerificationEnvironment,
@@ -18,7 +18,8 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
   constructor(
     private readonly registryPath: string,
     seedRegistryPath: string,
-    private readonly validate: (environmentPath: string) => Promise<void> = validateReferenceProof
+    private readonly validate: (environmentPath: string) => Promise<void> = validateReferenceProof,
+    private readonly beforeRemove: () => Promise<void> = async () => undefined
   ) {
     this.environmentPath = join(registryPath, BUNDLED_LEAN_ENVIRONMENT.id);
     this.seedPath = join(seedRegistryPath, BUNDLED_LEAN_ENVIRONMENT.id);
@@ -49,12 +50,18 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
 
   async install(): Promise<{ installedBytes: number }> {
     await mkdir(this.registryPath, { recursive: true });
+    for (const name of await directoryEntries(this.registryPath)) {
+      if (name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-`)) {
+        await removeWritableTree(this.registryPath, join(this.registryPath, name));
+      }
+    }
     const stagingPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-${randomUUID()}`);
     await copySeedToWritableRegistry(this.seedPath, stagingPath);
-    if (!await validInstalledEnvironment(stagingPath)) {
+    if (!await validEnvironmentIdentity(stagingPath)) {
       throw new Error("The staged Lean environment did not match the supported Default Verification Environment.");
     }
     await this.validate(stagingPath);
+    await makeTreeReadOnly(this.registryPath, stagingPath);
     const backupPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
     const hadActive = await exists(this.environmentPath);
     if (hadActive) await rename(this.environmentPath, backupPath);
@@ -64,21 +71,22 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       if (hadActive) await rename(backupPath, this.environmentPath);
       throw error;
     }
-    await removeWritableTree(backupPath);
+    await removeWritableTree(this.registryPath, backupPath);
     await rm(this.removalMarkerPath, { force: true });
     return { installedBytes: await directorySize(this.environmentPath) };
   }
 
-  async remove(): Promise<{ reclaimedBytes: number }> {
+  async remove(): Promise<{ removedLogicalBytes: number }> {
     if (!await validInstalledEnvironment(this.environmentPath)) {
       throw new Error("The installed Lean environment is missing or invalid; clean it up before retrying.");
     }
-    const reclaimedBytes = await directorySize(this.environmentPath);
+    await this.beforeRemove();
+    const removedLogicalBytes = await directorySize(this.environmentPath);
     const removalPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
     await rename(this.environmentPath, removalPath);
     await writeFile(this.removalMarkerPath, `${BUNDLED_LEAN_ENVIRONMENT.id}\n`, "utf8");
-    await removeWritableTree(removalPath);
-    return { reclaimedBytes };
+    await removeWritableTree(this.registryPath, removalPath);
+    return { removedLogicalBytes };
   }
 
   async cleanup(): Promise<{ installed: boolean; installedBytes: number }> {
@@ -86,7 +94,7 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       if (name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-`)
         || name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-`)
         || (name === BUNDLED_LEAN_ENVIRONMENT.id && !await validInstalledEnvironment(this.environmentPath))) {
-        await removeWritableTree(join(this.registryPath, name));
+        await removeWritableTree(this.registryPath, join(this.registryPath, name));
       }
     }
     const inspection = await this.inspect();
@@ -108,10 +116,19 @@ function validateReferenceProof(environmentPath: string): Promise<void> {
 }
 
 async function validInstalledEnvironment(path: string): Promise<boolean> {
+  return await validEnvironmentIdentity(path) && await treeIsImmutable(path);
+}
+
+async function validEnvironmentIdentity(path: string): Promise<boolean> {
   try {
-    const manifest: unknown = JSON.parse(await readFile(join(path, "manifest.json"), "utf8"));
+    const root = await lstat(path);
+    const manifestPath = join(path, "manifest.json");
+    const manifestInfo = await lstat(manifestPath);
+    if (!root.isDirectory() || root.isSymbolicLink() || !manifestInfo.isFile() || manifestInfo.isSymbolicLink()) return false;
+    const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
     if (!validVerificationEnvironment(manifest)) return false;
-    return (await stat(join(path, "bin", "lean"))).isFile();
+    const executable = await lstat(join(path, "bin", "lean"));
+    return executable.isFile() && !executable.isSymbolicLink();
   } catch {
     return false;
   }
@@ -130,7 +147,8 @@ async function directorySize(path: string): Promise<number> {
   let total = 0;
   for (const entry of await readdir(path, { withFileTypes: true })) {
     const child = join(path, entry.name);
-    total += entry.isDirectory() ? await directorySize(child) : (await stat(child)).size;
+    if (entry.isSymbolicLink()) throw new Error("The Lean environment contains an unsafe filesystem link.");
+    total += entry.isDirectory() ? await directorySize(child) : (await lstat(child)).size;
   }
   return total;
 }
@@ -150,27 +168,59 @@ async function copySeedToWritableRegistry(source: string, destination: string): 
   }
 }
 
-async function removeWritableTree(path: string): Promise<void> {
+async function makeTreeReadOnly(registryPath: string, path: string): Promise<void> {
+  assertManagedPath(registryPath, path);
+  const info = await lstat(path);
+  if (info.isSymbolicLink()) throw new Error("The Lean environment contains an unsafe filesystem link.");
+  if (!info.isDirectory()) {
+    await chmod(path, path.endsWith(join("bin", "lean")) ? 0o500 : 0o400);
+    return;
+  }
+  for (const entry of await readdir(path)) await makeTreeReadOnly(registryPath, join(path, entry));
+  await chmod(path, 0o500);
+}
+
+async function treeIsImmutable(path: string): Promise<boolean> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink() || (info.mode & 0o222) !== 0) return false;
+  if (!info.isDirectory()) return true;
+  for (const entry of await readdir(path)) {
+    if (!await treeIsImmutable(join(path, entry))) return false;
+  }
+  return true;
+}
+
+async function removeWritableTree(registryPath: string, path: string): Promise<void> {
+  assertManagedPath(registryPath, path);
   if (!await exists(path)) return;
-  await makeTreeWritable(path);
+  await makeTreeWritable(registryPath, path);
   await rm(path, { recursive: true, force: true });
 }
 
-async function makeTreeWritable(path: string): Promise<void> {
-  const info = await stat(path);
+async function makeTreeWritable(registryPath: string, path: string): Promise<void> {
+  assertManagedPath(registryPath, path);
+  const info = await lstat(path);
+  if (info.isSymbolicLink()) return;
   if (!info.isDirectory()) {
     await chmod(path, 0o600);
     return;
   }
   await chmod(path, 0o700);
   for (const entry of await readdir(path, { withFileTypes: true })) {
-    await makeTreeWritable(join(path, entry.name));
+    await makeTreeWritable(registryPath, join(path, entry.name));
+  }
+}
+
+function assertManagedPath(registryPath: string, path: string): void {
+  const relation = relative(registryPath, path);
+  if (!relation || relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
+    throw new Error("Refusing to modify a path outside the Verifier Environment Registry.");
   }
 }
 
 async function exists(path: string): Promise<boolean> {
   try {
-    await stat(path);
+    await lstat(path);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;

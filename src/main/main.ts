@@ -438,7 +438,17 @@ function isFormalVerificationRequest(value: unknown): value is import("../shared
 void app.whenReady().then(async () => {
   const dataDirectory = process.env.QUICK_STUDY_DATA_DIR ?? app.getPath("userData");
   const seedRegistry = app.isPackaged ? join(process.resourcesPath, "verifiers") : join(process.cwd(), "dist", "verifiers");
-  const verifierEnvironmentManager = new LeanEnvironmentManager(join(dataDirectory, "verifiers"), seedRegistry);
+  let failRemovalOnce = process.env.QUICK_STUDY_TEST_VERIFIER_REMOVAL_FAILURE === "once";
+  const verifierEnvironmentManager = new LeanEnvironmentManager(
+    join(dataDirectory, "verifiers"),
+    seedRegistry,
+    undefined,
+    async () => {
+      if (!failRemovalOnce) return;
+      failRemovalOnce = false;
+      throw new Error("Synthetic removal interruption before deactivation.");
+    }
+  );
   const installDefaultVerifier = await verifierEnvironmentManager.defaultInstallationNeeded().catch((error) => {
     console.error("The default Lean environment could not be inspected:", error);
     return false;

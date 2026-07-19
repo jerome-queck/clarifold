@@ -1,6 +1,6 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,7 +53,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
         QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath,
         QUICK_STUDY_TEST_RELOCATED_SOURCE: relocatedAttachmentPath,
         QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH: artifactExportPath,
-        QUICK_STUDY_TEST_EXTERNAL_RESEARCH: "stub"
+        QUICK_STUDY_TEST_EXTERNAL_RESEARCH: "stub",
+        QUICK_STUDY_TEST_VERIFIER_REMOVAL_FAILURE: "once"
       },
       stdio: "pipe"
     });
@@ -347,7 +348,10 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     const removalConfirmation = page.getByRole("alertdialog", { name: "Remove the Bundled Lean Runtime?" });
     await expect(removalConfirmation).toContainText("new formal verification capability");
     await expect(removalConfirmation).toContainText("Historical verification evidence and labels will be preserved");
-    await removalConfirmation.getByRole("button", { name: "Remove Lean and reclaim storage" }).click();
+    await removalConfirmation.getByRole("button", { name: "Remove installed Lean copy" }).click();
+    await expect(settings).toContainText("Removal failed");
+    await expect(settings.getByRole("alert")).toContainText("Synthetic removal interruption before deactivation.");
+    await settings.getByRole("button", { name: "Retry Lean removal" }).click();
     await expect(settings).toContainText("Not installed", { timeout: 30_000 });
     await expect(settings).toContainText("reasoning review, source-grounded checking, and independent corroboration");
 
@@ -357,6 +361,13 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toContainText("accepted");
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }))
       .toContainText("lean-4.29.1-mathlib-4.29.1-quick-study-v1");
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }))
+      .toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    const retainedProofLogs = (await readdir(join(dataDirectory, "verifier-evidence")))
+      .filter((name) => name.endsWith(".lean"));
+    expect(retainedProofLogs.length).toBeGreaterThan(0);
+    expect(await readFile(join(dataDirectory, "verifier-evidence", retainedProofLogs[0]), "utf8"))
+      .toContain("theorem quickStudyNatAddZero");
 
     await page.getByRole("button", { name: "Leave session" }).click();
     await settings.getByRole("button", { name: "Reinstall supported Lean environment" }).click();
@@ -392,8 +403,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
 
   } finally {
     await quit();
-    await rm(dataDirectory, { recursive: true, force: true });
-    await rm(sourceDirectory, { recursive: true, force: true });
+    await removeTestDirectory(dataDirectory);
+    await removeTestDirectory(sourceDirectory);
   }
 });
 
@@ -506,7 +517,7 @@ test("packaged Quick Study checkpoints Background Agent Tasks and resumes them e
     await expect(agentTask).toContainText("Compactness supplies the finite reduction.", { timeout: 15_000 });
   } finally {
     await quit();
-    await rm(dataDirectory, { recursive: true, force: true });
+    await removeTestDirectory(dataDirectory);
   }
 });
 
@@ -561,4 +572,24 @@ async function waitForExit(child: ChildProcess, timeout: number): Promise<boolea
       resolve(true);
     });
   });
+}
+
+async function removeTestDirectory(path: string): Promise<void> {
+  try {
+    await makeTestTreeWritable(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await rm(path, { recursive: true, force: true });
+}
+
+async function makeTestTreeWritable(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink()) return;
+  if (!info.isDirectory()) {
+    await chmod(path, 0o600);
+    return;
+  }
+  await chmod(path, 0o700);
+  for (const entry of await readdir(path)) await makeTestTreeWritable(join(path, entry));
 }
