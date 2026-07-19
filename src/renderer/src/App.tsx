@@ -1980,7 +1980,7 @@ function ExternalResearchPanel({ state, session, onState }: {
   const [includeActiveAnchor, setIncludeActiveAnchor] = useState(false);
   const [researchError, setResearchError] = useState<string | null>(null);
   const activeAnchor = session.sourceAnchors.find((anchor) => anchor.id === session.activeSourceAnchorId) ?? null;
-  const latestResearch = session.researchActions.at(-1) ?? null;
+  const researchHistory = [...session.researchActions].reverse();
   const submit = async (action: LearnerAction) => {
     setResearchError(null);
     try {
@@ -2040,30 +2040,39 @@ function ExternalResearchPanel({ state, session, onState }: {
           onChange={(event) => void submit({ type: "setResearchEgressPermission", enabled: event.target.checked })} />
         Allow Source Excerpt Egress for this Learning Session
       </label>
+      <p role="status">
+        Source Excerpt Egress: {session.researchEgressPermission.status === "granted"
+          ? "Granted"
+          : session.researchEgressPermission.status === "revoked" ? "Revoked" : "Not granted"}
+      </p>
       <small>A minimized automatic Corroboration Pass starts when the intake names a theorem. Research Egress Permission applies only to raw Source Excerpts; revoking it stops active excerpt research and never retries silently.</small>
       <small>Only inspectable excerpts under the active policy are eligible. Whole-file transmission always needs a separate explicit confirmation and is not available from this control.</small>
-      {latestResearch && (
-        <article className="research-receipt" aria-label="Latest external research receipt">
-          <p className="eyebrow">Derived Research Query</p>
-          <strong>{latestResearch.query.text}</strong>
-          <dl>
-            <div><dt>Query origin</dt><dd>{latestResearch.queryOrigin === "automaticCorroboration" ? "Automatic Source Corroboration" : "Learner-authored terms"}</dd></div>
-            <div><dt>Local sources informing query</dt><dd>{latestResearch.informedBySourceIds.length}</dd></div>
-            <div><dt>Destination used</dt><dd><code>{latestResearch.destination}</code></dd></div>
-            <div><dt>Source Excerpts sent</dt><dd>{latestResearch.excerpts.length}</dd></div>
-            <div><dt>Status</dt><dd role="status">{latestResearch.status}</dd></div>
-          </dl>
-          <button className="secondary" onClick={() => void window.quickStudy.openExternal(latestResearch.destination)}>
-            Inspect destination used
-          </button>
-          {latestResearch.status === "running" && (
-            <button className="secondary" onClick={() => void submit({
-              type: "cancelExternalResearch", researchActionId: latestResearch.id
-            })}>Stop external research</button>
-          )}
-          {latestResearch.result && <><h3>{latestResearch.result.title}</h3><p>{latestResearch.result.summary}</p></>}
-          {latestResearch.error && <p className="failure-message" role="alert">{latestResearch.error}</p>}
-        </article>
+      {researchHistory.length > 0 && (
+        <section aria-label="External research history">
+          {researchHistory.map((research) => (
+            <article key={research.id} className="research-receipt" aria-label="External research receipt">
+              <p className="eyebrow">Derived Research Query</p>
+              <strong>{research.query.text}</strong>
+              <dl>
+                <div><dt>Query origin</dt><dd>{research.queryOrigin === "automaticCorroboration" ? "Automatic Source Corroboration" : "Learner-authored terms"}</dd></div>
+                <div><dt>Local sources informing query</dt><dd>{research.informedBySourceIds.length}</dd></div>
+                <div><dt>Destination used</dt><dd><code>{research.destination}</code></dd></div>
+                <div><dt>Source Excerpts sent</dt><dd>{research.excerpts.length}</dd></div>
+                <div><dt>Status</dt><dd role="status">{research.status}</dd></div>
+              </dl>
+              <button className="secondary" onClick={() => void window.quickStudy.openExternal(research.destination)}>
+                Inspect destination used
+              </button>
+              {research.status === "running" && (
+                <button className="secondary" onClick={() => void submit({
+                  type: "cancelExternalResearch", researchActionId: research.id
+                })}>Stop external research</button>
+              )}
+              {research.result && <><h3>{research.result.title}</h3><p>{research.result.summary}</p></>}
+              {research.error && <p className="failure-message" role="alert">{research.error}</p>}
+            </article>
+          ))}
+        </section>
       )}
       {researchError && <p className="failure-message" role="alert">{researchError}</p>}
     </section>

@@ -3444,6 +3444,22 @@ export class LearningApplication {
     source: WorkspaceSource
   ): Promise<SourceAnchorSelection> {
     const validated = validatedSourceAnchorSelection(selection, source);
+    if (selection.kind !== "diagramRegion" && selection.pageNumbers) {
+      if (source.kind !== "linkedSource" || !this.sourceAccess) {
+        throw new Error("Selected pages require an indexed Linked Source available under the active policy.");
+      }
+      const extraction = validatedSourceIndexExtractionResult(await this.sourceAccess.extractForIndex(source));
+      if (!sameFingerprint(source.link.fingerprint, extraction.fingerprint)) {
+        throw new Error("This source changed before the selected pages could be saved.");
+      }
+      const selectedPages = selection.pageNumbers.map((pageNumber) =>
+        extraction.pages.find((page) => page.pageNumber === pageNumber));
+      if (selectedPages.some((page) => !page)
+        || !selectedPages.some((page) => page!.regions.some((region) => region.text.includes(selection.exactText)))) {
+        throw new Error("Choose selected pages and text available in the current Source Index.");
+      }
+      return validated;
+    }
     if (source.kind === "managedAsset") return validated;
     if (!this.sourceAccess) throw new Error("Local source access is unavailable.");
     const view = await this.sourceAccess.read(source);
@@ -4311,23 +4327,31 @@ function usefulResearchError(error: unknown): string {
 
 function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery | null {
   const namedTheorem = mathematics.match(
-    /(?:prove|show|verify|study|understand|explain)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
+    /(?:prove|show|verify|study|understand|explain|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
   )?.[1];
   const substantive = /\b(prove|proof|show\s+that|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary)\b/i.test(mathematics);
   if (!substantive) return null;
   const theoremName = namedTheorem?.replace(/\s+/g, " ");
+  if (theoremName) {
+    return buildDerivedResearchQuery({ theoremNames: [theoremName], assumptions: [], keywords: [] });
+  }
+  const assumptions = Array.from(mathematics.matchAll(
+    /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi
+  )).map(([assumption]) => assumption.toLocaleLowerCase())
+    .filter((assumption, index, all) => all.indexOf(assumption) === index)
+    .slice(0, 3);
   const allowedKeywords = new Set([
     "abelian", "algebra", "compact", "compactness", "continuous", "convergence", "derivative", "field", "finite",
     "graph", "group", "hausdorff", "homomorphism", "integral", "isomorphism", "matrix", "measure", "probability",
     "ring", "sequence", "series", "subgroup", "topology", "vector"
   ]);
-  const theoremTerms = new Set(theoremName?.toLocaleLowerCase().match(/[a-z][a-z'’\-]*/g) ?? []);
+  const assumptionTerms = new Set(assumptions.flatMap((assumption) => assumption.match(/[a-z][a-z'’\-]*/g) ?? []));
   const keywords = (mathematics.match(/[a-z][a-z'’\-]{2,}/gi) ?? [])
     .map((term) => term.toLocaleLowerCase())
-    .filter((term, index, terms) => allowedKeywords.has(term) && !theoremTerms.has(term) && terms.indexOf(term) === index)
+    .filter((term, index, terms) => allowedKeywords.has(term) && !assumptionTerms.has(term) && terms.indexOf(term) === index)
     .slice(0, 5);
-  if (!theoremName && keywords.length === 0) return null;
-  return buildDerivedResearchQuery({ theoremNames: theoremName ? [theoremName] : [], assumptions: [], keywords });
+  if (assumptions.length === 0 && keywords.length === 0) return null;
+  return buildDerivedResearchQuery({ theoremNames: [], assumptions, keywords });
 }
 
 function researchDestination(query: DerivedResearchQuery, excerpts: ResearchExcerpt[] = []): string {

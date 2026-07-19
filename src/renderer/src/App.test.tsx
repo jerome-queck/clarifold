@@ -30,6 +30,18 @@ describe("anchored teaching workbench", () => {
         sources: [{ title: "Inspect external research destination", url: "https://duckduckgo.com/?q=Heine-Borel" }]
       }
     }];
+    state.sessions[0].researchActions.push({
+      ...state.sessions[0].researchActions[0],
+      id: "research-2",
+      query: {
+        text: "Cauchy's theorem",
+        theoremNames: ["Cauchy's theorem"], assumptions: [], keywords: []
+      },
+      destination: "https://duckduckgo.com/?q=Cauchy%27s+theorem",
+      status: "denied",
+      error: "Research Egress Permission was revoked. No access was elevated and no retry was attempted.",
+      result: null
+    });
     const api = quickStudyApi(state);
     window.quickStudy = api;
 
@@ -37,8 +49,10 @@ describe("anchored teaching workbench", () => {
     const panel = await screen.findByRole("region", { name: "Privacy-minimized web research" });
     expect(panel.textContent).toContain("Independent from Codex model access");
     expect(panel.textContent).toContain("Heine-Borel theorem; compact subset");
-    expect(within(panel).getByText(/https:\/\/duckduckgo\.com\//).textContent)
-      .toContain("https://duckduckgo.com/");
+    expect(panel.textContent).toContain("Cauchy's theorem");
+    expect(panel.textContent).toContain("Research Egress Permission was revoked");
+    expect(within(panel).getByText("Source Excerpt Egress: Granted")).toBeTruthy();
+    expect(within(panel).getAllByText(/https:\/\/duckduckgo\.com\//)).toHaveLength(2);
 
     await user.type(within(panel).getByLabelText("Theorem names"), "Orbit-stabilizer theorem");
     await user.type(within(panel).getByLabelText("Assumptions"), "G acts on X");

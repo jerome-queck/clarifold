@@ -34,7 +34,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   await writeFile(join(primaryFolderPath, "problem-set.txt"), "Classify the orbits and stabilizers.", "utf8");
   await writeFile(unrelatedPath, "PRIVATE_UNRELATED_DEVICE_CONTENT", "utf8");
   const accessStatePath = join(dataDirectory, "fake-codex-access.json");
-  let launched: { browser: Browser; page: Page; process: ChildProcess } | undefined;
+  let launched: { browser: Browser; page: Page; process: ChildProcess; output(): string } | undefined;
 
   const launch = async () => {
     const port = await availablePort();
@@ -58,7 +58,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await waitForDebugger(port, child, () => output);
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     const page = await waitForPage(browser, child, () => output);
-    launched = { browser, page, process: child };
+    launched = { browser, page, process: child, output: () => output };
     return page;
   };
 
@@ -71,7 +71,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await current.browser.close().catch(() => undefined);
     if (!exitedNormally) {
       current.process.kill("SIGTERM");
-      throw new Error("Packaged Quick Study did not exit after its last window closed.");
+      throw new Error(`Packaged Quick Study did not exit after its last window closed.\n${current.output()}`);
     }
   };
 
@@ -344,7 +344,7 @@ test("packaged Quick Study checkpoints Background Agent Tasks and resumes them e
   test.setTimeout(60_000);
   const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-agent-task-smoke-"));
   const accessStatePath = join(dataDirectory, "fake-codex-access.json");
-  let launched: { browser: Browser; page: Page; process: ChildProcess } | undefined;
+  let launched: { browser: Browser; page: Page; process: ChildProcess; output(): string } | undefined;
 
   const launch = async () => {
     const port = await availablePort();
@@ -353,7 +353,8 @@ test("packaged Quick Study checkpoints Background Agent Tasks and resumes them e
         ...process.env,
         ELECTRON_ENABLE_LOGGING: "1",
         QUICK_STUDY_DATA_DIR: dataDirectory,
-        QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs")
+        QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs"),
+        QUICK_STUDY_TEST_EXTERNAL_RESEARCH: "stub"
       },
       stdio: "pipe"
     });
@@ -363,7 +364,7 @@ test("packaged Quick Study checkpoints Background Agent Tasks and resumes them e
     await waitForDebugger(port, child, () => output);
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     const page = await waitForPage(browser, child, () => output);
-    launched = { browser, page, process: child };
+    launched = { browser, page, process: child, output: () => output };
     return page;
   };
 
@@ -376,7 +377,7 @@ test("packaged Quick Study checkpoints Background Agent Tasks and resumes them e
     await current.browser.close().catch(() => undefined);
     if (!exitedNormally) {
       current.process.kill("SIGTERM");
-      throw new Error("Packaged Quick Study did not checkpoint Agent Tasks before exiting.");
+      throw new Error(`Packaged Quick Study did not checkpoint Agent Tasks before exiting.\n${current.output()}`);
     }
   };
 
