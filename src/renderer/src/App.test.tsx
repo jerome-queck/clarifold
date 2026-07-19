@@ -203,6 +203,47 @@ describe("anchored teaching workbench", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("did not confirm interruption");
   });
 
+  it("announces and directly stops a background Specialist Agent task", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    const session = state.sessions[0];
+    session.agentTasks = [{
+      id: "agent-task-1", purpose: "Review one hidden assumption", status: "waiting",
+      statusMessage: "Waiting for Codex.",
+      identifiedNeed: {
+        kind: "hiddenAssumptionReview", requestedBy: "learner", description: "Check the current Teaching Card."
+      },
+      brief: {
+        learningGoal: session.learningGoal, sourceAnchors: [], constraints: ["Review one card."], learnerEvidence: [],
+        expectedOutput: "One concise card.", verificationNeeds: ["Identify hidden assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
+      integratedTeachingCard: {
+        title: "Specialist review", status: "streaming", content: "", error: null, retryable: false
+      },
+      agentWorkLogReference: { sessionId: session.id, fromSequence: 3, toSequence: 4 },
+      priorAgentWorkLogReferences: []
+    }];
+    session.activeAgentTaskId = "agent-task-1";
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    window.quickStudy = quickStudyApi(state);
+
+    render(<App />);
+
+    const status = (await screen.findAllByText("Specialist Agent is waiting in the background"))[0].closest("[role='status']");
+    expect(status).toBeTruthy();
+    const stop = status!.querySelector("button")!;
+    expect(stop.textContent).toBe("Stop Agent Task");
+    await user.click(stop);
+    expect(window.quickStudy.submit).toHaveBeenCalledWith({
+      type: "cancelSessionModelWork", sessionId: "session-1"
+    });
+  });
+
   it("keeps prerequisite decisions accessible and restores focus from a Branch Trail Return Point", async () => {
     const user = userEvent.setup();
     const originState = workbenchState();

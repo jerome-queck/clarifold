@@ -150,8 +150,8 @@ export interface AgentBudget {
   agentCount: 1;
   concurrency: 1;
   model: "runtimeDefault";
-  reasoningEffort: "balanced";
-  tools: [];
+  reasoningEffort: "medium";
+  tools: ["checkpointSpecialistResult"];
   maxOutputTokens: number;
   maxLatencyMs: number;
 }
@@ -173,7 +173,7 @@ export interface SpecialistAgentResult {
 }
 
 export interface ModelRuntimeEvent {
-  type: "threadStarted" | "turnStarted" | "inputSubmitted" | "outputDelta" | "turnCompleted" | "turnFailed";
+  type: "threadStarted" | "turnStarted" | "inputSubmitted" | "toolCalled" | "outputDelta" | "turnCompleted" | "turnFailed";
   workKind?: "teaching" | "specialist";
   threadId: string;
   turnId: string | null;

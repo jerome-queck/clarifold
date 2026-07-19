@@ -380,7 +380,7 @@ describe("Codex app-server contract", () => {
     expect(JSON.stringify(synthesisTurn.params)).toContain("authorized only for this artifact synthesis");
   });
 
-  it("runs one Specialist Agent with tools disabled and only the supplied Agent Brief", async () => {
+  it("runs one Specialist Agent with only its checkpoint tool and the supplied Agent Brief", async () => {
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;
       if (message.method === "initialize") {
@@ -421,8 +421,8 @@ describe("Codex app-server contract", () => {
         verificationNeeds: ["Identify hidden assumptions."]
       },
       budget: {
-        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "balanced",
-        tools: [], maxOutputTokens: 512, maxLatencyMs: 120_000
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
       },
       signal: new AbortController().signal,
       onStatus: (status) => statuses.push(status),
@@ -437,12 +437,13 @@ describe("Codex app-server contract", () => {
     expect(threadStart).toMatchObject({
       params: {
         sandbox: "read-only",
-        dynamicTools: [],
+        dynamicTools: [expect.objectContaining({ name: "checkpoint_specialist_result" })],
         config: { features: { apps: false, multi_agent: false, shell_tool: false, unified_exec: false } }
       }
     });
     expect(JSON.stringify(threadStart.params)).toContain("Use only the supplied Agent Brief");
     const turnStart = transport.messages.find((message) => message.method === "turn/start")!;
+    expect(turnStart).toMatchObject({ params: { effort: "medium" } });
     expect(JSON.stringify(turnStart.params)).toContain("Choose disjoint neighbourhoods.");
     expect(JSON.stringify(turnStart.params)).not.toContain("/workspace");
     expect(events).toContain("specialist:turnCompleted");
@@ -460,11 +461,14 @@ describe("Codex app-server contract", () => {
       if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "partial-thread" } });
       if (message.method === "turn/start") {
         transport.respond(message.id, { turn: { id: "partial-turn" } });
+        transport.request(701, "item/tool/call", {
+          threadId: "partial-thread", turnId: "partial-turn", callId: "partial-checkpoint",
+          namespace: null, tool: "checkpoint_specialist_result",
+          arguments: { title: "Partial review", content: "The step needs Hausdorff separation." }
+        });
+      }
+      if (message.id === 701 && message.result) {
         queueMicrotask(() => {
-          transport.notify("item/agentMessage/delta", {
-            threadId: "partial-thread", turnId: "partial-turn", itemId: "specialist-result",
-            delta: JSON.stringify({ title: "Partial review", content: "The step needs Hausdorff separation." })
-          });
           transport.notify("turn/completed", {
             threadId: "partial-thread",
             turn: { id: "partial-turn", status: "failed", error: { message: "transport closed after output" } }
@@ -483,8 +487,8 @@ describe("Codex app-server contract", () => {
         expectedOutput: "One concise integrated Teaching Card.", verificationNeeds: ["Identify hidden assumptions."]
       },
       budget: {
-        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "balanced",
-        tools: [], maxOutputTokens: 512, maxLatencyMs: 120_000
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
       },
       signal: new AbortController().signal,
       onStatus: () => undefined,
@@ -493,6 +497,42 @@ describe("Codex app-server contract", () => {
 
     await expect(request).rejects.toThrow("Codex could not complete this request");
     expect(partials).toEqual(["The step needs Hausdorff separation."]);
+  });
+
+  it("interrupts Specialist Agent output at its conservative token ceiling", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "budget-thread" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "budget-turn" } });
+        queueMicrotask(() => transport.notify("item/agentMessage/delta", {
+          threadId: "budget-thread", turnId: "budget-turn", itemId: "oversized", delta: "x".repeat(513)
+        }));
+      }
+      if (message.method === "turn/interrupt") transport.respond(message.id, {});
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await expect(runtime.runSpecialistAgent({
+      sessionId: "session-1", purpose: "Review one hidden assumption",
+      brief: {
+        learningGoal: "Understand compactness", sourceAnchors: [], constraints: ["Review one card."],
+        learnerEvidence: [], expectedOutput: "One concise card.", verificationNeeds: ["Identify assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined
+    })).rejects.toThrow("exceeded its token budget");
+    expect(transport.messages).toContainEqual(expect.objectContaining({
+      method: "turn/interrupt", params: { threadId: "budget-thread", turnId: "budget-turn" }
+    }));
   });
 
   it("interrupts active teaching and shuts down the stdio transport", async () => {

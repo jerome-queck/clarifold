@@ -3105,8 +3105,8 @@ describe("Learning Application", () => {
         status: "working",
         identifiedNeed: expect.objectContaining({ kind: "hiddenAssumptionReview", requestedBy: "learner" }),
         budget: {
-          agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "balanced",
-          tools: [], maxOutputTokens: 512, maxLatencyMs: 120_000
+          agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+          tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
         },
         integratedTeachingCard: expect.objectContaining({ status: "streaming", content: "" })
       })
@@ -3144,6 +3144,7 @@ describe("Learning Application", () => {
     runtime.emitTeaching("Begin with an exterior point.");
     runtime.completeTeaching();
     await application.waitForModelWork();
+    await application.submit({ type: "addTrailItem", kind: "evidence", content: "Unrelated evidence from the main card." });
     state = await application.submit({
       type: "createSourceAnchor",
       sourceId: state.sessions[0].sourceIds[0],
@@ -3156,6 +3157,7 @@ describe("Learning Application", () => {
     runtime.emitTeaching("Use Hausdorff separation to choose disjoint neighbourhoods.");
     runtime.completeTeaching();
     await application.waitForModelWork();
+    await application.submit({ type: "addTrailItem", kind: "evidence", content: "This anchored step uses disjoint neighbourhoods." });
     await application.submit({ type: "requestSpecialistReview" });
 
     const anchor = state.sessions[0].sourceAnchors[0];
@@ -3164,7 +3166,9 @@ describe("Learning Application", () => {
       sourceId: anchor.sourceId,
       selection: anchor.selection
     }]);
-    expect(runtime.specialistRequests.at(-1)?.brief.learnerEvidence).toEqual([]);
+    expect(runtime.specialistRequests.at(-1)?.brief.learnerEvidence).toEqual([
+      "This anchored step uses disjoint neighbourhoods."
+    ]);
     expect(runtime.specialistRequests.at(-1)?.brief.constraints).toContain(
       "Current Teaching Card: Use Hausdorff separation to choose disjoint neighbourhoods."
     );
@@ -3206,6 +3210,39 @@ describe("Learning Application", () => {
         retryable: true
       }
     });
+  });
+
+  it("preserves a failed Specialist checkpoint and its attempt provenance while retrying", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check a compactness argument", scope: "Inspect one assumption",
+      initialTeachingDirection: "Read the current explanation", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Review this compactness proof." });
+    runtime.emitTeaching("The proof chooses disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    await application.submit({ type: "requestSpecialistReview" });
+    runtime.emitSpecialistPartial("The first attempt found a separation assumption.");
+    runtime.failSpecialist(new Error("The first attempt stopped early."));
+    await application.waitForModelWork();
+    const firstReference = structuredClone(application.getState().sessions[0].agentTasks[0].agentWorkLogReference);
+
+    const retrying = await application.submit({
+      type: "retryAgentTask", taskId: application.getState().sessions[0].agentTasks[0].id
+    });
+    expect(retrying.sessions[0].agentTasks[0]).toMatchObject({
+      status: "working",
+      integratedTeachingCard: { status: "streaming", content: "The first attempt found a separation assumption." },
+      priorAgentWorkLogReferences: [firstReference]
+    });
+
+    runtime.failSpecialist(new Error("The retry also stopped early."));
+    await application.waitForModelWork();
+    const retried = application.getState().sessions[0].agentTasks[0];
+    expect(retried.integratedTeachingCard.content).toBe("The first attempt found a separation assumption.");
+    expect(retried.priorAgentWorkLogReferences).toEqual([firstReference]);
+    expect(retried.agentWorkLogReference).not.toEqual(firstReference);
   });
 
   it("rejects malformed Specialist Agent output and exposes only sanitized audit evidence", async () => {
@@ -4532,7 +4569,7 @@ class DeterministicModelRuntime implements ModelRuntime {
   emitSpecialistPartial(content: string) {
     const request = this.specialistRequests.at(-1);
     request?.onPartialResult(content);
-    request?.onRuntimeEvent?.({ type: "outputDelta", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: content });
+    request?.onRuntimeEvent?.({ type: "toolCalled", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: content });
   }
 
   failSpecialist(error: Error) {
