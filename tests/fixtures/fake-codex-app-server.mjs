@@ -87,13 +87,22 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send({ id: message.id, result: { turn: { id: turnId } } });
       queueMicrotask(() => {
         if (message.params.outputSchema) {
+          const prompt = message.params.input[0].text;
+          const artifactSynthesis = Boolean(message.params.outputSchema.properties?.noteInterpretations);
+          const annotationId = prompt.match(/"annotationId":"([^"]+)"/)?.[1];
           send({
             method: "item/agentMessage/delta",
             params: {
               threadId: message.params.threadId,
               turnId,
-              itemId: "proposal",
-              delta: JSON.stringify({
+              itemId: artifactSynthesis ? "artifact-synthesis" : "proposal",
+              delta: JSON.stringify(artifactSynthesis ? {
+                content: "Start from the key definition, then preserve the learner's finite-choice insight.",
+                noteInterpretations: annotationId ? [{
+                  annotationId,
+                  interpretation: "The learner connects the equation with a finite-choice insight."
+                }] : []
+              } : {
                 learningGoal: "Understand the mathematical strategy",
                 scope: "Work through the central claim",
                 initialTeachingDirection: "Identify the key definition and first inference",

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LearningApplication,
   type LinkedSource,
@@ -10,7 +10,7 @@ import {
   type SourceIndexExtraction,
   type SourceFingerprint
 } from "./learning-application";
-import { ModelAccessError, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type TeachingRequest } from "./model-runtime";
+import { ModelAccessError, type ArtifactSynthesisRequest, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type TeachingRequest } from "./model-runtime";
 
 describe("Learning Application", () => {
   const dataDirectories: string[] = [];
@@ -247,6 +247,137 @@ describe("Learning Application", () => {
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].annotations).toEqual(state.sessions[0].annotations);
     expect(JSON.stringify(runtime.teachingRequests)).not.toContain("I keep forgetting");
+  });
+
+  it("governs Personal Note artifact synthesis while preserving originals and interpretations across reload", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness",
+      scope: "Explain the selected claim",
+      initialTeachingDirection: "Start from the definition",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "explain"
+    });
+    runtime.emitTeaching("Use compactness to make the pointwise separation argument finite.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const session = application.getState().sessions[0];
+    const cardId = session.anchoredTeachingCards[0].id;
+    const sourceAnchorId = session.anchoredTeachingCards[0].sourceAnchorId;
+    state = await application.submit({
+      type: "createAnnotation",
+      sourceAnchorId,
+      purpose: "personalNote",
+      content: "  My picture is: compactness turns infinitely many local choices into finitely many.\n"
+    });
+    const originalAnnotation = structuredClone(state.sessions[0].annotations[0]);
+    expect(state.personalNoteSynthesisPreference).toEqual({ includePersonalNotes: true });
+
+    state = await application.submit({ type: "pinTeachingCardArtifact", cardId });
+    const artifactId = state.sessions[0].learningArtifacts[0].id;
+    state = await application.submit({ type: "synthesizeLearningArtifact", artifactId });
+
+    expect(runtime.artifactSynthesisRequests[0].personalNotes).toEqual([{
+      annotationId: originalAnnotation.id,
+      sourceAnchorId,
+      content: originalAnnotation.content
+    }]);
+    expect(runtime.teachingRequests.every((request) => request.tutorFeedback?.every(
+      (feedback) => feedback.annotationId !== originalAnnotation.id
+    ) ?? true)).toBe(true);
+    expect(state.sessions[0].annotations[0]).toEqual(originalAnnotation);
+    expect(state.sessions[0].learningArtifacts[0].currentRevision).toMatchObject({
+      content: "Use compactness to make the pointwise separation argument finite. The learner connects this to a finite-choice picture.",
+      claimOrigin: "mixed",
+      provenance: { action: "synthesized" },
+      personalNoteContributions: [{
+        annotationId: originalAnnotation.id,
+        sourceAnchorId,
+        verbatim: originalAnnotation.content,
+        interpretation: "The learner connects compactness with reducing local choices to finitely many."
+      }]
+    });
+    const synthesizedCopy = application.createArtifactPortableCopy(state.sessions[0].id, artifactId);
+    expect(synthesizedCopy.content).toContain(originalAnnotation.content);
+    expect(synthesizedCopy.content).toContain(`Original annotation: ${originalAnnotation.id}`);
+    expect(synthesizedCopy.content).toContain("### Note Interpretation");
+
+    state = await application.submit({ type: "setPersonalNoteSynthesis", enabled: false });
+    expect(state.personalNoteSynthesisPreference.includePersonalNotes).toBe(false);
+    state = await application.submit({ type: "synthesizeLearningArtifact", artifactId });
+    expect(runtime.artifactSynthesisRequests[1].personalNotes).toEqual([]);
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.personalNoteContributions).toEqual([]);
+    expect(state.sessions[0].learningArtifacts[0].revisions.at(-1)?.personalNoteContributions).toEqual([{
+      annotationId: originalAnnotation.id,
+      sourceAnchorId,
+      verbatim: originalAnnotation.content,
+      interpretation: "The learner connects compactness with reducing local choices to finitely many."
+    }]);
+    expect(state.sessions[0].annotations[0]).toEqual(originalAnnotation);
+
+    const relaunched = await LearningApplication.launch(dataDirectory, runtime);
+    applications.push(relaunched);
+    expect(relaunched.getState().personalNoteSynthesisPreference.includePersonalNotes).toBe(false);
+    expect(relaunched.getState().sessions[0].annotations[0]).toEqual(originalAnnotation);
+    expect(relaunched.getState().sessions[0].learningArtifacts[0]).toEqual(state.sessions[0].learningArtifacts[0]);
+  });
+
+  it("leaves the last valid artifact revision intact when synthesis fails", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    const { artifactId, revision } = await createPinnedArtifact(application, runtime);
+    runtime.artifactSynthesisError = new ModelAccessError("network", "Synthesis network unavailable.");
+
+    await expect(application.submit({ type: "synthesizeLearningArtifact", artifactId }))
+      .rejects.toThrow("Synthesis network unavailable");
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].learningArtifacts[0].currentRevision).toEqual(revision);
+    expect(application.getState().sessions[0].learningArtifacts[0].revisions).toEqual([]);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].learningArtifacts[0].currentRevision).toEqual(revision);
+  });
+
+  it("stops in-flight synthesis on shutdown without stranding or partially persisting a revision", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    const { artifactId, revision } = await createPinnedArtifact(application, runtime);
+    runtime.holdArtifactSynthesis = true;
+
+    const synthesis = application.submit({ type: "synthesizeLearningArtifact", artifactId });
+    const stopped = expect(synthesis).rejects.toThrow("Learning Artifact synthesis was stopped");
+    await vi.waitFor(() => expect(runtime.artifactSynthesisRequests).toHaveLength(1));
+    await application.shutdown();
+    await stopped;
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].learningArtifacts[0].currentRevision).toEqual(revision);
+    expect(application.getState().sessions[0].learningArtifacts[0].revisions).toEqual([]);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].learningArtifacts[0].currentRevision).toEqual(revision);
   });
 
   it("uses Tutor Feedback to revise anchored teaching and honors later purpose conversions", async () => {
@@ -901,11 +1032,13 @@ describe("Learning Application", () => {
 
     const migrated = await LearningApplication.launch(dataDirectory);
     applications.push(migrated);
+    expect(migrated.getState().personalNoteSynthesisPreference).toEqual({ includePersonalNotes: true });
     expect(migrated.getState().sessions[0].learningArtifacts[0]).toMatchObject({
       kind: "learningArtifact",
       originatingSessionId: anchored.sessions[0].id,
       currentRevision: {
         id: "legacy-revision",
+        personalNoteContributions: [],
         provenance: { action: "promoted", createdAt: null, priorRevisionId: null }
       }
     });
@@ -3437,6 +3570,33 @@ describe("Learning Application", () => {
   });
 });
 
+async function createPinnedArtifact(application: LearningApplication, runtime: DeterministicModelRuntime) {
+  let state = await application.submit({
+    type: "submitSessionIntake",
+    mathematics: "Every compact subset of a Hausdorff space is closed."
+  });
+  runtime.completeTeaching();
+  await application.waitForModelWork();
+  state = await application.submit({
+    type: "createSourceAnchor",
+    sourceId: state.sessions[0].sourceIds[0],
+    selection: {
+      kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+      prefix: "Every ", suffix: " of a Hausdorff space is closed."
+    },
+    paletteAction: "explain"
+  });
+  runtime.emitTeaching("Use compactness to make the pointwise separation argument finite.");
+  runtime.completeTeaching();
+  await application.waitForModelWork();
+  state = await application.submit({
+    type: "pinTeachingCardArtifact",
+    cardId: application.getState().sessions[0].anchoredTeachingCards[0].id
+  });
+  const artifact = state.sessions[0].learningArtifacts[0];
+  return { artifactId: artifact.id, revision: structuredClone(artifact.currentRevision) };
+}
+
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
   readonly indexedSourceIds: string[] = [];
@@ -3469,6 +3629,7 @@ class DeterministicSourceAccess implements LocalSourceAccess {
 
 class DeterministicModelRuntime implements ModelRuntime {
   readonly teachingRequests: TeachingRequest[] = [];
+  readonly artifactSynthesisRequests: ArtifactSynthesisRequest[] = [];
   readonly conceptPeekRequests: Parameters<ModelRuntime["createConceptPeek"]>[0][] = [];
   readonly canceledSessionIds: string[] = [];
   private readonly teachingCompletions = new Map<TeachingRequest, () => void>();
@@ -3483,9 +3644,11 @@ class DeterministicModelRuntime implements ModelRuntime {
   proposalError: Error | null = null;
   authenticationError: Error | null = null;
   cancelError: Error | null = null;
+  artifactSynthesisError: Error | null = null;
   completeTeachingOnCancel = true;
   teachingDeltaOnStart: string | null = null;
   holdConceptPeek = false;
+  holdArtifactSynthesis = false;
 
   constructor(private readonly proposal: SessionProposal, private readonly holdTeaching = false) {}
 
@@ -3541,6 +3704,26 @@ class DeterministicModelRuntime implements ModelRuntime {
         this.teachingFailures.set(request, reject);
       });
     }
+  }
+
+  async synthesizeArtifact(request: ArtifactSynthesisRequest) {
+    this.artifactSynthesisRequests.push(request);
+    if (this.artifactSynthesisError) throw this.artifactSynthesisError;
+    if (this.holdArtifactSynthesis) {
+      if (request.signal.aborted) throw new Error("Learning Artifact synthesis aborted.");
+      await new Promise<void>((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => reject(new Error("Learning Artifact synthesis aborted.")), { once: true });
+      });
+    }
+    return {
+      content: request.personalNotes.length > 0
+        ? `${request.artifactContent} The learner connects this to a finite-choice picture.`
+        : `${request.artifactContent} No Personal Notes were supplied.`,
+      noteInterpretations: request.personalNotes.map((note) => ({
+        annotationId: note.annotationId,
+        interpretation: "The learner connects compactness with reducing local choices to finitely many."
+      }))
+    };
   }
 
   emitTeaching(delta: string) {

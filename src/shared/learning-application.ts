@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   ModelAccessError,
+  type ArtifactSynthesisResult,
   type AuthenticationState,
   type ModelAccessCause,
   type ModelRuntime,
@@ -186,11 +187,19 @@ export interface LearningArtifactRevision {
   claimOrigin: "modelGenerated" | "learner" | "mixed";
   verificationLevel: "notIndependentlyChecked";
   verificationCurrency: "current";
+  personalNoteContributions: PersonalNoteContribution[];
   provenance: {
-    action: "promoted" | "edited" | "restored";
+    action: "promoted" | "edited" | "restored" | "synthesized";
     createdAt: string | null;
     priorRevisionId: string | null;
   };
+}
+
+export interface PersonalNoteContribution {
+  annotationId: string;
+  sourceAnchorId: string;
+  verbatim: string;
+  interpretation: string | null;
 }
 
 export interface ArtifactPortableCopy {
@@ -600,6 +609,9 @@ export interface LearningApplicationState {
   accessConfirmationPreference: {
     confirmFullAccess: boolean;
   };
+  personalNoteSynthesisPreference: {
+    includePersonalNotes: boolean;
+  };
 }
 
 export type LearnerAction =
@@ -635,6 +647,7 @@ export type LearnerAction =
   | { type: "createTeachingVariant"; cardId: string; name: string; instruction: string }
   | { type: "retryAnchoredTeachingCard"; cardId: string; variantId?: string }
   | { type: "pinTeachingCardArtifact"; cardId: string; artifactKind?: LearningArtifact["kind"] }
+  | { type: "synthesizeLearningArtifact"; sessionId?: string; artifactId: string }
   | { type: "editLearningArtifact"; sessionId?: string; artifactId: string; content: string }
   | { type: "restoreLearningArtifactRevision"; sessionId?: string; artifactId: string; revisionId: string }
   | { type: "addTrailItem"; kind: TrailItemKind; content: string }
@@ -649,6 +662,7 @@ export type LearnerAction =
   | { type: "retrySessionModelStop"; sessionId: string }
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
+  | { type: "setPersonalNoteSynthesis"; enabled: boolean }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
   | {
       type: "decideAccessRequest";
@@ -815,6 +829,22 @@ export class LearningApplication {
         "## Content",
         "",
         artifact.currentRevision.content,
+        ...artifact.currentRevision.personalNoteContributions.flatMap((note) => [
+          "",
+          `## Personal Note ${note.annotationId}`,
+          `- Original annotation: ${note.annotationId}`,
+          `- Source Anchor: ${note.sourceAnchorId}`,
+          "",
+          "### Verbatim original",
+          "",
+          note.verbatim,
+          ...(note.interpretation === null ? [] : [
+            "",
+            "### Note Interpretation",
+            "",
+            note.interpretation
+          ])
+        ]),
         ""
       ].join("\n")
     };
@@ -1441,6 +1471,7 @@ export class LearningApplication {
               claimOrigin: "modelGenerated",
               verificationLevel: "notIndependentlyChecked",
               verificationCurrency: "current",
+              personalNoteContributions: [],
               provenance: {
                 action: "promoted",
                 createdAt: new Date().toISOString(),
@@ -1465,6 +1496,78 @@ export class LearningApplication {
         session.activeSourceAnchorId = card.sourceAnchorId;
         break;
       }
+      case "synthesizeLearningArtifact": {
+        const session = this.requireArtifactEditingSession(action.sessionId);
+        this.requireModelAccess();
+        if (this.modelWorks.has(session.id)) {
+          throw new Error("Wait for the current model work to finish before synthesizing this Learning Artifact.");
+        }
+        const artifact = requireLearningArtifact(session, action.artifactId);
+        const personalNotes = this.state.personalNoteSynthesisPreference.includePersonalNotes
+          ? session.annotations.filter((annotation) => annotation.purpose === "personalNote").map((annotation) => ({
+              annotationId: annotation.id,
+              sourceAnchorId: annotation.sourceAnchorId,
+              content: annotation.content
+            }))
+          : [];
+        const controller = new AbortController();
+        const log = this.agentWorkLogs[session.id] ??= [];
+        const promise = Promise.resolve().then(() => this.modelRuntime!.synthesizeArtifact({
+          sessionId: session.id,
+          learningGoal: session.learningGoal,
+          artifactTitle: artifact.title,
+          artifactContent: artifact.currentRevision.content,
+          personalNotes,
+          signal: controller.signal,
+          onRuntimeEvent: (event) => {
+            if (!controller.signal.aborted) log.push({ ...event, sequence: log.length + 1 });
+          }
+        }));
+        this.modelWorks.set(session.id, {
+          controller,
+          promise,
+          stop: () => undefined,
+          markUnconfirmed: () => undefined,
+          restart: () => this.submit(action).then(() => undefined)
+        });
+        let result: ArtifactSynthesisResult;
+        try {
+          result = await promise;
+        } catch (error) {
+          if (controller.signal.aborted) throw new Error("Learning Artifact synthesis was stopped.");
+          this.recordModelAccessLoss(error);
+          throw error;
+        } finally {
+          if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
+        }
+        const synthesized = validatedArtifactSynthesisResult(result, personalNotes.map((note) => note.annotationId));
+        const interpretations = new Map(synthesized.noteInterpretations.map((item) => [item.annotationId, item.interpretation]));
+        artifact.revisions.push(structuredClone(artifact.currentRevision));
+        artifact.currentRevision = {
+          id: crypto.randomUUID(),
+          content: synthesized.content,
+          claimOrigin: personalNotes.length > 0 || artifact.currentRevision.claimOrigin !== "modelGenerated"
+            ? "mixed" : "modelGenerated",
+          verificationLevel: "notIndependentlyChecked",
+          verificationCurrency: "current",
+          personalNoteContributions: personalNotes.map((note) => ({
+            annotationId: note.annotationId,
+            sourceAnchorId: note.sourceAnchorId,
+            verbatim: note.content,
+            interpretation: interpretations.get(note.annotationId) ?? null
+          })),
+          provenance: {
+            action: "synthesized",
+            createdAt: new Date().toISOString(),
+            priorRevisionId: artifact.revisions.at(-1)!.id
+          }
+        };
+        artifact.sourceAnchorIds = [...new Set([
+          ...artifact.sourceAnchorIds,
+          ...personalNotes.map((note) => note.sourceAnchorId)
+        ])];
+        break;
+      }
       case "editLearningArtifact": {
         const session = this.requireArtifactEditingSession(action.sessionId);
         const artifact = requireLearningArtifact(session, action.artifactId);
@@ -1477,6 +1580,7 @@ export class LearningApplication {
           claimOrigin: artifact.currentRevision.claimOrigin === "learner" ? "learner" : "mixed",
           verificationLevel: "notIndependentlyChecked",
           verificationCurrency: "current",
+          personalNoteContributions: structuredClone(artifact.currentRevision.personalNoteContributions),
           provenance: {
             action: "edited",
             createdAt: new Date().toISOString(),
@@ -1965,6 +2069,10 @@ export class LearningApplication {
       }
       case "setFullAccessConfirmation": {
         this.state.accessConfirmationPreference.confirmFullAccess = action.enabled;
+        break;
+      }
+      case "setPersonalNoteSynthesis": {
+        this.state.personalNoteSynthesisPreference.includePersonalNotes = action.enabled;
         break;
       }
       case "selectSessionAccessPolicy": {
@@ -3222,6 +3330,31 @@ function requiredVerbatimText(value: string, subject: string): string {
   return value;
 }
 
+function validatedArtifactSynthesisResult(
+  value: unknown,
+  personalNoteIds: string[]
+): ArtifactSynthesisResult {
+  if (!isRecord(value) || typeof value.content !== "string" || !value.content.trim()
+    || !Array.isArray(value.noteInterpretations)) {
+    throw new Error("Codex returned an invalid Learning Artifact synthesis.");
+  }
+  const interpretations = value.noteInterpretations;
+  if (!interpretations.every((item) => isRecord(item) && typeof item.annotationId === "string"
+      && typeof item.interpretation === "string" && Boolean(item.interpretation.trim()))) {
+    throw new Error("Codex returned an invalid Learning Artifact synthesis.");
+  }
+  const expected = new Set(personalNoteIds);
+  const returned = new Set(interpretations.map((item) => item.annotationId as string));
+  if (returned.size !== interpretations.length
+    || [...returned].some((annotationId) => !expected.has(annotationId))) {
+    throw new Error("Codex returned Note Interpretations that do not match the supplied Personal Notes.");
+  }
+  return {
+    content: value.content,
+    noteInterpretations: interpretations as ArtifactSynthesisResult["noteInterpretations"]
+  };
+}
+
 function requireTargetDisposition(value: unknown): TargetDisposition {
   if (value !== "addressed" && value !== "deferred" && value !== "unresolved") {
     throw new Error("Choose Addressed, Deferred, or Unresolved for the Session Target.");
@@ -3312,6 +3445,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     };
     current.accessConfirmationPreference = migrateAccessConfirmationPreference(stored.accessConfirmationPreference);
+    current.personalNoteSynthesisPreference = migratePersonalNoteSynthesisPreference(stored.personalNoteSynthesisPreference);
     current.argumentRoadmaps = migrateArgumentRoadmaps(stored.argumentRoadmaps);
     current.sessions = current.sessions.map((session) => ({
       ...session,
@@ -3555,6 +3689,14 @@ function migrateAccessConfirmationPreference(value: unknown): LearningApplicatio
     throw new Error("Stored Access Confirmation Preference is invalid.");
   }
   return { confirmFullAccess: value.confirmFullAccess };
+}
+
+function migratePersonalNoteSynthesisPreference(value: unknown): LearningApplicationState["personalNoteSynthesisPreference"] {
+  if (value === undefined) return { includePersonalNotes: true };
+  if (!isRecord(value) || typeof value.includePersonalNotes !== "boolean") {
+    throw new Error("Stored Personal Note Synthesis Preference is invalid.");
+  }
+  return { includePersonalNotes: value.includePersonalNotes };
 }
 
 function migratePendingQuestion(value: unknown): PendingQuestion | null {
@@ -4396,9 +4538,21 @@ function migrateLearningArtifactRevision(
   } else {
     throw new Error("Stored Learning Artifact revision is invalid.");
   }
-  const migrated = { ...value, provenance };
+  const migrated = {
+    ...value,
+    personalNoteContributions: migratePersonalNoteContributions(value.personalNoteContributions),
+    provenance
+  };
   if (!validLearningArtifactRevision(migrated)) throw new Error("Stored Learning Artifact revision is invalid.");
   return migrated as unknown as LearningArtifactRevision;
+}
+
+function migratePersonalNoteContributions(value: unknown): PersonalNoteContribution[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every(validPersonalNoteContribution)) {
+    throw new Error("Stored Personal Note contribution is invalid.");
+  }
+  return value as PersonalNoteContribution[];
 }
 
 function migrateTrailDraft(value: unknown): TrailDraft {
@@ -4530,12 +4684,19 @@ function validLearningArtifactRevision(value: unknown): boolean {
   return isRecord(value) && typeof value.id === "string" && typeof value.content === "string"
     && (value.claimOrigin === "modelGenerated" || value.claimOrigin === "learner" || value.claimOrigin === "mixed")
     && value.verificationLevel === "notIndependentlyChecked" && value.verificationCurrency === "current"
+    && Array.isArray(value.personalNoteContributions) && value.personalNoteContributions.every(validPersonalNoteContribution)
     && validLearningArtifactRevisionProvenance(value.provenance);
+}
+
+function validPersonalNoteContribution(value: unknown): value is PersonalNoteContribution {
+  return isRecord(value) && typeof value.annotationId === "string" && typeof value.sourceAnchorId === "string"
+    && typeof value.verbatim === "string" && Boolean(value.verbatim.trim())
+    && (value.interpretation === null || (typeof value.interpretation === "string" && Boolean(value.interpretation.trim())));
 }
 
 function validLearningArtifactRevisionProvenance(value: unknown): value is LearningArtifactRevision["provenance"] {
   return isRecord(value)
-    && ["promoted", "edited", "restored"].includes(String(value.action))
+    && ["promoted", "edited", "restored", "synthesized"].includes(String(value.action))
     && (value.createdAt === null || (typeof value.createdAt === "string"
       && !Number.isNaN(Date.parse(value.createdAt)) && new Date(value.createdAt).toISOString() === value.createdAt))
     && (value.priorRevisionId === null || typeof value.priorRevisionId === "string");
@@ -4631,6 +4792,11 @@ function validateSessionSourceAnchorReferences(state: LearningApplicationState, 
     && new Set([card.currentRevision.id, ...card.revisions.map((revision) => revision.id)]).size === card.revisions.length + 1);
   const artifactsAreValid = session.learningArtifacts.every((artifact) => artifact.sourceAnchorIds.length > 0
     && artifact.sourceAnchorIds.every((sourceAnchorId) => anchorsById.has(sourceAnchorId))
+    && [artifact.currentRevision, ...artifact.revisions].every((revision) => revision.personalNoteContributions.every(
+      (note) => anchorsById.has(note.sourceAnchorId)
+        && session.annotations.some((annotation) => annotation.id === note.annotationId
+          && annotation.sourceAnchorId === note.sourceAnchorId && annotation.content === note.verbatim)
+    ))
     && new Set([artifact.currentRevision.id, ...artifact.revisions.map((revision) => revision.id)]).size === artifact.revisions.length + 1);
   const activeCardIsValid = session.activeTeachingCardId === null || cardsById.has(session.activeTeachingCardId);
   const trailItemIds = new Set(session.trailDraft.items.map((item) => item.id));
@@ -4788,7 +4954,8 @@ function initialState(): LearningApplicationState {
       cause: "runtime",
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     },
-    accessConfirmationPreference: { confirmFullAccess: true }
+    accessConfirmationPreference: { confirmFullAccess: true },
+    personalNoteSynthesisPreference: { includePersonalNotes: true }
   };
 }
 

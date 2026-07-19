@@ -103,6 +103,7 @@ describe("Contextual Inspector", () => {
         claimOrigin: "modelGenerated",
         verificationLevel: "notIndependentlyChecked",
         verificationCurrency: "current",
+        personalNoteContributions: [],
         provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
       },
       revisions: [],
