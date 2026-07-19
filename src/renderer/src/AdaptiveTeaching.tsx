@@ -88,7 +88,9 @@ export function AdaptiveTeaching({ session, onState }: {
       ...(transferable ? { evidenceTransferContext: {
         concepts: [concept.trim()],
         mathematicalStructures: commaSeparatedTerms(mathematicalStructures),
-        prerequisiteConcepts: commaSeparatedTerms(prerequisiteConcepts),
+        prerequisiteRelationships: commaSeparatedTerms(prerequisiteConcepts).map((prerequisiteConcept) => ({
+          prerequisiteConcept, supportsConcept: concept.trim(), relationship: "requiredFor" as const
+        })),
         taskDemands: commaSeparatedTerms(taskDemands)
       } } : {})
     });

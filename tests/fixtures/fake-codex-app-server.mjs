@@ -183,7 +183,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
                 evidenceTransferContext: {
                   concepts: ["compactness"],
                   mathematicalStructures: ["compact Hausdorff subspace"],
-                  prerequisiteConcepts: ["Hausdorff separation"],
+                  prerequisiteRelationships: [{
+                    prerequisiteConcept: "Hausdorff separation", supportsConcept: "compactness", relationship: "requiredFor"
+                  }],
                   taskDemands: ["explain a proof strategy"]
                 }
               })

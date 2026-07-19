@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   ModelAccessError,
+  isCompleteEvidenceTransferContext,
+  isEvidenceTransferContext,
   type ArtifactSynthesisResult,
   type AgentBrief,
   type AgentBudget,
@@ -292,7 +294,11 @@ export type LearnerModelConfidence = "low" | "medium" | "high";
 export interface EvidenceTransferContext {
   concepts: string[];
   mathematicalStructures: string[];
-  prerequisiteConcepts: string[];
+  prerequisiteRelationships: Array<{
+    prerequisiteConcept: string;
+    supportsConcept: string;
+    relationship: "requiredFor";
+  }>;
   taskDemands: string[];
 }
 
@@ -302,7 +308,7 @@ export interface LearnerModelLedgerEntry {
   inference: string;
   sourceEvidence: {
     sessionId: string;
-    inferenceId: string;
+    sourceRecordId: string;
     evidenceIds: string[];
     summary: string;
   };
@@ -316,6 +322,12 @@ export interface LearnerModelLedgerEntry {
   confidence: LearnerModelConfidence;
   status: "active" | "corrected" | "excluded";
   correction: string | null;
+  governanceHistory: Array<{
+    id: string;
+    action: "corrected" | "excluded";
+    note: string | null;
+    at: string;
+  }>;
   createdAt: string;
   lastUpdatedAt: string;
 }
@@ -331,7 +343,7 @@ export interface EvidenceTransfer {
   origin: "transferred";
   learnerModelEntryId: string;
   sourceSessionId: string;
-  sourceEvidenceId: string;
+  sourceRecordId: string;
   inference: string;
   confidence: LearnerModelConfidence;
   sourceContext: EvidenceTransferContext;
@@ -2559,9 +2571,13 @@ export class LearningApplication {
         for (const entry of this.state.learnerModel.entries.filter(
           (candidate) => candidate.sourceEvidence.evidenceIds.includes(evidence.id)
         )) {
+          const timestamp = new Date().toISOString();
           entry.status = "corrected";
           entry.correction = evidence.learnerCorrection;
-          entry.lastUpdatedAt = new Date().toISOString();
+          entry.lastUpdatedAt = timestamp;
+          entry.governanceHistory.push({
+            id: crypto.randomUUID(), action: "corrected", note: evidence.learnerCorrection, at: timestamp
+          });
         }
         setAdaptiveTeachingMove(session, evidence, "The learner corrected this Understanding Evidence; it now indicates");
         upsertUnderstandingEvidenceTrailItem(session, evidence);
@@ -2569,16 +2585,19 @@ export class LearningApplication {
       }
       case "correctLearnerModelInference": {
         const entry = requireLearnerModelEntry(this.state.learnerModel, action.entryId);
+        const timestamp = new Date().toISOString();
         entry.status = "corrected";
         entry.correction = requiredText(action.correction, "Learner Model correction");
-        entry.lastUpdatedAt = new Date().toISOString();
+        entry.lastUpdatedAt = timestamp;
+        entry.governanceHistory.push({ id: crypto.randomUUID(), action: "corrected", note: entry.correction, at: timestamp });
         break;
       }
       case "excludeLearnerModelInference": {
         const entry = requireLearnerModelEntry(this.state.learnerModel, action.entryId);
+        const timestamp = new Date().toISOString();
         entry.status = "excluded";
-        entry.correction = null;
-        entry.lastUpdatedAt = new Date().toISOString();
+        entry.lastUpdatedAt = timestamp;
+        entry.governanceHistory.push({ id: crypto.randomUUID(), action: "excluded", note: null, at: timestamp });
         break;
       }
       case "deleteLearnerModelInference": {
@@ -7332,11 +7351,11 @@ function understandingEvidenceLedgerEntry(
     kind: "understandingEvidence",
     inference: UNDERSTANDING_INTERPRETATION_POLICIES[evidence.interpretation].summary,
     sourceEvidence: {
-      sessionId: session.id, inferenceId: evidence.id, evidenceIds: [evidence.id], summary: evidence.response
+      sessionId: session.id, sourceRecordId: evidence.id, evidenceIds: [evidence.id], summary: evidence.response
     },
     mathematicalContext: evidence.evidenceTransferContext
       ? structuredClone(evidence.evidenceTransferContext)
-      : { concepts: [evidence.concept], mathematicalStructures: [], prerequisiteConcepts: [], taskDemands: [] },
+      : { concepts: [evidence.concept], mathematicalStructures: [], prerequisiteRelationships: [], taskDemands: [] },
     scope: {
       workspaceId: session.workspaceId,
       missionId: session.missionId,
@@ -7346,6 +7365,7 @@ function understandingEvidenceLedgerEntry(
     confidence,
     status: "active",
     correction: null,
+    governanceHistory: [],
     createdAt: timestamp,
     lastUpdatedAt: timestamp
   };
@@ -7363,16 +7383,16 @@ function interactionPreferenceLedgerEntry(
     inference: `${preference.route} route ${preference.status}`,
     sourceEvidence: {
       sessionId: session.id,
-      inferenceId: preference.id,
+      sourceRecordId: preference.id,
       evidenceIds: [...preference.evidenceIds],
       summary: `The ${preference.route} Teaching Experiment was ${teachingExperimentOutcomeLabel(outcome)} for this context.`
     },
-    mathematicalContext: {
-      concepts: [preference.context.concept],
-      mathematicalStructures: [],
-      prerequisiteConcepts: [],
-      taskDemands: [preference.context.task]
-    },
+    mathematicalContext: structuredClone(session.understandingEvidence.find(
+      (evidence) => preference.evidenceIds.includes(evidence.id) && evidence.evidenceTransferContext
+    )?.evidenceTransferContext ?? {
+      concepts: [preference.context.concept], mathematicalStructures: [],
+      prerequisiteRelationships: [], taskDemands: [preference.context.task]
+    }),
     scope: {
       workspaceId: session.workspaceId,
       missionId: session.missionId,
@@ -7382,6 +7402,7 @@ function interactionPreferenceLedgerEntry(
     confidence: "medium",
     status: "active",
     correction: null,
+    governanceHistory: [],
     createdAt: timestamp,
     lastUpdatedAt: timestamp
   };
@@ -7392,16 +7413,16 @@ function eligibleEvidenceTransfers(
   targetSession: LearningSession,
   targetContext: EvidenceTransferContext
 ): EvidenceTransfer[] {
-  return model.entries.filter((entry) => entry.kind === "understandingEvidence"
-    && entry.status === "active"
-    && entry.scope.sessionId !== targetSession.id
+  return model.entries.filter((entry) => learnerModelEntryMayGuide(model, entry)
+    && (entry.scope.workspaceId !== targetSession.workspaceId || entry.scope.missionId !== targetSession.missionId)
+    && isCompleteEvidenceTransferContext(entry.mathematicalContext)
     && evidenceTransferContextsMatch(entry.mathematicalContext, targetContext))
     .map((entry) => ({
       id: crypto.randomUUID(),
       origin: "transferred" as const,
       learnerModelEntryId: entry.id,
       sourceSessionId: entry.sourceEvidence.sessionId,
-      sourceEvidenceId: entry.sourceEvidence.evidenceIds[0],
+      sourceRecordId: entry.sourceEvidence.sourceRecordId,
       inference: entry.inference,
       confidence: entry.confidence,
       sourceContext: structuredClone(entry.mathematicalContext),
@@ -7417,10 +7438,24 @@ function eligibleEvidenceTransfers(
 }
 
 function evidenceTransferContextsMatch(source: EvidenceTransferContext, target: EvidenceTransferContext): boolean {
-  return ["concepts", "mathematicalStructures", "prerequisiteConcepts", "taskDemands"].every((field) => {
-    const sourceTerms = new Set(source[field as keyof EvidenceTransferContext].map(normalizeTransferTerm));
-    return target[field as keyof EvidenceTransferContext].some((term) => sourceTerms.has(normalizeTransferTerm(term)));
+  const scalarFields: Array<"concepts" | "mathematicalStructures" | "taskDemands"> = [
+    "concepts", "mathematicalStructures", "taskDemands"
+  ];
+  const scalarMatch = scalarFields.every((field) => {
+    const sourceTerms = new Set(source[field].map(normalizeTransferTerm));
+    return target[field].some((term) => sourceTerms.has(normalizeTransferTerm(term)));
   });
+  const sourceRelationships = new Set(source.prerequisiteRelationships.map(normalizePrerequisiteRelationship));
+  return scalarMatch && target.prerequisiteRelationships.some(
+    (relationship) => sourceRelationships.has(normalizePrerequisiteRelationship(relationship))
+  );
+}
+
+function normalizePrerequisiteRelationship(
+  relationship: EvidenceTransferContext["prerequisiteRelationships"][number]
+): string {
+  return [relationship.prerequisiteConcept, relationship.relationship, relationship.supportsConcept]
+    .map(normalizeTransferTerm).join("::");
 }
 
 function normalizeTransferTerm(value: string): string {
@@ -7432,11 +7467,21 @@ function learnerModelGuidance(
   session: LearningSession
 ): { learnerModelGuidance: { evidenceTransfers: EvidenceTransfer[] } } | Record<string, never> {
   if (!model.adaptiveReuseEnabled || session.ignoreLearnerModel) return {};
-  const activeEntryIds = new Set(model.entries.filter((entry) => entry.status === "active").map((entry) => entry.id));
+  const activeEntryIds = new Set(model.entries.filter((entry) => learnerModelEntryMayGuide(model, entry))
+    .map((entry) => entry.id));
   const evidenceTransfers = session.evidenceTransfers.filter((transfer) => activeEntryIds.has(transfer.learnerModelEntryId));
   return evidenceTransfers.length > 0
     ? { learnerModelGuidance: { evidenceTransfers: structuredClone(evidenceTransfers) } }
     : {};
+}
+
+function learnerModelEntryMayGuide(model: LearnerModel, entry: LearnerModelLedgerEntry): boolean {
+  if (entry.status !== "active") return false;
+  if (entry.kind === "understandingEvidence") return true;
+  return entry.sourceEvidence.evidenceIds.every((evidenceId) => model.entries.some(
+    (candidate) => candidate.kind === "understandingEvidence" && candidate.status === "active"
+      && candidate.sourceEvidence.evidenceIds.includes(evidenceId)
+  ));
 }
 
 function adaptiveTeachingGuidance(
@@ -7459,7 +7504,7 @@ function adaptiveTeachingGuidance(
         (candidate) => candidate.experimentId === experiment.id
       );
       const preferenceActive = preference && model.entries.some((entry) => entry.kind === "interactionPreference"
-        && entry.status === "active" && entry.sourceEvidence.inferenceId === preference.id);
+        && entry.status === "active" && entry.sourceEvidence.sourceRecordId === preference.id);
       if (!preferenceActive) return {};
     }
   }
@@ -7478,11 +7523,15 @@ function requireLearnerModelConfidence(value: unknown): LearnerModelConfidence {
 }
 
 function validatedEvidenceTransferContext(value: unknown): EvidenceTransferContext {
-  if (!isRecord(value)) throw new Error("Evidence Transfer context is invalid.");
+  if (!isCompleteEvidenceTransferContext(value)) throw new Error("Evidence Transfer context is invalid.");
   return {
     concepts: requiredContextTerms(value.concepts, "concept"),
     mathematicalStructures: requiredContextTerms(value.mathematicalStructures, "mathematical structure"),
-    prerequisiteConcepts: requiredContextTerms(value.prerequisiteConcepts, "prerequisite concept"),
+    prerequisiteRelationships: value.prerequisiteRelationships.map((relationship) => ({
+      prerequisiteConcept: relationship.prerequisiteConcept.trim(),
+      supportsConcept: relationship.supportsConcept.trim(),
+      relationship: "requiredFor"
+    })),
     taskDemands: requiredContextTerms(value.taskDemands, "task demand")
   };
 }
@@ -8971,7 +9020,7 @@ function migrateUnderstandingChecks(value: unknown): UnderstandingCheck[] {
     && (check.sourceContext.sourceAnchorId === null || typeof check.sourceContext.sourceAnchorId === "string")
     && Array.isArray(check.sourceContext.sourceIds) && check.sourceContext.sourceIds.every((id) => typeof id === "string")
     && (check.evidenceTransferContext === undefined || check.evidenceTransferContext === null
-      || validEvidenceTransferContext(check.evidenceTransferContext))
+      || isEvidenceTransferContext(check.evidenceTransferContext))
     && typeof check.teachingMoveId === "string"
     && ["offered", "answered", "skipped"].includes(String(check.status)))) {
     throw new Error("Stored Understanding Checks are invalid.");
@@ -8995,7 +9044,7 @@ function migrateUnderstandingEvidence(value: unknown): UnderstandingEvidence[] {
     && (evidence.sourceContext.sourceAnchorId === null || typeof evidence.sourceContext.sourceAnchorId === "string")
     && Array.isArray(evidence.sourceContext.sourceIds) && evidence.sourceContext.sourceIds.every((id) => typeof id === "string")
     && (evidence.evidenceTransferContext === undefined || evidence.evidenceTransferContext === null
-      || validEvidenceTransferContext(evidence.evidenceTransferContext))
+      || isEvidenceTransferContext(evidence.evidenceTransferContext))
     && typeof evidence.elicitingTeachingMoveId === "string"
     && ["specificGap", "secureUnderstanding", "excessivePace"].includes(String(evidence.interpretation))
     && (evidence.learnerCorrection === null || typeof evidence.learnerCorrection === "string"))) {
@@ -9029,11 +9078,11 @@ function migrateLegacyLearnerModel(sessions: LearningSession[]): LearnerModel {
         kind: "understandingEvidence",
         inference: UNDERSTANDING_INTERPRETATION_POLICIES[evidence.interpretation].summary,
         sourceEvidence: {
-          sessionId: session.id, inferenceId: evidence.id, evidenceIds: [evidence.id], summary: evidence.response
+          sessionId: session.id, sourceRecordId: evidence.id, evidenceIds: [evidence.id], summary: evidence.response
         },
         mathematicalContext: evidence.evidenceTransferContext
           ? structuredClone(evidence.evidenceTransferContext)
-          : { concepts: [evidence.concept], mathematicalStructures: [], prerequisiteConcepts: [], taskDemands: [] },
+          : { concepts: [evidence.concept], mathematicalStructures: [], prerequisiteRelationships: [], taskDemands: [] },
         scope: {
           workspaceId: session.workspaceId, missionId: session.missionId,
           sessionId: session.id, sessionTarget: session.sessionTarget
@@ -9041,6 +9090,9 @@ function migrateLegacyLearnerModel(sessions: LearningSession[]): LearnerModel {
         confidence: "low",
         status: evidence.learnerCorrection ? "corrected" : "active",
         correction: evidence.learnerCorrection,
+        governanceHistory: evidence.learnerCorrection ? [{
+          id: `legacy-governance-${evidence.id}`, action: "corrected", note: evidence.learnerCorrection, at: timestamp
+        }] : [],
         createdAt: timestamp,
         lastUpdatedAt: timestamp
       });
@@ -9052,12 +9104,12 @@ function migrateLegacyLearnerModel(sessions: LearningSession[]): LearnerModel {
         inference: `${preference.route} route ${preference.status}`,
         sourceEvidence: {
           sessionId: session.id,
-          inferenceId: preference.id,
+          sourceRecordId: preference.id,
           evidenceIds: [...preference.evidenceIds],
           summary: `Interaction Preference retained from Teaching Experiment ${preference.experimentId}.`
         },
         mathematicalContext: {
-          concepts: [preference.context.concept], mathematicalStructures: [], prerequisiteConcepts: [],
+          concepts: [preference.context.concept], mathematicalStructures: [], prerequisiteRelationships: [],
           taskDemands: [preference.context.task]
         },
         scope: {
@@ -9067,6 +9119,7 @@ function migrateLegacyLearnerModel(sessions: LearningSession[]): LearnerModel {
         confidence: "low",
         status: "active",
         correction: null,
+        governanceHistory: [],
         createdAt: timestamp,
         lastUpdatedAt: timestamp
       });
@@ -9087,16 +9140,16 @@ function migrateEvidenceTransfers(value: unknown): EvidenceTransfer[] {
 function validEvidenceTransfer(value: unknown): value is EvidenceTransfer {
   return isRecord(value) && typeof value.id === "string" && value.origin === "transferred"
     && typeof value.learnerModelEntryId === "string" && typeof value.sourceSessionId === "string"
-    && typeof value.sourceEvidenceId === "string" && typeof value.inference === "string"
+    && typeof value.sourceRecordId === "string" && typeof value.inference === "string"
     && ["low", "medium", "high"].includes(String(value.confidence))
-    && completeEvidenceTransferContext(value.sourceContext) && completeEvidenceTransferContext(value.targetContext)
+    && isCompleteEvidenceTransferContext(value.sourceContext) && isCompleteEvidenceTransferContext(value.targetContext)
     && isRecord(value.provenance) && typeof value.provenance.workspaceId === "string"
     && typeof value.provenance.missionId === "string" && typeof value.provenance.sessionTarget === "string"
     && typeof value.provenance.summary === "string" && validIsoTimestamp(value.provenance.lastUpdatedAt);
 }
 
 function validatedStoredEvidenceTransferContext(value: unknown): EvidenceTransferContext {
-  if (!completeEvidenceTransferContext(value)) throw new Error("Stored Evidence Transfer context is invalid.");
+  if (!isCompleteEvidenceTransferContext(value)) throw new Error("Stored Evidence Transfer context is invalid.");
   return structuredClone(value);
 }
 
@@ -9105,12 +9158,12 @@ function validLearnerModelLedgerEntry(value: unknown): value is LearnerModelLedg
     && (value.kind === "understandingEvidence" || value.kind === "interactionPreference")
     && typeof value.inference === "string" && Boolean(value.inference.trim())
     && isRecord(value.sourceEvidence) && typeof value.sourceEvidence.sessionId === "string"
-    && typeof value.sourceEvidence.inferenceId === "string" && Boolean(value.sourceEvidence.inferenceId)
+    && typeof value.sourceEvidence.sourceRecordId === "string" && Boolean(value.sourceEvidence.sourceRecordId)
     && Array.isArray(value.sourceEvidence.evidenceIds)
     && value.sourceEvidence.evidenceIds.every((id) => typeof id === "string")
     && (value.kind !== "understandingEvidence" || value.sourceEvidence.evidenceIds.length === 1)
     && typeof value.sourceEvidence.summary === "string" && Boolean(value.sourceEvidence.summary.trim())
-    && validEvidenceTransferContext(value.mathematicalContext)
+    && isEvidenceTransferContext(value.mathematicalContext)
     && value.mathematicalContext.concepts.length > 0
     && isRecord(value.scope) && typeof value.scope.workspaceId === "string"
     && typeof value.scope.missionId === "string" && typeof value.scope.sessionId === "string"
@@ -9118,19 +9171,14 @@ function validLearnerModelLedgerEntry(value: unknown): value is LearnerModelLedg
     && ["low", "medium", "high"].includes(String(value.confidence))
     && ["active", "corrected", "excluded"].includes(String(value.status))
     && (value.correction === null || typeof value.correction === "string")
+    && Array.isArray(value.governanceHistory) && value.governanceHistory.every(validLearnerModelGovernanceEvent)
     && validIsoTimestamp(value.createdAt) && validIsoTimestamp(value.lastUpdatedAt);
 }
 
-function validEvidenceTransferContext(value: unknown): value is EvidenceTransferContext {
-  return isRecord(value) && [value.concepts, value.mathematicalStructures, value.prerequisiteConcepts, value.taskDemands]
-    .every((terms) => Array.isArray(terms)
-      && terms.every((term) => typeof term === "string" && Boolean(term.trim())));
-}
-
-function completeEvidenceTransferContext(value: unknown): value is EvidenceTransferContext {
-  return validEvidenceTransferContext(value)
-    && value.concepts.length > 0 && value.mathematicalStructures.length > 0
-    && value.prerequisiteConcepts.length > 0 && value.taskDemands.length > 0;
+function validLearnerModelGovernanceEvent(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === "string" && Boolean(value.id)
+    && (value.action === "corrected" || value.action === "excluded")
+    && (value.note === null || typeof value.note === "string") && validIsoTimestamp(value.at);
 }
 
 function validIsoTimestamp(value: unknown): value is string {

@@ -170,12 +170,14 @@ describe("anchored teaching workbench", () => {
     const state = workbenchState();
     const context = {
       concepts: ["finite subcover"], mathematicalStructures: ["compact Hausdorff subspace"],
-      prerequisiteConcepts: ["Hausdorff separation"], taskDemands: ["apply a finite-subcover argument"]
+      prerequisiteRelationships: [{
+        prerequisiteConcept: "Hausdorff separation", supportsConcept: "finite subcover", relationship: "requiredFor" as const
+      }], taskDemands: ["apply a finite-subcover argument"]
     };
     state.learnerModel.entries = [{
       id: "ledger-1", kind: "understandingEvidence", inference: "secure understanding",
       sourceEvidence: {
-        sessionId: "source-session", inferenceId: "evidence-1", evidenceIds: ["evidence-1"],
+        sessionId: "source-session", sourceRecordId: "evidence-1", evidenceIds: ["evidence-1"],
         summary: "The learner justified the finite choice."
       },
       mathematicalContext: context,
@@ -184,12 +186,13 @@ describe("anchored teaching workbench", () => {
         sessionTarget: "Prove the closed-subset theorem"
       },
       confidence: "high", status: "active", correction: null,
+      governanceHistory: [],
       createdAt: "2026-07-20T00:00:00.000Z", lastUpdatedAt: "2026-07-20T00:00:00.000Z"
     }];
     state.sessions[0].evidenceTransferContext = context;
     state.sessions[0].evidenceTransfers = [{
       id: "transfer-1", origin: "transferred", learnerModelEntryId: "ledger-1",
-      sourceSessionId: "source-session", sourceEvidenceId: "evidence-1", inference: "secure understanding",
+      sourceSessionId: "source-session", sourceRecordId: "evidence-1", inference: "secure understanding",
       confidence: "high", sourceContext: context, targetContext: context,
       provenance: {
         workspaceId: "source-workspace", missionId: "source-mission", sessionTarget: "Prove the closed-subset theorem",

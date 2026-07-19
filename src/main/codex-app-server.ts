@@ -1,4 +1,4 @@
-import { ModelAccessError, type
+import { ModelAccessError, isCompleteEvidenceTransferContext, type
   ArtifactSynthesisRequest,
   ArtifactSynthesisResult,
   AuthenticationState,
@@ -339,7 +339,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
           "Interpret this mathematics intake for an adaptive learning session.",
           "Return only the requested JSON. Make the proposal concise and editable.",
           "Pause for confirmation only when ambiguity or likely cost makes a wrong start materially wasteful.",
-          "Return a structured Evidence Transfer context with concept, mathematical structure, prerequisite concept, and task-demand labels. Use precise reusable mathematical labels rather than broad subject names.",
+          "Return a structured Evidence Transfer context with concept, mathematical structure, directional prerequisite relationships, and task-demand labels. Each relationship must name the prerequisite and the concept it is required for. Use precise reusable mathematical labels rather than broad subject names.",
           "Classify materialScope as focused or longOrMultiStage by mathematical coherence, not arbitrary length. If it is longOrMultiStage, return a compact Argument Roadmap with major claims, stages, dependencies, and an exact verbatim sourceExcerpt for each stage. Propose one coherent stage as the current Learning Slice, including only its immediate prerequisites. Do not expand or teach every step. For focused material, return argumentRoadmap as null.",
           "Mathematics intake:",
           mathematics
@@ -1153,11 +1153,22 @@ const SESSION_PROPOSAL_SCHEMA = {
     evidenceTransferContext: {
       type: "object",
       additionalProperties: false,
-      required: ["concepts", "mathematicalStructures", "prerequisiteConcepts", "taskDemands"],
+      required: ["concepts", "mathematicalStructures", "prerequisiteRelationships", "taskDemands"],
       properties: {
         concepts: { type: "array", minItems: 1, items: { type: "string" } },
         mathematicalStructures: { type: "array", minItems: 1, items: { type: "string" } },
-        prerequisiteConcepts: { type: "array", minItems: 1, items: { type: "string" } },
+        prerequisiteRelationships: {
+          type: "array", minItems: 1,
+          items: {
+            type: "object", additionalProperties: false,
+            required: ["prerequisiteConcept", "supportsConcept", "relationship"],
+            properties: {
+              prerequisiteConcept: { type: "string" },
+              supportsConcept: { type: "string" },
+              relationship: { type: "string", enum: ["requiredFor"] }
+            }
+          }
+        },
         taskDemands: { type: "array", minItems: 1, items: { type: "string" } }
       }
     }
@@ -1223,18 +1234,11 @@ function parseSessionProposal(content: string): SessionProposal {
     || (proposal.materialScope === "focused" && proposal.argumentRoadmap !== null)
     || (proposal.materialScope === "longOrMultiStage" && proposal.argumentRoadmap === null)
     || !validArgumentRoadmapProposal(proposal.argumentRoadmap)
-    || !validEvidenceTransferContext(proposal.evidenceTransferContext)
+    || !isCompleteEvidenceTransferContext(proposal.evidenceTransferContext)
   ) {
     throw new Error("Codex returned a malformed Session Proposal. Retry to request a fresh proposal.");
   }
   return proposal as unknown as SessionProposal;
-}
-
-function validEvidenceTransferContext(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  return [value.concepts, value.mathematicalStructures, value.prerequisiteConcepts, value.taskDemands]
-    .every((terms) => Array.isArray(terms) && terms.length > 0
-      && terms.every((term) => typeof term === "string" && Boolean(term.trim())));
 }
 
 function parseArtifactSynthesis(content: string): ArtifactSynthesisResult {

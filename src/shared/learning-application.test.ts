@@ -65,7 +65,9 @@ describe("Learning Application", () => {
       evidenceTransferContext: {
         concepts: ["finite subcover"],
         mathematicalStructures: ["compact Hausdorff subspace"],
-        prerequisiteConcepts: ["Hausdorff separation"],
+        prerequisiteRelationships: [{
+          prerequisiteConcept: "Hausdorff separation", supportsConcept: "finite subcover", relationship: "requiredFor"
+        }],
         taskDemands: ["apply a finite-subcover argument"]
       }
     });
@@ -94,7 +96,9 @@ describe("Learning Application", () => {
       mathematicalContext: {
         concepts: ["finite subcover"],
         mathematicalStructures: ["compact Hausdorff subspace"],
-        prerequisiteConcepts: ["Hausdorff separation"],
+        prerequisiteRelationships: [{
+          prerequisiteConcept: "Hausdorff separation", supportsConcept: "finite subcover", relationship: "requiredFor"
+        }],
         taskDemands: ["apply a finite-subcover argument"]
       },
       scope: {
@@ -116,7 +120,11 @@ describe("Learning Application", () => {
     });
     expect(state.learnerModel.entries[0]).toMatchObject({
       status: "corrected",
-      correction: "This response repeated the method but did not justify the shared outside neighbourhood."
+      correction: "This response repeated the method but did not justify the shared outside neighbourhood.",
+      governanceHistory: [{
+        action: "corrected",
+        note: "This response repeated the method but did not justify the shared outside neighbourhood."
+      }]
     });
     expect(state.sessions[0].understandingEvidence).toEqual(historicalEvidence);
     await application.submit({ type: "submitQuestion", text: "What should I do next?" });
@@ -135,6 +143,12 @@ describe("Learning Application", () => {
       interpretation: "specificGap"
     });
     const completeHistoricalEvidence = structuredClone(state.sessions[0].understandingEvidence);
+    state = await application.submit({ type: "excludeLearnerModelInference", entryId: entry.id });
+    expect(state.learnerModel.entries[0]).toMatchObject({
+      status: "excluded",
+      correction: "This response repeated the method but did not justify the shared outside neighbourhood.",
+      governanceHistory: [{ action: "corrected" }, { action: "excluded" }]
+    });
     state = await application.submit({ type: "deleteLearnerModelInference", entryId: entry.id });
     expect(state.learnerModel.entries).toHaveLength(1);
     expect(state.sessions[0].understandingEvidence).toEqual(completeHistoricalEvidence);
@@ -158,7 +172,9 @@ describe("Learning Application", () => {
     const matchingContext = {
       concepts: ["finite subcover"],
       mathematicalStructures: ["compact Hausdorff subspace"],
-      prerequisiteConcepts: ["Hausdorff separation"],
+      prerequisiteRelationships: [{
+        prerequisiteConcept: "Hausdorff separation", supportsConcept: "finite subcover", relationship: "requiredFor" as const
+      }],
       taskDemands: ["apply a finite-subcover argument"]
     };
     const runtime = new DeterministicModelRuntime({
@@ -166,7 +182,7 @@ describe("Learning Application", () => {
       initialTeachingDirection: "Relate local separation to a finite choice", requiresConfirmation: false,
       confirmationReason: null, evidenceTransferContext: matchingContext
     }, true);
-    const { application } = await launchWithRuntime(runtime);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
     let state = await application.submit({
       type: "submitSessionIntake",
       mathematics: "Show that a compact subset of a Hausdorff space is closed."
@@ -189,25 +205,56 @@ describe("Learning Application", () => {
       });
     };
     await recordEvidence(matchingContext, "Compactness reduces the neighbourhood family to finitely many choices.");
+    state = await application.submit({
+      type: "startTeachingExperiment", route: "visual", reason: "Test a finite-neighbourhood diagram."
+    });
+    state = await application.submit({
+      type: "completeTeachingExperiment", experimentId: state.sessions[0].teachingExperiments[0].id, outcome: "helpful"
+    });
+    const transferredPreferenceEntryId = state.learnerModel.entries.at(-1)!.id;
     await recordEvidence({
       concepts: ["finite subcover"],
       mathematicalStructures: ["normed vector space"],
-      prerequisiteConcepts: ["open balls"],
+      prerequisiteRelationships: [{
+        prerequisiteConcept: "open balls", supportsConcept: "finite subcover", relationship: "requiredFor"
+      }],
       taskDemands: ["recall a definition"]
     }, "A finite subcover has finitely many members.");
+    await recordEvidence({
+      concepts: ["finite subcover"],
+      mathematicalStructures: ["compact Hausdorff subspace"],
+      prerequisiteRelationships: [{
+        prerequisiteConcept: "Hausdorff separation", supportsConcept: "open-cover definition", relationship: "requiredFor"
+      }],
+      taskDemands: ["apply a finite-subcover argument"]
+    }, "The same prerequisite name appears here, but it supports a different mathematical step.");
+
+    state = await application.submit({
+      type: "submitSessionIntake", mathematics: "Use the same theorem in another question.", ignoreLearnerModel: true
+    });
+    const sameMissionSession = state.sessions.find((session) => session.id === state.activeSessionId)!;
+    expect(sameMissionSession.evidenceTransfers).toEqual([]);
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    state = await application.submit({ type: "createWorkspace", name: "General topology" });
+    const targetWorkspaceId = state.navigation.workspaceId;
+    state = await application.submit({ type: "createMission", workspaceId: targetWorkspaceId, name: "Tube lemma" });
+    const targetMissionId = state.navigation.missionId!;
 
     state = await application.submit({
       type: "submitSessionIntake",
       mathematics: "Prove the tube lemma using compactness in the second factor.",
-      ignoreLearnerModel: true
+      ignoreLearnerModel: true,
+      location: { workspaceId: targetWorkspaceId, missionId: targetMissionId }
     });
     const target = state.sessions.find((session) => session.id === state.activeSessionId)!;
-    expect(target.evidenceTransfers).toHaveLength(1);
+    expect(target.evidenceTransfers).toHaveLength(2);
     expect(target.evidenceTransfers[0]).toMatchObject({
       origin: "transferred",
       learnerModelEntryId: state.learnerModel.entries[0].id,
       sourceSessionId: state.sessions[0].id,
-      sourceEvidenceId: state.sessions[0].understandingEvidence[0].id,
+      sourceRecordId: state.sessions[0].understandingEvidence[0].id,
       inference: "secure understanding",
       confidence: "high",
       sourceContext: matchingContext,
@@ -222,10 +269,13 @@ describe("Learning Application", () => {
     state = await application.submit({ type: "setSessionLearnerModelIgnored", ignored: false });
     await application.submit({ type: "submitQuestion", text: "Now use qualified prior evidence." });
     expect(runtime.teachingRequests.at(-1)?.learnerModelGuidance).toEqual({
-      evidenceTransfers: [expect.objectContaining({
+      evidenceTransfers: expect.arrayContaining([expect.objectContaining({
         learnerModelEntryId: state.learnerModel.entries[0].id,
         origin: "transferred"
-      })]
+      }), expect.objectContaining({
+        learnerModelEntryId: transferredPreferenceEntryId,
+        origin: "transferred"
+      })])
     });
     runtime.completeTeaching();
     await application.waitForModelWork();
@@ -254,6 +304,30 @@ describe("Learning Application", () => {
     expect(runtime.teachingRequests.at(-1)?.learnerModelGuidance).toBeUndefined();
     runtime.completeTeaching();
     await application.waitForModelWork();
+
+    state = await application.submit({ type: "setSessionLearnerModelIgnored", ignored: true });
+    state = await application.submit({ type: "setAdaptiveReusePreference", enabled: false });
+    const targetSessionId = state.activeSessionId!;
+    await application.shutdown();
+    const resumedRuntime = new DeterministicModelRuntime({
+      learningGoal: "Unused", scope: "Unused", initialTeachingDirection: "Unused",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const relaunched = await LearningApplication.launch(dataDirectory, resumedRuntime);
+    applications.push(relaunched);
+    const restoredTarget = relaunched.getState().sessions.find((session) => session.id === targetSessionId)!;
+    expect(relaunched.getState().learnerModel.adaptiveReuseEnabled).toBe(false);
+    expect(restoredTarget.ignoreLearnerModel).toBe(true);
+    expect(restoredTarget.evidenceTransfers).toEqual(state.sessions.find((session) => session.id === targetSessionId)!.evidenceTransfers);
+    expect(relaunched.getState().learnerModel.entries[0].status).toBe("excluded");
+
+    await relaunched.submit({ type: "resumeSession", sessionId: targetSessionId });
+    await relaunched.submit({ type: "setAdaptiveReusePreference", enabled: true });
+    await relaunched.submit({ type: "setSessionLearnerModelIgnored", ignored: false });
+    await relaunched.submit({ type: "submitQuestion", text: "Confirm excluded evidence stays inactive after reload." });
+    expect(resumedRuntime.teachingRequests.at(-1)?.learnerModelGuidance).toBeUndefined();
+    resumedRuntime.completeTeaching();
+    await relaunched.waitForModelWork();
   });
 
   it("migrates existing Understanding Evidence into a conservative Learner Model Ledger", async () => {
@@ -438,7 +512,7 @@ describe("Learning Application", () => {
       mathematicalContext: {
         concepts: ["compactness"],
         mathematicalStructures: [],
-        prerequisiteConcepts: [],
+        prerequisiteRelationships: [],
         taskDemands: [state.sessions[0].sessionTarget]
       }
     });

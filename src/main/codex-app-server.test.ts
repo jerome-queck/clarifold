@@ -156,7 +156,9 @@ describe("Codex app-server contract", () => {
               evidenceTransferContext: {
                 concepts: ["alternating series test"],
                 mathematicalStructures: ["real series"],
-                prerequisiteConcepts: ["absolute value"],
+                prerequisiteRelationships: [{
+                  prerequisiteConcept: "absolute value", supportsConcept: "alternating series test", relationship: "requiredFor"
+                }],
                 taskDemands: ["apply a convergence test"]
               }
             })
@@ -194,7 +196,9 @@ describe("Codex app-server contract", () => {
       evidenceTransferContext: {
         concepts: ["alternating series test"],
         mathematicalStructures: ["real series"],
-        prerequisiteConcepts: ["absolute value"],
+        prerequisiteRelationships: [{
+          prerequisiteConcept: "absolute value", supportsConcept: "alternating series test", relationship: "requiredFor"
+        }],
         taskDemands: ["apply a convergence test"]
       }
     });
@@ -263,16 +267,20 @@ describe("Codex app-server contract", () => {
           origin: "transferred",
           learnerModelEntryId: "ledger-1",
           sourceSessionId: "source-session",
-          sourceEvidenceId: "evidence-1",
+          sourceRecordId: "evidence-1",
           inference: "secure understanding",
           confidence: "high",
           sourceContext: {
             concepts: ["alternating series test"], mathematicalStructures: ["real series"],
-            prerequisiteConcepts: ["absolute value"], taskDemands: ["apply a convergence test"]
+            prerequisiteRelationships: [{
+              prerequisiteConcept: "absolute value", supportsConcept: "alternating series test", relationship: "requiredFor"
+            }], taskDemands: ["apply a convergence test"]
           },
           targetContext: {
             concepts: ["alternating series test"], mathematicalStructures: ["real series"],
-            prerequisiteConcepts: ["absolute value"], taskDemands: ["apply a convergence test"]
+            prerequisiteRelationships: [{
+              prerequisiteConcept: "absolute value", supportsConcept: "alternating series test", relationship: "requiredFor"
+            }], taskDemands: ["apply a convergence test"]
           },
           provenance: {
             workspaceId: "workspace-1", missionId: "mission-1", sessionTarget: "Choose a convergence test",

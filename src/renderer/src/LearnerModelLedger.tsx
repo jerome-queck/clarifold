@@ -74,6 +74,11 @@ export function LearnerModelLedger({ state, session, onState }: {
               <ContextSummary context={entry.mathematicalContext} />
               <p><strong>Last update:</strong> {formatTimestamp(entry.lastUpdatedAt)}</p>
               {entry.correction && <p><strong>Learner correction:</strong> {entry.correction}</p>}
+              {entry.governanceHistory.length > 0 && <ul aria-label={`Governance history for ${entry.inference}`}>
+                {entry.governanceHistory.map((event) => <li key={event.id}>
+                  {event.action} at {formatTimestamp(event.at)}{event.note ? `: ${event.note}` : ""}
+                </li>)}
+              </ul>}
               <form className="evidence-correction" onSubmit={(event) => correct(event, entry)}>
                 <label htmlFor={`ledger-correction-${entry.id}`}>Correction for {entry.inference}</label>
                 <input id={`ledger-correction-${entry.id}`} value={corrections[entry.id] ?? ""}
@@ -99,7 +104,10 @@ export function LearnerModelLedger({ state, session, onState }: {
 }
 
 function ContextSummary({ context }: { context: EvidenceTransferContext }) {
-  return <p><strong>Mathematical context:</strong> concepts {context.concepts.join(", ") || "not recorded"}; structures {context.mathematicalStructures.join(", ") || "not recorded"}; prerequisites {context.prerequisiteConcepts.join(", ") || "not recorded"}; task demands {context.taskDemands.join(", ") || "not recorded"}</p>;
+  const relationships = context.prerequisiteRelationships.map(
+    (relationship) => `${relationship.prerequisiteConcept} is required for ${relationship.supportsConcept}`
+  );
+  return <p><strong>Mathematical context:</strong> concepts {context.concepts.join(", ") || "not recorded"}; structures {context.mathematicalStructures.join(", ") || "not recorded"}; prerequisite relationships {relationships.join(", ") || "not recorded"}; task demands {context.taskDemands.join(", ") || "not recorded"}</p>;
 }
 
 function confidenceLabel(confidence: LearnerModelLedgerEntry["confidence"]): string {
