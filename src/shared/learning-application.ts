@@ -4453,7 +4453,8 @@ function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery 
   const namedTheorem = mathematics.match(
     /(?:prove|disprove|show|verify|study|understand|explain|establish|demonstrate|justify|derive|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
   )?.[1];
-  const substantive = /\b(prove|disprove|proof|establish|demonstrate|justify|derive|deduce|counterexample|theorems?|lemma|proposition|corollary)\b|\b(?:give|find|write|construct|present|supply|outline)\s+(?:me\s+)?(?:an?\s+)?(?:proof|argument|counterexample)\b|\b(?:show|verify|check|confirm)\s+(?:me\s+)?(?:that|whether)\b|\bwhy\s+(?:is|are|does)\b|\bhow\s+(?:can|do|does|would)\b[^.!?]*\b(?:show|prove|establish|derive)\b/i.test(mathematics);
+  const substantive = namedTheorem !== undefined
+    || /\b(prove|disprove|establish|demonstrate|justify|derive|deduce)\b|\bproof\s+(?:that|of)\b|\b(?:give|find|write|construct|present|supply|outline|explain)\s+(?:me\s+)?(?:an?\s+)?(?:proof|argument|counterexample)\b|\b(?:show|verify|check|confirm)\s+(?:me\s+)?(?:that|whether)\b|\bwhy\s+(?:is|are|does)\b(?![^.!?]*\b(?:called|named|mean|definition)\b)|\bhow\s+(?:can|do|does|would)\b[^.!?]*\b(?:show|prove|establish|derive)\b/i.test(mathematics);
   if (!substantive) return null;
   const assumptions = Array.from(mathematics.matchAll(
     /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi

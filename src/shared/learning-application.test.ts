@@ -4569,14 +4569,16 @@ describe("Learning Application", () => {
     runtime.completeTeaching();
   });
 
-  it("does not treat ambiguous mathematical vocabulary as substantive proof intent", async () => {
+  it.each([
+    "What is the argument of a complex number, and what does equivalent mean?",
+    "What is the difference between a lemma and a proposition?",
+    "What is a proof?",
+    "Why is the orbit-stabilizer theorem called a theorem?"
+  ])("does not treat definitional vocabulary as substantive proof intent: %s", async (mathematics) => {
     const research = new DeterministicExternalResearch();
     const { application } = await launchWithExternalResearch(research);
 
-    const state = await application.submit({
-      type: "startQuickStudy",
-      mathematics: "What is the argument of a complex number, and what does equivalent mean?"
-    });
+    const state = await application.submit({ type: "startQuickStudy", mathematics });
 
     expect(research.requests).toEqual([]);
     expect(state.sessions[0].corroborationPass).toBeNull();
