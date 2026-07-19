@@ -16,6 +16,7 @@ import { CodexAppServerRuntime } from "./codex-app-server";
 import type { ModelRuntime } from "../shared/model-runtime";
 import { MacOsSourceAccess } from "./source-access";
 import { MacOsArtifactSharing } from "./artifact-sharing";
+import { BrowserExternalResearch } from "./browser-external-research";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
@@ -92,6 +93,8 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "retryAgentTask":
     case "resumeAgentTask":
       return "taskId" in action && typeof action.taskId === "string";
+    case "cancelExternalResearch":
+      return "researchActionId" in action && typeof action.researchActionId === "string";
     case "resumeSession":
     case "cancelSessionModelWork":
       return "sessionId" in action && typeof action.sessionId === "string";
@@ -178,7 +181,13 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return "policy" in action && ["focused", "workspace", "full"].includes(String(action.policy));
     case "setFullAccessConfirmation":
     case "setPersonalNoteSynthesis":
+    case "setSourceExcerptEgressPreference":
+    case "setResearchEgressPermission":
       return "enabled" in action && typeof action.enabled === "boolean";
+    case "researchWeb":
+      return "query" in action && isDerivedResearchQueryInput(action.query)
+        && "sourceAnchorIds" in action && Array.isArray(action.sourceAnchorIds)
+        && action.sourceAnchorIds.every((id) => typeof id === "string");
     case "decideFullAccessConfirmation":
       return "decision" in action && ["confirm", "cancel"].includes(String(action.decision));
     case "decideAccessRequest":
@@ -209,6 +218,13 @@ function isStudyLocation(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const location = value as Record<string, unknown>;
   return typeof location.workspaceId === "string" && typeof location.missionId === "string";
+}
+
+function isDerivedResearchQueryInput(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const query = value as Record<string, unknown>;
+  return [query.theoremNames, query.assumptions, query.keywords]
+    .every((terms) => Array.isArray(terms) && terms.every((term) => typeof term === "string"));
 }
 
 function registerLearningApplicationHandlers(): void {
@@ -384,7 +400,10 @@ void app.whenReady().then(async () => {
     dataDirectory,
     modelRuntime,
     sourceAccess,
-    new MacOsArtifactSharing(app.getPath("temp"))
+    new MacOsArtifactSharing(app.getPath("temp")),
+    new BrowserExternalResearch(process.env.QUICK_STUDY_TEST_EXTERNAL_RESEARCH === "stub"
+      ? async () => undefined
+      : (url) => shell.openExternal(url))
   );
   registerLearningApplicationHandlers();
   createWindow();

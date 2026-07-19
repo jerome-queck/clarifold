@@ -1079,6 +1079,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
               onState(await window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId: card.sourceAnchorId }));
             }} />}
             <SessionAccessPanel state={state} session={session} onState={onState} />
+            <ExternalResearchPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
             <TeachingCard session={session} modelAvailable={state.modelAccess.status === "available"} onState={onState} />
@@ -1966,6 +1967,123 @@ function accessPolicyDescription(policy: LearningSession["accessPolicy"]): strin
     workspace: "Current session material and supported sources owned by this Study Workspace; unrelated workspaces and device content stay excluded.",
     full: "Broader local-file and agent-tool access for this Learning Session only."
   }[policy];
+}
+
+function ExternalResearchPanel({ state, session, onState }: {
+  state: LearningApplicationState;
+  session: LearningSession;
+  onState: StateHandler;
+}) {
+  const [theoremNames, setTheoremNames] = useState("");
+  const [assumptions, setAssumptions] = useState("");
+  const [keywords, setKeywords] = useState("");
+  const [includeActiveAnchor, setIncludeActiveAnchor] = useState(false);
+  const [researchError, setResearchError] = useState<string | null>(null);
+  const activeAnchor = session.sourceAnchors.find((anchor) => anchor.id === session.activeSourceAnchorId) ?? null;
+  const researchHistory = [...session.researchActions].reverse();
+  const submit = async (action: LearnerAction) => {
+    setResearchError(null);
+    try {
+      onState(await window.quickStudy.submit(action));
+    } catch (error) {
+      setResearchError(error instanceof Error ? error.message : "External research could not be updated.");
+    }
+  };
+  const research = (event: FormEvent) => {
+    event.preventDefault();
+    void submit({
+      type: "researchWeb",
+      query: {
+        theoremNames: researchTerms(theoremNames),
+        assumptions: researchTerms(assumptions),
+        keywords: researchTerms(keywords)
+      },
+      sourceAnchorIds: includeActiveAnchor && activeAnchor ? [activeAnchor.id] : []
+    });
+  };
+  return (
+    <section className="access-policy external-research" aria-labelledby="external-research-title">
+      <div className="access-heading">
+        <div>
+          <p className="eyebrow">External research</p>
+          <h2 id="external-research-title">Privacy-minimized web research</h2>
+          <p>Independent from Codex model access. Every Session Access Policy can use a privacy-minimized Derived Research Query.</p>
+        </div>
+        <span className="saved" role="status">{sessionAccessPolicyLabel(session.accessPolicy)}</span>
+      </div>
+      <form className="research-form" onSubmit={research}>
+        <label htmlFor="research-theorems">Theorem names</label>
+        <input id="research-theorems" value={theoremNames} onChange={(event) => setTheoremNames(event.target.value)} />
+        <label htmlFor="research-assumptions">Assumptions</label>
+        <input id="research-assumptions" value={assumptions} onChange={(event) => setAssumptions(event.target.value)} />
+        <label htmlFor="research-keywords">Mathematical keywords</label>
+        <input id="research-keywords" value={keywords} onChange={(event) => setKeywords(event.target.value)} />
+        <small>Separate multiple terms with semicolons. Learner-authored terms do not read local material. Automatic queries record the policy-authorized sources that informed them and exclude raw passages, local paths, filenames, annotations, Personal Notes, and unrelated workspace context.</small>
+        <label className="confirmation-preference">
+          <input type="checkbox" checked={includeActiveAnchor}
+            disabled={!activeAnchor || !state.sourceExcerptEgressPreference.enabled
+              || session.researchEgressPermission.status !== "granted"}
+            onChange={(event) => setIncludeActiveAnchor(event.target.checked)} />
+          Include the active Source Anchor excerpt
+        </label>
+        <button className="primary" disabled={!theoremNames.trim() && !assumptions.trim() && !keywords.trim()}>
+          Research the web
+        </button>
+      </form>
+      <label className="confirmation-preference">
+        <input type="checkbox" checked={state.sourceExcerptEgressPreference.enabled}
+          onChange={(event) => void submit({ type: "setSourceExcerptEgressPreference", enabled: event.target.checked })} />
+        Enable Source Excerpt Egress Preference app-wide
+      </label>
+      <label className="confirmation-preference">
+        <input type="checkbox" checked={session.researchEgressPermission.status === "granted"}
+          onChange={(event) => void submit({ type: "setResearchEgressPermission", enabled: event.target.checked })} />
+        Allow Source Excerpt Egress for this Learning Session
+      </label>
+      <p role="status">
+        Source Excerpt Egress: {session.researchEgressPermission.status === "granted"
+          ? "Granted"
+          : session.researchEgressPermission.status === "revoked" ? "Revoked" : "Not granted"}
+      </p>
+      <small>A minimized automatic Corroboration Pass starts when the intake names a theorem. Research Egress Permission applies only to raw Source Excerpts; revoking it stops active excerpt research and never retries silently.</small>
+      <small>Only inspectable excerpts under the active policy are eligible. Whole-file transmission always needs a separate explicit confirmation and is not available from this control.</small>
+      {researchHistory.length > 0 && (
+        <section aria-label="External research history">
+          {researchHistory.map((research) => (
+            <article key={research.id} className="research-receipt"
+              aria-label={`External research receipt for ${research.query.text}`}>
+              <p className="eyebrow">Derived Research Query</p>
+              <strong>{research.query.text}</strong>
+              <dl>
+                <div><dt>Query origin</dt><dd>{research.queryOrigin === "automaticCorroboration" ? "Automatic Source Corroboration" : "Learner-authored terms"}</dd></div>
+                <div><dt>Local sources informing query</dt><dd>{research.informedBySourceIds.length}</dd></div>
+                <div><dt>Destination used</dt><dd><code>{research.destination}</code></dd></div>
+                <div><dt>Source Excerpts sent</dt><dd>{research.excerpts.length}</dd></div>
+                <div><dt>Status</dt><dd role="status">{research.status}</dd></div>
+              </dl>
+              <button className="secondary" aria-label={`Inspect destination used for ${research.query.text}`}
+                onClick={() => void window.quickStudy.openExternal(research.destination)}>
+                Inspect destination used
+              </button>
+              {research.status === "running" && (
+                <button className="secondary" aria-label={`Stop external research for ${research.query.text}`}
+                  onClick={() => void submit({
+                  type: "cancelExternalResearch", researchActionId: research.id
+                  })}>Stop external research</button>
+              )}
+              {research.result && <><h3>{research.result.title}</h3><p>{research.result.summary}</p></>}
+              {research.error && <p className="failure-message" role="alert">{research.error}</p>}
+            </article>
+          ))}
+        </section>
+      )}
+      {researchError && <p className="failure-message" role="alert">{researchError}</p>}
+    </section>
+  );
+}
+
+function researchTerms(value: string): string[] {
+  return value.split(/[;\n]/).map((term) => term.trim()).filter(Boolean);
 }
 
 function TeachingCard({ session, modelAvailable, onState }: { session: LearningSession; modelAvailable: boolean; onState: StateHandler }) {

@@ -156,6 +156,7 @@ function questionSession(): LearningSession {
     teachingCardHistory: [], submittedPendingQuestions: [], currentTeachingInput: { kind: "sessionIntake", text: "Every compact subset is closed." },
     pendingQuestion: null, askBarContext: { items, includedIds: items.slice(0, 4).map((item) => item.id), customized: true },
     questionCards: [], activeQuestionCardId: null, accessPolicy: "workspace", accessRequests: [], pendingFullAccessConfirmation: false,
+    researchEgressPermission: { status: "notGranted" }, researchActions: [],
     sourceAnchors: [], sourceAnchorRequests: [], annotations: [], activeSourceAnchorId: "anchor-1", anchoredTeachingCards: [], activeTeachingCardId: null,
     trailDraft: { items: [] },
     consolidationDraft: null, consolidatedOutcome: null, continuationOf: null, modelStopConfirmation: null,

@@ -24,6 +24,15 @@ import { annotationPurposeLabel, type AnnotationPurpose, type SourceAnnotation }
 export type { AnnotationPurpose, SourceAnnotation } from "./annotations";
 import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-access";
 import { coordinateAgentTasks } from "./agent-task-coordinator";
+import {
+  buildDerivedResearchQuery,
+  validatedExternalResearchResult,
+  type DerivedResearchQuery,
+  type DerivedResearchQueryInput,
+  type ExternalResearch,
+  type ExternalResearchResult,
+  type ResearchExcerpt
+} from "./external-research";
 export type { SessionAccessPolicy } from "./session-access";
 
 const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
@@ -52,6 +61,19 @@ export interface SessionAccessRequest {
   intendedAction: string;
   status: "pending" | "approved" | "denied" | "narrowed";
   decidedPolicy: SessionAccessPolicy | null;
+}
+
+export interface ResearchAction {
+  id: string;
+  accessPolicy: SessionAccessPolicy;
+  query: DerivedResearchQuery;
+  queryOrigin: "learnerAuthored" | "automaticCorroboration";
+  informedBySourceIds: string[];
+  destination: string;
+  excerpts: ResearchExcerpt[];
+  status: "running" | "completed" | "denied" | "timedOut" | "failed" | "stopped";
+  result: ExternalResearchResult | null;
+  error: string | null;
 }
 
 export type ModelAccessState =
@@ -106,6 +128,7 @@ export interface SourceTextLocation {
   exactText: string;
   prefix: string;
   suffix: string;
+  pageNumbers?: number[];
 }
 
 export interface NormalizedSourceRegionBounds {
@@ -650,6 +673,8 @@ export interface LearningSession {
   accessPolicy: SessionAccessPolicy;
   accessRequests: SessionAccessRequest[];
   pendingFullAccessConfirmation: boolean;
+  researchEgressPermission: { status: "notGranted" | "granted" | "revoked" };
+  researchActions: ResearchAction[];
   sourceAnchors: SourceAnchor[];
   sourceAnchorRequests: SourceAnchorRequest[];
   annotations: SourceAnnotation[];
@@ -707,6 +732,9 @@ export interface LearningApplicationState {
   };
   personalNoteSynthesisPreference: {
     includePersonalNotes: boolean;
+  };
+  sourceExcerptEgressPreference: {
+    enabled: boolean;
   };
 }
 
@@ -771,6 +799,10 @@ export type LearnerAction =
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
   | { type: "setPersonalNoteSynthesis"; enabled: boolean }
+  | { type: "setSourceExcerptEgressPreference"; enabled: boolean }
+  | { type: "setResearchEgressPermission"; enabled: boolean }
+  | { type: "researchWeb"; query: DerivedResearchQueryInput; sourceAnchorIds: string[] }
+  | { type: "cancelExternalResearch"; researchActionId: string }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
   | {
       type: "decideAccessRequest";
@@ -829,6 +861,7 @@ export class LearningApplication {
     restart(): Promise<void>;
   }>();
   private readonly accessDecisionWaiters = new Map<string, (decision: RuntimeAccessDecision) => void>();
+  private readonly researchWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
   private agentWorkLogs: Record<string, Array<ModelRuntimeEvent & { sequence: number }>> = {};
   private sourceIndexDocuments = new Map<string, SourceIndexDocument>();
@@ -838,7 +871,8 @@ export class LearningApplication {
     dataDirectory: string,
     modelRuntime: ModelRuntime | null,
     private readonly sourceAccess: LocalSourceAccess | null,
-    private readonly artifactSharing: ArtifactSharing | null
+    private readonly artifactSharing: ArtifactSharing | null,
+    private readonly externalResearch: ExternalResearch | null
   ) {
     this.statePath = join(dataDirectory, "learning-application.json");
     this.sourceIndexPath = join(dataDirectory, "source-index.json");
@@ -849,9 +883,10 @@ export class LearningApplication {
     dataDirectory: string,
     modelRuntime: ModelRuntime | null = null,
     sourceAccess: LocalSourceAccess | null = null,
-    artifactSharing: ArtifactSharing | null = null
+    artifactSharing: ArtifactSharing | null = null,
+    externalResearch: ExternalResearch | null = null
   ): Promise<LearningApplication> {
-    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess, artifactSharing);
+    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess, artifactSharing, externalResearch);
     try {
       const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
       const { agentWorkLogs, ...storedState } = stored;
@@ -863,6 +898,12 @@ export class LearningApplication {
         session.pendingFullAccessConfirmation = false;
         for (const request of session.accessRequests) {
           if (request.status === "pending") request.status = "denied";
+        }
+        for (const research of session.researchActions) {
+          if (research.status === "running") {
+            research.status = "failed";
+            research.error = "External research stopped when the application closed. Review and start it again explicitly.";
+          }
         }
         if (session.teachingCard.status === "streaming") {
           replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content));
@@ -1447,6 +1488,7 @@ export class LearningApplication {
 
   async waitForModelWork(): Promise<void> {
     await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
+    await Promise.all([...this.researchWorks.values()].map((work) => work.promise));
     await this.persistence;
   }
 
@@ -1456,6 +1498,15 @@ export class LearningApplication {
         if (request.status !== "pending") continue;
         request.status = "denied";
         this.resolveAccessDecision(request.id, { status: "denied", policy: session.accessPolicy });
+      }
+    }
+    for (const [researchActionId, work] of this.researchWorks) {
+      work.controller.abort();
+      const research = this.state.sessions.flatMap((session) => session.researchActions)
+        .find((candidate) => candidate.id === researchActionId);
+      if (research?.status === "running") {
+        research.status = "stopped";
+        research.error = "External research stopped when the application closed. Start it again explicitly after relaunch.";
       }
     }
     const activeWorks = [...this.modelWorks.entries()];
@@ -2092,6 +2143,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
+        this.beginAutomaticCorroboration(session);
         break;
       }
       case "submitSessionIntake": {
@@ -2146,6 +2198,7 @@ export class LearningApplication {
           this.state.resumeSessionId = selectedSession.id;
           this.state.navigation = { workspaceId: selectedSession.workspaceId, missionId: selectedSession.missionId };
           this.state.screen = "workbench";
+          this.beginAutomaticCorroboration(selectedSession);
           break;
         }
         const session = createLearningSession({
@@ -2178,6 +2231,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
+        this.beginAutomaticCorroboration(session);
         if (!proposal.requiresConfirmation) await this.beginTeaching(session);
         break;
       }
@@ -2432,6 +2486,94 @@ export class LearningApplication {
       }
       case "setPersonalNoteSynthesis": {
         this.state.personalNoteSynthesisPreference.includePersonalNotes = action.enabled;
+        break;
+      }
+      case "setSourceExcerptEgressPreference": {
+        this.state.sourceExcerptEgressPreference.enabled = action.enabled;
+        break;
+      }
+      case "setResearchEgressPermission": {
+        const session = this.requireActiveSession();
+        session.researchEgressPermission = { status: action.enabled ? "granted" : "revoked" };
+        if (!action.enabled) this.stopSessionExcerptResearch(
+          session,
+          "Research Egress Permission for Source Excerpts was revoked. No retry was attempted."
+        );
+        break;
+      }
+      case "cancelExternalResearch": {
+        const session = this.requireActiveSession();
+        const research = session.researchActions.find((candidate) => candidate.id === action.researchActionId);
+        if (!research || research.status !== "running") throw new Error("Choose active external research to stop.");
+        this.stopResearch(research, "External research was stopped by the learner. No retry was attempted.");
+        break;
+      }
+      case "researchWeb": {
+        const session = this.requireActiveSession();
+        const query = buildDerivedResearchQuery(action.query);
+        const destination = researchDestination(query);
+        const researchAction: ResearchAction = {
+          id: crypto.randomUUID(),
+          accessPolicy: session.accessPolicy,
+          query,
+          queryOrigin: "learnerAuthored",
+          informedBySourceIds: [],
+          destination,
+          excerpts: [],
+          status: "running",
+          result: null,
+          error: null
+        };
+        session.researchActions.push(researchAction);
+        const sourceAnchorIds = [...new Set(action.sourceAnchorIds)];
+        if (sourceAnchorIds.length > 0) {
+          if (!this.state.sourceExcerptEgressPreference.enabled
+            || session.researchEgressPermission.status !== "granted") {
+            researchAction.status = "denied";
+            researchAction.error = "Source Excerpt Egress was denied. The Derived Research Query was not sent.";
+            break;
+          }
+          const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
+          try {
+            researchAction.excerpts = sourceAnchorIds.map((sourceAnchorId) => {
+              const anchor = requireSourceAnchor(session, sourceAnchorId);
+              if (!authorizedSourceIds.has(anchor.sourceId)) {
+                throw new Error("The active Session Access Policy does not allow this source to inform external research.");
+              }
+              if (anchor.selection.kind === "diagramRegion") {
+                throw new Error("Choose an inspectable text or equation excerpt for external research.");
+              }
+              if (!anchor.selection.prefix && !anchor.selection.suffix) {
+                throw new Error("Whole-file transmission requires a separate explicit confirmation and is not available from Source Excerpt Egress.");
+              }
+              if (anchor.selection.exactText.length > 2_000) {
+                throw new Error("Choose a Source Excerpt of at most 2,000 characters for external research.");
+              }
+              return {
+                sourceId: anchor.sourceId,
+                kind: anchor.selection.pageNumbers
+                  ? "selectedPages" as const
+                  : anchor.selection.kind === "equation" ? "equation" as const : "excerpt" as const,
+                content: anchor.selection.exactText,
+                location: anchor.selection.pageNumbers
+                  ? `Selected pages ${anchor.selection.pageNumbers.join(", ")}: characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`
+                  : `${anchor.selection.kind === "equation" ? `Equation ${anchor.selection.equationIndex + 1}` : "Text"}: characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`,
+                relevance: "learnerSelectedForQuery" as const
+              };
+            });
+          } catch (error) {
+            researchAction.status = "denied";
+            researchAction.error = error instanceof Error ? error.message : "Source Excerpt Egress was denied.";
+            break;
+          }
+          researchAction.destination = researchDestination(query, researchAction.excerpts);
+        }
+        if (!this.externalResearch) {
+          researchAction.status = "failed";
+          researchAction.error = "External research is unavailable. Local work and model access remain unchanged.";
+          break;
+        }
+        this.beginExternalResearch(researchAction);
         break;
       }
       case "selectSessionAccessPolicy": {
@@ -3302,6 +3444,22 @@ export class LearningApplication {
     source: WorkspaceSource
   ): Promise<SourceAnchorSelection> {
     const validated = validatedSourceAnchorSelection(selection, source);
+    if (selection.kind !== "diagramRegion" && selection.pageNumbers) {
+      if (source.kind !== "linkedSource" || !this.sourceAccess) {
+        throw new Error("Selected pages require an indexed Linked Source available under the active policy.");
+      }
+      const extraction = validatedSourceIndexExtractionResult(await this.sourceAccess.extractForIndex(source));
+      if (!sameFingerprint(source.link.fingerprint, extraction.fingerprint)) {
+        throw new Error("This source changed before the selected pages could be saved.");
+      }
+      const selectedPages = selection.pageNumbers.map((pageNumber) =>
+        extraction.pages.find((page) => page.pageNumber === pageNumber));
+      if (selectedPages.some((page) => !page)
+        || !selectedPages.some((page) => page!.regions.some((region) => region.text.includes(selection.exactText)))) {
+        throw new Error("Choose selected pages and text available in the current Source Index.");
+      }
+      return validated;
+    }
     if (source.kind === "managedAsset") return validated;
     if (!this.sourceAccess) throw new Error("Local source access is unavailable.");
     const view = await this.sourceAccess.read(source);
@@ -3546,6 +3704,82 @@ export class LearningApplication {
         ? this.state.modelAccess.message
         : "Connect a Model Runtime before starting model-backed teaching.");
     }
+  }
+
+  private beginAutomaticCorroboration(session: LearningSession): void {
+    if (!this.externalResearch || session.researchActions.some((research) => research.queryOrigin === "automaticCorroboration")) return;
+    const query = automaticCorroborationQuery(session.mathematics);
+    if (!query) return;
+    const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
+    const intakeSource = this.state.sources.find((source) => source.kind === "managedAsset"
+      && session.sourceIds.includes(source.id) && managedAssetLearnerContent(source) === session.mathematics);
+    const informedBySourceIds = intakeSource && authorizedSourceIds.has(intakeSource.id) ? [intakeSource.id] : [];
+    const research: ResearchAction = {
+      id: crypto.randomUUID(),
+      accessPolicy: session.accessPolicy,
+      query,
+      queryOrigin: "automaticCorroboration",
+      informedBySourceIds,
+      destination: researchDestination(query),
+      excerpts: [],
+      status: "running",
+      result: null,
+      error: null
+    };
+    session.researchActions.push(research);
+    this.beginExternalResearch(research);
+  }
+
+  private beginExternalResearch(research: ResearchAction): void {
+    const controller = new AbortController();
+    const promise = Promise.resolve().then(async () => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const result = await Promise.race([
+          this.externalResearch!.research({
+            query: research.query,
+            queryOrigin: research.queryOrigin,
+            informedBySourceIds: [...research.informedBySourceIds],
+            destination: research.destination,
+            excerpts: structuredClone(research.excerpts),
+            signal: controller.signal
+          }),
+          new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+              controller.abort();
+              reject(new DOMException("External research timed out.", "TimeoutError"));
+            }, 15_000);
+          })
+        ]);
+        if (research.status !== "running") return;
+        research.result = validatedExternalResearchResult(result);
+        research.status = "completed";
+      } catch (error) {
+        if (research.status !== "running") return;
+        const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+        research.status = timedOut ? "timedOut" : "failed";
+        research.error = timedOut
+          ? "External research timed out. No access was elevated and no retry was attempted."
+          : usefulResearchError(error);
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+        this.researchWorks.delete(research.id);
+        await this.publishAndPersist();
+      }
+    });
+    this.researchWorks.set(research.id, { controller, promise });
+  }
+
+  private stopSessionExcerptResearch(session: LearningSession, message: string): void {
+    for (const research of session.researchActions) {
+      if (research.status === "running" && research.excerpts.length > 0) this.stopResearch(research, message);
+    }
+  }
+
+  private stopResearch(research: ResearchAction, message: string): void {
+    this.researchWorks.get(research.id)?.controller.abort();
+    research.status = "stopped";
+    research.error = message;
   }
 
   private emitState(state = this.getState()): void {
@@ -4084,6 +4318,57 @@ function usefulRuntimeError(error: unknown): string {
     : "Codex could not complete this Teaching Card. Check authentication and try again.";
 }
 
+function usefulResearchError(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim()
+    ? error.message
+    : "The external research service failed.";
+  return `${detail} No access was elevated and no retry was attempted.`;
+}
+
+function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery | null {
+  const namedTheorem = mathematics.match(
+    /(?:prove|show|verify|study|understand|explain|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
+  )?.[1];
+  const substantive = /\b(prove|proof|show\s+that|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary)\b/i.test(mathematics);
+  if (!substantive) return null;
+  const theoremName = namedTheorem?.replace(/\s+/g, " ");
+  if (theoremName) {
+    return buildDerivedResearchQuery({ theoremNames: [theoremName], assumptions: [], keywords: [] });
+  }
+  const assumptions = Array.from(mathematics.matchAll(
+    /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi
+  )).map(([assumption]) => assumption.toLocaleLowerCase())
+    .filter((assumption, index, all) => all.indexOf(assumption) === index)
+    .slice(0, 3);
+  const allowedKeywords = new Set([
+    "abelian", "algebra", "compact", "compactness", "continuous", "convergence", "derivative", "field", "finite",
+    "graph", "group", "hausdorff", "homomorphism", "integral", "isomorphism", "matrix", "measure", "probability",
+    "ring", "sequence", "series", "subgroup", "topology", "vector"
+  ]);
+  const assumptionTerms = new Set(assumptions.flatMap((assumption) => assumption.match(/[a-z][a-z'’\-]*/g) ?? []));
+  const keywords = (mathematics.match(/[a-z][a-z'’\-]{2,}/gi) ?? [])
+    .map((term) => term.toLocaleLowerCase())
+    .filter((term, index, terms) => allowedKeywords.has(term) && !assumptionTerms.has(term) && terms.indexOf(term) === index)
+    .slice(0, 5);
+  if (assumptions.length === 0 && keywords.length === 0) return null;
+  return buildDerivedResearchQuery({ theoremNames: [], assumptions, keywords });
+}
+
+function researchDestination(query: DerivedResearchQuery, excerpts: ResearchExcerpt[] = []): string {
+  const destination = new URL("https://duckduckgo.com/");
+  destination.searchParams.set("q", [query.text, ...excerpts.map((excerpt) => `"${excerpt.content}"`)].join("; "));
+  return destination.href;
+}
+
+function researchDestinationIsAllowed(value: string): boolean {
+  try {
+    const destination = new URL(value);
+    return destination.protocol === "https:" && destination.hostname === "duckduckgo.com";
+  } catch {
+    return false;
+  }
+}
+
 function agentWorkEvidenceSummary(event: ModelRuntimeEvent): string {
   if (event.workKind === "specialist") {
     return {
@@ -4173,6 +4458,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     };
     current.accessConfirmationPreference = migrateAccessConfirmationPreference(stored.accessConfirmationPreference);
     current.personalNoteSynthesisPreference = migratePersonalNoteSynthesisPreference(stored.personalNoteSynthesisPreference);
+    current.sourceExcerptEgressPreference = migrateSourceExcerptEgressPreference(stored.sourceExcerptEgressPreference);
     current.argumentRoadmaps = migrateArgumentRoadmaps(stored.argumentRoadmaps);
     current.sessions = current.sessions.map((session) => ({
       ...session,
@@ -4189,6 +4475,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       accessPolicy: migrateSessionAccessPolicy(session.accessPolicy),
       accessRequests: migrateAccessRequests(session.accessRequests),
       pendingFullAccessConfirmation: false,
+      researchEgressPermission: migrateResearchEgressPermission(session.researchEgressPermission),
+      researchActions: migrateResearchActions(session.researchActions),
       sourceAnchors: migrateSourceAnchors(session.sourceAnchors, current.sources, current.sourceRevisions),
       sourceAnchorRequests: migrateSourceAnchorRequests(session.sourceAnchorRequests),
       annotations: migrateAnnotations(session.annotations),
@@ -4249,6 +4537,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,
+      researchEgressPermission: { status: "notGranted" },
+      researchActions: [],
       sourceAnchors: [],
       sourceAnchorRequests: [],
       annotations: [],
@@ -4581,6 +4871,74 @@ function migratePersonalNoteSynthesisPreference(value: unknown): LearningApplica
     throw new Error("Stored Personal Note Synthesis Preference is invalid.");
   }
   return { includePersonalNotes: value.includePersonalNotes };
+}
+
+function migrateSourceExcerptEgressPreference(value: unknown): LearningApplicationState["sourceExcerptEgressPreference"] {
+  if (value === undefined) return { enabled: false };
+  if (!isRecord(value) || typeof value.enabled !== "boolean") {
+    throw new Error("Stored Source Excerpt Egress Preference is invalid.");
+  }
+  return { enabled: value.enabled };
+}
+
+function migrateResearchEgressPermission(value: unknown): LearningSession["researchEgressPermission"] {
+  if (value === undefined) return { status: "notGranted" };
+  if (!isRecord(value) || !["notGranted", "granted", "revoked"].includes(String(value.status))) {
+    throw new Error("Stored Research Egress Permission is invalid.");
+  }
+  return { status: value.status as LearningSession["researchEgressPermission"]["status"] };
+}
+
+function migrateResearchActions(value: unknown): ResearchAction[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored external research actions are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string"
+      || !["focused", "workspace", "full"].includes(String(candidate.accessPolicy))
+      || typeof candidate.destination !== "string" || !researchDestinationIsAllowed(candidate.destination)
+      || !["learnerAuthored", "automaticCorroboration"].includes(String(candidate.queryOrigin))
+      || !Array.isArray(candidate.informedBySourceIds)
+      || !candidate.informedBySourceIds.every((sourceId) => typeof sourceId === "string")
+      || !["running", "completed", "denied", "timedOut", "failed", "stopped"].includes(String(candidate.status))
+      || !(candidate.error === null || typeof candidate.error === "string")
+      || !Array.isArray(candidate.excerpts) || !isRecord(candidate.query)) {
+      throw new Error("Stored external research actions are invalid.");
+    }
+    const query = buildDerivedResearchQuery({
+      theoremNames: candidate.query.theoremNames as string[],
+      assumptions: candidate.query.assumptions as string[],
+      keywords: candidate.query.keywords as string[]
+    });
+    const excerpts = candidate.excerpts.map((excerpt) => {
+      if (!isRecord(excerpt) || typeof excerpt.sourceId !== "string"
+        || !["excerpt", "equation", "selectedPages"].includes(String(excerpt.kind))
+        || typeof excerpt.content !== "string" || !excerpt.content.trim()
+        || typeof excerpt.location !== "string" || !excerpt.location.trim()
+        || excerpt.relevance !== "learnerSelectedForQuery") {
+        throw new Error("Stored external research actions are invalid.");
+      }
+      return excerpt as unknown as ResearchExcerpt;
+    });
+    const result = candidate.result === null ? null : validatedExternalResearchResult(candidate.result);
+    const status = candidate.status as ResearchAction["status"];
+    if (candidate.destination !== researchDestination(query, excerpts)
+      || (status === "completed") !== (result !== null)
+      || (["denied", "timedOut", "failed", "stopped"].includes(status) && typeof candidate.error !== "string")) {
+      throw new Error("Stored external research actions are invalid.");
+    }
+    return {
+      id: candidate.id,
+      accessPolicy: candidate.accessPolicy as SessionAccessPolicy,
+      query,
+      queryOrigin: candidate.queryOrigin as ResearchAction["queryOrigin"],
+      informedBySourceIds: candidate.informedBySourceIds as string[],
+      destination: candidate.destination,
+      excerpts,
+      status,
+      result,
+      error: candidate.error as string | null
+    };
+  });
 }
 
 function migratePendingQuestion(value: unknown): PendingQuestion | null {
@@ -4944,6 +5302,9 @@ function sourceAnchorLocation(anchor: SourceAnchor): string {
     const { x, y, width, height } = anchor.selection.bounds;
     return `Diagram region at ${Math.round(x * 100)}% left, ${Math.round(y * 100)}% top, ${Math.round(width * 100)}% wide, ${Math.round(height * 100)}% high`;
   }
+  if (anchor.selection.pageNumbers) {
+    return `Selected pages ${anchor.selection.pageNumbers.join(", ")} at characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`;
+  }
   return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} at characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`;
 }
 
@@ -4972,6 +5333,8 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     activeQuestionCardId: null,
     accessRequests: [],
     pendingFullAccessConfirmation: false,
+    researchEgressPermission: { status: "notGranted" },
+    researchActions: [],
     sourceAnchors: details.sourceAnchors ?? [],
     sourceAnchorRequests: [],
     annotations: [],
@@ -5992,7 +6355,8 @@ function validatedSourceAnchorSelection(value: unknown, source?: WorkspaceSource
     endOffset: endOffset as number,
     exactText: value.exactText,
     prefix: value.prefix,
-    suffix: value.suffix
+    suffix: value.suffix,
+    ...(value.pageNumbers === undefined ? {} : { pageNumbers: validatedPageNumbers(value.pageNumbers) })
   };
   if (source?.kind === "managedAsset" && !matchesSourceTextLocation(managedAssetLearnerContent(source), location)) {
     throw new Error("The selected source text no longer matches this Source Layer.");
@@ -6011,6 +6375,16 @@ function matchesSourceTextLocation(
   return content.slice(selection.startOffset, selection.endOffset) === selection.exactText
     && content.slice(Math.max(0, selection.startOffset - selection.prefix.length), selection.startOffset) === selection.prefix
     && content.slice(selection.endOffset, selection.endOffset + selection.suffix.length) === selection.suffix;
+}
+
+function validatedPageNumbers(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 12
+    || !value.every((pageNumber) => Number.isInteger(pageNumber) && pageNumber > 0)
+    || new Set(value).size !== value.length
+    || value.some((pageNumber, index) => index > 0 && pageNumber <= value[index - 1])) {
+    throw new Error("Selected pages require 1–12 unique ascending page numbers.");
+  }
+  return value as number[];
 }
 
 function reanchoringMatch(
@@ -6036,7 +6410,8 @@ function reanchoringMatch(
             startOffset,
             endOffset,
             prefix,
-            suffix
+            suffix,
+            ...(selection.pageNumbers ? { pageNumbers: [page.pageNumber] } : {})
           },
           contextMatches: prefix === selection.prefix && suffix === selection.suffix
         });
@@ -6150,7 +6525,8 @@ function initialState(): LearningApplicationState {
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     },
     accessConfirmationPreference: { confirmFullAccess: true },
-    personalNoteSynthesisPreference: { includePersonalNotes: true }
+    personalNoteSynthesisPreference: { includePersonalNotes: true },
+    sourceExcerptEgressPreference: { enabled: false }
   };
 }
 

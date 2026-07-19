@@ -92,6 +92,7 @@ function trailSession(): LearningSession {
     submittedPendingQuestions: [], currentTeachingInput: { kind: "sessionIntake", text: "Every compact subset is closed." },
     pendingQuestion: null, askBarContext: { items: [], includedIds: [], customized: false }, questionCards: [], activeQuestionCardId: null,
     accessPolicy: "focused", accessRequests: [], pendingFullAccessConfirmation: false,
+    researchEgressPermission: { status: "notGranted" }, researchActions: [],
     sourceAnchors: [{
       id: "anchor-1", sourceId: "source-1",
       sourceRevisionId: null,

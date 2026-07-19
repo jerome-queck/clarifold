@@ -12,6 +12,7 @@ import {
   type SourceFingerprint
 } from "./learning-application";
 import { ModelAccessError, type ArtifactSynthesisRequest, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type SpecialistAgentRequest, type SpecialistAgentResult, type TeachingRequest } from "./model-runtime";
+import type { ExternalResearch, ExternalResearchRequest, ExternalResearchResult } from "./external-research";
 
 describe("Learning Application", () => {
   const dataDirectories: string[] = [];
@@ -56,6 +57,25 @@ describe("Learning Application", () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
     dataDirectories.push(dataDirectory);
     const application = await LearningApplication.launch(dataDirectory, runtime, sourceAccess);
+    applications.push(application);
+    return { dataDirectory, application };
+  }
+
+  async function launchWithExternalResearch(externalResearch: ExternalResearch) {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, null, null, null, externalResearch);
+    applications.push(application);
+    return { dataDirectory, application };
+  }
+
+  async function launchWithExternalResearchAndSourceAccess(
+    externalResearch: ExternalResearch,
+    sourceAccess: LocalSourceAccess
+  ) {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, null, sourceAccess, null, externalResearch);
     applications.push(application);
     return { dataDirectory, application };
   }
@@ -4393,6 +4413,317 @@ describe("Learning Application", () => {
     expect(runtime.teachingRequests.at(-1)?.accessScope).toEqual(application.getSessionAccessScope(workspaceSession.id));
   });
 
+  it.each(["focused", "workspace", "full"] as const)(
+    "researches through a minimized inspectable query under %s access without model access",
+    async (policy) => {
+      const research = new DeterministicExternalResearch();
+      const { application } = await launchWithExternalResearch(research);
+      let state = await application.submit({ type: "startQuickStudy", mathematics: "Study orbit-stabilizer." });
+      if (policy === "workspace") state = await application.submit({ type: "selectSessionAccessPolicy", policy });
+      if (policy === "full") {
+        state = await application.submit({ type: "setFullAccessConfirmation", enabled: false });
+        state = await application.submit({ type: "selectSessionAccessPolicy", policy });
+      }
+      state = await application.submit({
+        type: "researchWeb",
+        query: {
+          theoremNames: ["Orbit-stabilizer theorem"],
+          assumptions: ["G acts on X"],
+          keywords: ["stabilizer cosets"]
+        },
+        sourceAnchorIds: []
+      });
+      await application.waitForModelWork();
+      state = application.getState();
+
+      expect(research.requests).toHaveLength(1);
+      expect(research.requests[0]).toMatchObject({
+        query: {
+          text: "Orbit-stabilizer theorem; G acts on X; stabilizer cosets",
+          theoremNames: ["Orbit-stabilizer theorem"],
+          assumptions: ["G acts on X"],
+          keywords: ["stabilizer cosets"]
+        },
+        destination: "https://duckduckgo.com/?q=Orbit-stabilizer+theorem%3B+G+acts+on+X%3B+stabilizer+cosets",
+        excerpts: []
+      });
+      expect(state.sessions[0].researchActions[0]).toMatchObject({
+        status: "completed",
+        accessPolicy: policy,
+        query: { text: "Orbit-stabilizer theorem; G acts on X; stabilizer cosets" },
+        destination: expect.stringMatching(/^https:\/\/duckduckgo\.com\/\?q=/),
+        result: { title: "Research references" }
+      });
+      expect(state.modelAccess.status).toBe("unavailable");
+    }
+  );
+
+  it("starts privacy-minimized automatic Source Corroboration under every policy without excerpt permission", async () => {
+    const research = new DeterministicExternalResearch();
+    const { application } = await launchWithExternalResearch(research);
+    let state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Prove the orbit-stabilizer theorem for a finite group acting on a set."
+    });
+    expect(state.sessions[0].researchEgressPermission).toEqual({ status: "notGranted" });
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({
+      queryOrigin: "automaticCorroboration",
+      informedBySourceIds: state.sessions[0].sourceIds,
+      query: {
+        theoremNames: ["orbit-stabilizer theorem"],
+        assumptions: [],
+        keywords: []
+      }
+    });
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].researchActions.at(-1)).toMatchObject({ status: "completed" });
+    expect(research.requests[0]).toMatchObject({
+      queryOrigin: "automaticCorroboration",
+      informedBySourceIds: state.sessions[0].sourceIds,
+      excerpts: []
+    });
+  });
+
+  it.each([
+    ["Study Cauchy's theorem from /Users/alice/private-course-notes.pdf", ["Cauchy's theorem"], [], []],
+    ["Give a proof of Cauchy's theorem using unrelated topology notes.", ["Cauchy's theorem"], [], []],
+    ["Let G be a finite group; prove that every subgroup has finite index.", [], ["finite group"], ["subgroup"]],
+    ["Why are all compact subsets of a Hausdorff space closed?", [], ["hausdorff space"], ["compact"]],
+    ["Study the Sylow theorems", ["Sylow theorems"], [], []]
+  ] as const)("automatically derives only allowlisted mathematical terms from %s", async (mathematics, theoremNames, assumptions, keywords) => {
+    const research = new DeterministicExternalResearch();
+    const { application } = await launchWithExternalResearch(research);
+    await application.submit({ type: "startQuickStudy", mathematics });
+    await application.waitForModelWork();
+    expect(research.requests[0].query).toMatchObject({
+      theoremNames: [...theoremNames], assumptions: [...assumptions], keywords: [...keywords]
+    });
+    expect(research.requests[0].query.text).not.toMatch(/Users|alice|private-course-notes|pdf/i);
+  });
+
+  it("keeps Source Excerpt Egress session-scoped, inspectable, and revocable", async () => {
+    const research = new DeterministicExternalResearch();
+    const { application, dataDirectory } = await launchWithExternalResearch(research);
+    let state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "The orbit map induces a bijection from G/G_x to Gx."
+    });
+    const session = state.sessions[0];
+    const sourceId = session.sourceIds[0];
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "equation", equationIndex: 0, startOffset: 39, endOffset: 44,
+        exactText: "G/G_x", prefix: "bijection from ", suffix: " to Gx."
+      },
+      paletteAction: "addNote"
+    });
+    const anchorId = state.sessions[0].sourceAnchors[0].id;
+
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] },
+      sourceAnchorIds: [anchorId]
+    });
+    await application.waitForModelWork();
+    state = application.getState();
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({ status: "denied" });
+    expect(research.requests).toEqual([]);
+
+    state = await application.submit({ type: "setSourceExcerptEgressPreference", enabled: true });
+    state = await application.submit({ type: "setResearchEgressPermission", enabled: true });
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] },
+      sourceAnchorIds: [anchorId]
+    });
+    await application.waitForModelWork();
+    state = application.getState();
+    expect(research.requests[0].excerpts).toEqual([{
+      sourceId, kind: "equation", content: "G/G_x", location: "Equation 1: characters 39–44",
+      relevance: "learnerSelectedForQuery"
+    }]);
+    expect(state.sessions[0].researchEgressPermission).toEqual({ status: "granted" });
+    expect(state.sessions[0].researchActions.at(-1)?.excerpts).toEqual([{
+      sourceId, kind: "equation", location: "Equation 1: characters 39–44", content: "G/G_x",
+      relevance: "learnerSelectedForQuery"
+    }]);
+
+    research.hold = true;
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] },
+      sourceAnchorIds: [anchorId]
+    });
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({ status: "running" });
+    state = await application.submit({ type: "setResearchEgressPermission", enabled: false });
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].researchActions.at(-1)).toMatchObject({
+      status: "stopped", error: expect.stringContaining("Permission for Source Excerpts was revoked")
+    });
+    research.hold = false;
+    state = await application.submit({ type: "setResearchEgressPermission", enabled: true });
+
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId,
+      selection: {
+        kind: "text", startOffset: 0, endOffset: session.mathematics.length,
+        exactText: session.mathematics, prefix: "", suffix: ""
+      },
+      paletteAction: "addNote"
+    });
+    const wholeSourceAnchorId = state.sessions[0].sourceAnchors.at(-1)!.id;
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] },
+      sourceAnchorIds: [wholeSourceAnchorId]
+    });
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({
+      status: "denied", error: expect.stringContaining("Whole-file transmission requires a separate explicit confirmation")
+    });
+    expect(research.requests).toHaveLength(2);
+
+    state = await application.submit({ type: "setResearchEgressPermission", enabled: false });
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] },
+      sourceAnchorIds: [anchorId]
+    });
+    expect(state.sessions[0].researchEgressPermission).toEqual({ status: "revoked" });
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({ status: "denied" });
+    expect(research.requests).toHaveLength(2);
+
+    await application.submit({ type: "leaveSession" });
+    const reloaded = await LearningApplication.launch(dataDirectory, null, null, null, research);
+    applications.push(reloaded);
+    expect(reloaded.getState().sourceExcerptEgressPreference).toEqual({ enabled: true });
+    expect(reloaded.getState().sessions[0]).toMatchObject({
+      researchEgressPermission: { status: "revoked" },
+      researchActions: expect.arrayContaining([expect.objectContaining({ status: "completed" })])
+    });
+    const next = await reloaded.submit({ type: "startQuickStudy", mathematics: "Study Lagrange's theorem." });
+    expect(next.sessions.find((candidate) => candidate.id === next.activeSessionId)?.researchEgressPermission)
+      .toEqual({ status: "notGranted" });
+  });
+
+  it("permits only selected pages verified against an available policy-authorized Source Index", async () => {
+    const research = new DeterministicExternalResearch();
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.indexBySourceName.set("cauchy-proof.pdf", {
+      extractionMethod: "pdfText",
+      pages: [{
+        pageNumber: 2, width: 1000, height: 1400, thumbnailDataUrl: "data:image/png;base64,cDI=",
+        regions: [{
+          kind: "text", text: "Cauchy theorem proof", bounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.1 },
+          sourceStartOffset: 0, sourceEndOffset: 20
+        }]
+      }]
+    });
+    const { application } = await launchWithExternalResearchAndSourceAccess(research, sourceAccess);
+    let state = await application.linkExternalAttachment("quick-study-workspace", {
+      name: "cauchy-proof.pdf", resourceType: "file",
+      lastKnownPath: "/Users/learner/cauchy-proof.pdf", canonicalPath: "/Users/learner/cauchy-proof.pdf",
+      accessGrant: { kind: "securityScopedBookmark", bookmarkData: "cauchy-bookmark" },
+      fingerprint: sourceAccess.fingerprint
+    });
+    const sourceId = state.sources[0].id;
+    state = await application.submit({ type: "startQuickStudy", mathematics: "Review the finite group argument." });
+    await application.submit({ type: "addSourceToSession", sourceId });
+    await expect(application.submit({
+      type: "createSourceAnchor", sourceId,
+      selection: {
+        kind: "text", startOffset: 0, endOffset: 14, exactText: "Cauchy theorem",
+        prefix: "", suffix: " proof", pageNumbers: [999]
+      },
+      paletteAction: "addNote"
+    })).rejects.toThrow("available in the current Source Index");
+
+    state = await application.submit({
+      type: "createSourceAnchor", sourceId,
+      selection: {
+        kind: "text", startOffset: 0, endOffset: 14, exactText: "Cauchy theorem",
+        prefix: "", suffix: " proof", pageNumbers: [2]
+      },
+      paletteAction: "addNote"
+    });
+    const selectedPagesAnchorId = state.sessions[0].sourceAnchors.at(-1)!.id;
+    await application.submit({ type: "setSourceExcerptEgressPreference", enabled: true });
+    await application.submit({ type: "setResearchEgressPermission", enabled: true });
+    await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Cauchy's theorem"], assumptions: ["finite group"], keywords: [] },
+      sourceAnchorIds: [selectedPagesAnchorId]
+    });
+    await application.waitForModelWork();
+    expect(research.requests.at(-1)?.excerpts).toEqual([{
+      sourceId, kind: "selectedPages", content: "Cauchy theorem",
+      location: "Selected pages 2: characters 0–14", relevance: "learnerSelectedForQuery"
+    }]);
+  });
+
+  it("retains visible timeout and malformed-result states without broader egress", async () => {
+    const research = new DeterministicExternalResearch();
+    const { application } = await launchWithExternalResearch(research);
+    let state = await application.submit({ type: "startQuickStudy", mathematics: "Study Cauchy's theorem." });
+    state = await application.submit({ type: "setResearchEgressPermission", enabled: true });
+    research.error = new DOMException("Research timed out", "TimeoutError");
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Cauchy's theorem"], assumptions: [], keywords: ["finite groups"] },
+      sourceAnchorIds: []
+    });
+    await application.waitForModelWork();
+    state = application.getState();
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({
+      status: "timedOut", error: expect.stringContaining("timed out")
+    });
+
+    research.error = null;
+    research.result = { title: "", summary: "missing title", sources: [] };
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Cauchy's theorem"], assumptions: [], keywords: [] },
+      sourceAnchorIds: []
+    });
+    await application.waitForModelWork();
+    state = application.getState();
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({
+      status: "failed", error: expect.stringContaining("malformed result")
+    });
+    expect(state.sessions[0].accessPolicy).toBe("focused");
+  });
+
+  it("publishes cancellable external research and never retries it silently", async () => {
+    const research = new DeterministicExternalResearch();
+    research.hold = true;
+    const { application } = await launchWithExternalResearch(research);
+    let state = await application.submit({ type: "startQuickStudy", mathematics: "Explore finite-group structure." });
+    state = await application.submit({ type: "setResearchEgressPermission", enabled: true });
+    const observedStatuses: string[] = [];
+    application.subscribe((next) => {
+      const status = next.sessions[0]?.researchActions.at(-1)?.status;
+      if (status) observedStatuses.push(status);
+    });
+
+    state = await application.submit({
+      type: "researchWeb",
+      query: { theoremNames: ["Sylow theorems"], assumptions: [], keywords: ["finite groups"] },
+      sourceAnchorIds: []
+    });
+    const actionId = state.sessions[0].researchActions.at(-1)!.id;
+    expect(observedStatuses).toContain("running");
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({ status: "running" });
+
+    state = await application.submit({ type: "cancelExternalResearch", researchActionId: actionId });
+    await application.waitForModelWork();
+    expect(state.sessions[0].researchActions.at(-1)).toMatchObject({
+      status: "stopped", error: expect.stringContaining("stopped by the learner")
+    });
+    expect(research.requests).toHaveLength(1);
+  });
+
   it("supplies only authorized source content to the Model Runtime", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand the theorem",
@@ -4939,6 +5270,28 @@ function textExtraction(text: string): SourceIndexExtraction {
       }]
     }]
   };
+}
+
+class DeterministicExternalResearch implements ExternalResearch {
+  readonly requests: ExternalResearchRequest[] = [];
+  result: ExternalResearchResult = {
+    title: "Research references",
+    summary: "A browser search was prepared from minimized mathematical terms.",
+    sources: [{ title: "Orbit-stabilizer theorem", url: "https://example.test/orbit-stabilizer" }]
+  };
+  error: Error | null = null;
+  hold = false;
+
+  async research(request: ExternalResearchRequest): Promise<ExternalResearchResult> {
+    this.requests.push(request);
+    if (this.error) throw this.error;
+    if (this.hold) {
+      await new Promise<void>((_resolve, reject) => request.signal.addEventListener(
+        "abort", () => reject(new DOMException("External research was stopped.", "AbortError")), { once: true }
+      ));
+    }
+    return structuredClone(this.result);
+  }
 }
 
 class DeterministicModelRuntime implements ModelRuntime {

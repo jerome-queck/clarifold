@@ -9,6 +9,78 @@ import { App } from "./App";
 describe("anchored teaching workbench", () => {
   afterEach(cleanup);
 
+  it("shows independent research egress controls and inspectable research receipts", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.sourceExcerptEgressPreference.enabled = true;
+    state.sessions[0].researchEgressPermission = { status: "granted" };
+    state.sessions[0].researchActions = [{
+      id: "research-1",
+      accessPolicy: "focused",
+      query: {
+        text: "Heine-Borel theorem; compact subset",
+        theoremNames: ["Heine-Borel theorem"], assumptions: [], keywords: ["compact subset"]
+      },
+      queryOrigin: "learnerAuthored",
+      informedBySourceIds: [],
+      destination: "https://duckduckgo.com/?q=Heine-Borel+theorem%3B+compact+subset",
+      excerpts: [], status: "completed", error: null,
+      result: {
+        title: "Research opened in browser", summary: "Opened using only the Derived Research Query.",
+        sources: [{ title: "Inspect external research destination", url: "https://duckduckgo.com/?q=Heine-Borel" }]
+      }
+    }];
+    state.sessions[0].researchActions.push({
+      ...state.sessions[0].researchActions[0],
+      id: "research-2",
+      query: {
+        text: "Cauchy's theorem",
+        theoremNames: ["Cauchy's theorem"], assumptions: [], keywords: []
+      },
+      destination: "https://duckduckgo.com/?q=Cauchy%27s+theorem",
+      status: "denied",
+      error: "Research Egress Permission was revoked. No access was elevated and no retry was attempted.",
+      result: null
+    });
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+    const panel = await screen.findByRole("region", { name: "Privacy-minimized web research" });
+    expect(panel.textContent).toContain("Independent from Codex model access");
+    expect(panel.textContent).toContain("Heine-Borel theorem; compact subset");
+    expect(panel.textContent).toContain("Cauchy's theorem");
+    expect(panel.textContent).toContain("Research Egress Permission was revoked");
+    expect(within(panel).getByText("Source Excerpt Egress: Granted")).toBeTruthy();
+    expect(within(panel).getAllByText(/https:\/\/duckduckgo\.com\//)).toHaveLength(2);
+    expect(within(panel).getByRole("article", {
+      name: "External research receipt for Cauchy's theorem"
+    })).toBeTruthy();
+    await user.click(within(panel).getByRole("button", {
+      name: "Inspect destination used for Heine-Borel theorem; compact subset"
+    }));
+    expect(api.openExternal).toHaveBeenCalledWith(
+      "https://duckduckgo.com/?q=Heine-Borel+theorem%3B+compact+subset"
+    );
+
+    await user.type(within(panel).getByLabelText("Theorem names"), "Orbit-stabilizer theorem");
+    await user.type(within(panel).getByLabelText("Assumptions"), "G acts on X");
+    await user.type(within(panel).getByLabelText("Mathematical keywords"), "stabilizer cosets");
+    await user.click(within(panel).getByRole("checkbox", { name: "Include the active Source Anchor excerpt" }));
+    await user.click(within(panel).getByRole("button", { name: "Research the web" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "researchWeb",
+      query: {
+        theoremNames: ["Orbit-stabilizer theorem"],
+        assumptions: ["G acts on X"],
+        keywords: ["stabilizer cosets"]
+      },
+      sourceAnchorIds: ["anchor-1"]
+    });
+    await user.click(within(panel).getByRole("checkbox", { name: "Allow Source Excerpt Egress for this Learning Session" }));
+    expect(api.submit).toHaveBeenCalledWith({ type: "setResearchEgressPermission", enabled: false });
+  });
+
   it("restores a closed Contextual Inspector only through its Anchor Marker and returns focus on close", async () => {
     const user = userEvent.setup();
     const state = workbenchState();
@@ -807,6 +879,8 @@ function workbenchState(): LearningApplicationState {
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,
+      researchEgressPermission: { status: "notGranted" },
+      researchActions: [],
       sourceAnchors: [anchor],
       sourceAnchorRequests: [{ id: "request-1", sourceAnchorId: "anchor-1", action: "explain" }],
       annotations: [],
@@ -873,6 +947,7 @@ function workbenchState(): LearningApplicationState {
     runtimeCapabilities: { models: [] },
     modelAccess: { status: "unavailable", cause: "runtime", message: "Unavailable" },
     accessConfirmationPreference: { confirmFullAccess: true },
-    personalNoteSynthesisPreference: { includePersonalNotes: true }
+    personalNoteSynthesisPreference: { includePersonalNotes: true },
+    sourceExcerptEgressPreference: { enabled: false }
   };
 }
