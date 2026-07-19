@@ -166,6 +166,7 @@ function DelayedTransferPrompt({ session, onState }: { session: LearningSession;
 }
 
 function FollowUpsCard({ state, onState }: { state: LearningApplicationState; onState: StateHandler }) {
+  const [navigationError, setNavigationError] = useState<string | null>(null);
   const checks = state.delayedTransferChecks
     .filter((check) => check.status === "scheduled")
     .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt));
@@ -176,17 +177,23 @@ function FollowUpsCard({ state, onState }: { state: LearningApplicationState; on
     <section className="history-card" aria-labelledby="follow-ups-title">
       <p className="eyebrow">Optional delayed work</p>
       <h2 id="follow-ups-title">Follow-ups</h2>
-      <p>{ready} ready · {checks.length} scheduled. Follow-ups never block other work.</p>
+      <p role="status" aria-live="polite">{ready} ready · {checks.length} scheduled. Follow-ups never block other work.</p>
       <button className="secondary"
         aria-label={`Open Follow-up Queue with ${checks.length} scheduled item${checks.length === 1 ? "" : "s"}`}
-        onClick={() => void window.quickStudy.submit({ type: "openFollowUpQueue" }).then(onState)}>
+        onClick={() => {
+          setNavigationError(null);
+          void window.quickStudy.submit({ type: "openFollowUpQueue" }).then(onState).catch((cause: unknown) =>
+            setNavigationError(cause instanceof Error ? cause.message : "The Follow-up Queue could not be opened."));
+        }}>
         Open Follow-up Queue
       </button>
+      {navigationError && <p className="failure-message" role="alert">{navigationError}</p>}
     </section>
   );
 }
 
 function FollowUpQueue({ state, onState }: { state: LearningApplicationState; onState: StateHandler }) {
+  const [navigationError, setNavigationError] = useState<string | null>(null);
   const checks = state.delayedTransferChecks
     .filter((check) => check.status === "scheduled")
     .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt));
@@ -196,9 +203,14 @@ function FollowUpQueue({ state, onState }: { state: LearningApplicationState; on
       <p className="eyebrow">Learner-selected delayed work</p>
       <h1>Follow-up Queue</h1>
       <p>This optional view keeps Delayed Transfer Checks away from active-session Resume Cards and ordinary navigation.</p>
-      <button className="secondary" onClick={() => void window.quickStudy.submit({ type: "closeFollowUpQueue" }).then(onState)}>
+      <button className="secondary" onClick={() => {
+        setNavigationError(null);
+        void window.quickStudy.submit({ type: "closeFollowUpQueue" }).then(onState).catch((cause: unknown) =>
+          setNavigationError(cause instanceof Error ? cause.message : "The dashboard could not be restored."));
+      }}>
         Return to dashboard
       </button>
+      {navigationError && <p className="failure-message" role="alert">{navigationError}</p>}
       <p className="subtle">Only timing, origin, and the intended transfer goal are shown before a check is due.</p>
       {checks.length === 0 ? <p>No Delayed Transfer Checks are scheduled.</p>
         : <ul>{checks.map((check) => <FollowUpQueueItem key={check.id} check={check} onState={onState} />)}</ul>}

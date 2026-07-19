@@ -999,12 +999,42 @@ describe("anchored teaching workbench", () => {
       window.quickStudy = quickStudyApi(state);
       render(<App />);
       await act(async () => { await Promise.resolve(); });
-      expect(screen.getByRole("region", { name: "Follow-ups" }).textContent).toContain("0 ready");
+      expect(within(screen.getByRole("region", { name: "Follow-ups" })).getByRole("status").textContent)
+        .toContain("0 ready");
       await act(async () => { await vi.advanceTimersByTimeAsync(1_001); });
-      expect(screen.getByRole("region", { name: "Follow-ups" }).textContent).toContain("1 ready");
+      expect(within(screen.getByRole("region", { name: "Follow-ups" })).getByRole("status").textContent)
+        .toContain("1 ready");
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reports Follow-up Queue navigation failures accessibly", async () => {
+    const user = userEvent.setup();
+    const state = addressedDashboardState();
+    state.sessions[0].delayedTransferOffer!.status = "scheduled";
+    state.delayedTransferChecks = [{
+      id: "follow-up-1", relatedSessionId: "session-1", relatedLearningSessionGoal: "Understand compactness",
+      originatingSessionTarget: "Explain the selected claim", originatingConcepts: ["compactness"],
+      intendedTransferGoal: "Apply compactness in a fresh proof.", scheduledAt: "2026-07-20T12:00:00.000Z",
+      updatedAt: "2026-07-20T12:00:00.000Z", dueAt: "2026-07-27T12:00:00.000Z", status: "scheduled"
+    }];
+    const api = quickStudyApi(state);
+    vi.mocked(api.submit).mockRejectedValue(new Error("Persistence unavailable"));
+    window.quickStudy = api;
+    const { unmount } = render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Open Follow-up Queue/ }));
+    await waitFor(() => expect(screen.getAllByRole("alert").some((alert) =>
+      alert.textContent?.includes("Persistence unavailable"))).toBe(true));
+
+    unmount();
+    state.screen = "followUps";
+    window.quickStudy = quickStudyApi(state);
+    vi.mocked(window.quickStudy.submit).mockRejectedValue(new Error("Navigation could not be saved"));
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Return to dashboard" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Navigation could not be saved");
   });
 
   it("resets the default-off prompt when another Addressed target is awaiting a choice", async () => {

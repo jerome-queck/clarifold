@@ -2227,6 +2227,12 @@ describe("Learning Application", () => {
     expect(scheduled).not.toHaveProperty("task");
     expect(scheduled).not.toHaveProperty("question");
     expect(state.sessions[0].delayedTransferOffer?.status).toBe("scheduled");
+    const persistedScheduled = JSON.parse(await readFile(join(dataDirectory, "learning-application.json"), "utf8"));
+    persistedScheduled.delayedTransferChecks = [];
+    await writeFile(join(dataDirectory, "learning-application.json"), JSON.stringify(persistedScheduled), "utf8");
+    await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow(
+      "Stored Delayed Transfer offer does not match its check state"
+    );
     await expect(application.submit({
       type: "scheduleDelayedTransfer",
       sessionId,
@@ -2254,6 +2260,12 @@ describe("Learning Application", () => {
     state = await relaunched.submit({ type: "cancelDelayedTransfer", checkId: scheduled.id });
     expect(state.delayedTransferChecks[0].status).toBe("cancelled");
     expect(state.sessions[0].delayedTransferOffer?.status).toBe("cancelled");
+    const persistedCancelled = JSON.parse(await readFile(join(dataDirectory, "learning-application.json"), "utf8"));
+    persistedCancelled.delayedTransferChecks = [];
+    await writeFile(join(dataDirectory, "learning-application.json"), JSON.stringify(persistedCancelled), "utf8");
+    await expect(LearningApplication.launch(dataDirectory)).rejects.toThrow(
+      "Stored Delayed Transfer offer does not match its check state"
+    );
   });
 
   it("lets the learner begin Session Consolidation while teaching is in flight", async () => {

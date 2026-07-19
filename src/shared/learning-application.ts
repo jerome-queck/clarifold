@@ -8709,6 +8709,12 @@ function validateDelayedTransferReferences(state: LearningApplicationState): voi
       || session.consolidatedOutcome?.targetDisposition !== "addressed")) {
       throw new Error("Stored Delayed Transfer offer references an ineligible Learning Session.");
     }
+    const matchingChecks = state.delayedTransferChecks.filter((check) => check.relatedSessionId === session.id);
+    const offerStatus = session.delayedTransferOffer?.status;
+    if ((offerStatus === "scheduled" || offerStatus === "cancelled")
+      && (matchingChecks.length !== 1 || matchingChecks[0].status !== offerStatus)) {
+      throw new Error("Stored Delayed Transfer offer does not match its check state.");
+    }
   }
 }
 
