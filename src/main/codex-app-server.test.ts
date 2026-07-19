@@ -380,6 +380,176 @@ describe("Codex app-server contract", () => {
     expect(JSON.stringify(synthesisTurn.params)).toContain("authorized only for this artifact synthesis");
   });
 
+  it("runs one Specialist Agent with only its checkpoint tool and the supplied Agent Brief", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "specialist-thread" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "specialist-turn" } });
+        queueMicrotask(() => {
+          transport.notify("item/agentMessage/delta", {
+            threadId: "specialist-thread", turnId: "specialist-turn", itemId: "specialist-result",
+            delta: JSON.stringify({
+              title: "Specialist review · separation assumption",
+              content: "The step depends on Hausdorff separation."
+            })
+          });
+          transport.notify("turn/completed", {
+            threadId: "specialist-thread", turn: { id: "specialist-turn", status: "completed", error: null }
+          });
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const events: string[] = [];
+    const statuses: string[] = [];
+
+    await expect(runtime.runSpecialistAgent({
+      sessionId: "session-1",
+      purpose: "Review one hidden assumption",
+      brief: {
+        learningGoal: "Understand compactness",
+        sourceAnchors: [],
+        constraints: ["Review only the current Teaching Card."],
+        learnerEvidence: ["Choose disjoint neighbourhoods."],
+        expectedOutput: "One concise integrated Teaching Card.",
+        verificationNeeds: ["Identify hidden assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal,
+      onStatus: (status) => statuses.push(status),
+      onPartialResult: () => undefined,
+      onRuntimeEvent: (event) => events.push(`${event.workKind}:${event.type}`)
+    })).resolves.toEqual({
+      title: "Specialist review · separation assumption",
+      content: "The step depends on Hausdorff separation."
+    });
+
+    const threadStart = transport.messages.find((message) => message.method === "thread/start")!;
+    expect(threadStart).toMatchObject({
+      params: {
+        sandbox: "read-only",
+        dynamicTools: [expect.objectContaining({ name: "checkpoint_specialist_result" })],
+        config: { features: { apps: false, multi_agent: false, shell_tool: false, unified_exec: false } }
+      }
+    });
+    expect(JSON.stringify(threadStart.params)).toContain("Use only the supplied Agent Brief");
+    const turnStart = transport.messages.find((message) => message.method === "turn/start")!;
+    expect(turnStart).toMatchObject({ params: { effort: "medium" } });
+    expect(JSON.stringify(turnStart.params)).toContain("Choose disjoint neighbourhoods.");
+    expect(JSON.stringify(turnStart.params)).not.toContain("/workspace");
+    expect(events).toContain("specialist:turnCompleted");
+    expect(statuses).toEqual(["waiting", "working"]);
+  });
+
+  it("checkpoints a valid structured Specialist Agent result before a later turn failure", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "partial-thread" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "partial-turn" } });
+        transport.request(701, "item/tool/call", {
+          threadId: "partial-thread", turnId: "partial-turn", callId: "partial-checkpoint",
+          namespace: null, tool: "checkpoint_specialist_result",
+          arguments: { title: "Partial review", content: "The step needs separation." }
+        });
+      }
+      if (message.id === 701 && message.result) {
+        transport.request(702, "item/tool/call", {
+          threadId: "partial-thread", turnId: "partial-turn", callId: "cumulative-checkpoint",
+          namespace: null, tool: "checkpoint_specialist_result",
+          arguments: {
+            title: "Partial review",
+            content: "The step needs separation. Hausdorff separation is sufficient."
+          }
+        });
+      }
+      if (message.id === 702 && message.result) {
+        queueMicrotask(() => {
+          transport.notify("turn/completed", {
+            threadId: "partial-thread",
+            turn: { id: "partial-turn", status: "failed", error: { message: "transport closed after output" } }
+          });
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const partials: string[] = [];
+    const request = runtime.runSpecialistAgent({
+      sessionId: "session-1",
+      purpose: "Review one hidden assumption",
+      brief: {
+        learningGoal: "Understand compactness", sourceAnchors: [],
+        constraints: ["Current Teaching Card: choose disjoint neighbourhoods."], learnerEvidence: [],
+        expectedOutput: "One concise integrated Teaching Card.", verificationNeeds: ["Identify hidden assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal,
+      onStatus: () => undefined,
+      onPartialResult: (content) => partials.push(content)
+    });
+
+    await expect(request).rejects.toThrow("Codex could not complete this request");
+    expect(partials).toEqual([
+      "The step needs separation.",
+      "The step needs separation. Hausdorff separation is sufficient."
+    ]);
+  });
+
+  it("interrupts Specialist Agent output at its conservative token ceiling", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "budget-thread" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "budget-turn" } });
+        transport.request(703, "item/tool/call", {
+          threadId: "budget-thread", turnId: "budget-turn", callId: "oversized-checkpoint",
+          namespace: null, tool: "checkpoint_specialist_result",
+          arguments: { title: "x".repeat(513), content: "Useful conclusion." }
+        });
+      }
+      if (message.method === "turn/interrupt") transport.respond(message.id, {});
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await expect(runtime.runSpecialistAgent({
+      sessionId: "session-1", purpose: "Review one hidden assumption",
+      brief: {
+        learningGoal: "Understand compactness", sourceAnchors: [], constraints: ["Review one card."],
+        learnerEvidence: [], expectedOutput: "One concise card.", verificationNeeds: ["Identify assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined
+    })).rejects.toThrow("exceeded its token budget");
+    expect(transport.messages).toContainEqual(expect.objectContaining({
+      method: "turn/interrupt", params: { threadId: "budget-thread", turnId: "budget-turn" }
+    }));
+  });
+
   it("interrupts active teaching and shuts down the stdio transport", async () => {
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;

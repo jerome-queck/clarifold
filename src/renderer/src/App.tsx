@@ -649,14 +649,12 @@ function ResumeCard({ state, session, onState }: {
       </div>
       {hasBackgroundModelWork(session) && (
         <div className="background-work" role="status">
-          <span>{session.pendingConceptPeek
-            ? `Codex is creating the Concept Peek ${session.pendingConceptPeek.prerequisite}`
-            : "Codex is teaching in the background"}</span>
+          <span>{backgroundModelWorkLabel(session)}</span>
           <button className="secondary" onClick={() => void window.quickStudy.submit({
             type: "cancelSessionModelWork", sessionId: session.id
           }).then(onState).catch((cause: unknown) => setBackgroundError(
             cause instanceof Error ? cause.message : "The model work could not be stopped."
-          ))}>{session.pendingConceptPeek ? "Stop Concept Peek generation" : "Stop background teaching"}</button>
+          ))}>{backgroundModelWorkStopLabel(session)}</button>
         </div>
       )}
       {backgroundError && <p className="failure-message" role="alert">{backgroundError}</p>}
@@ -876,16 +874,14 @@ function MissionHistory({ workspace, mission, state, onState }: {
           {sessions.map((session) => (
             <li key={session.id}>
               <div><strong>{session.learningGoal}</strong><small>{session.sessionTarget}</small>
-                {hasBackgroundModelWork(session) && <small>{session.pendingConceptPeek
-                  ? `Creating Concept Peek: ${session.pendingConceptPeek.prerequisite}`
-                  : "Codex teaching in background"}</small>}
+                {hasBackgroundModelWork(session) && <small>{backgroundModelWorkLabel(session)}</small>}
               </div>
               <div className="session-actions">
                 {hasBackgroundModelWork(session) && <button className="secondary" onClick={() => void window.quickStudy.submit({
                   type: "cancelSessionModelWork", sessionId: session.id
                 }).then(onState).catch((cause: unknown) => setModelWorkError(
                   cause instanceof Error ? cause.message : "The model work could not be stopped."
-                ))}>{session.pendingConceptPeek ? "Stop Concept Peek" : "Stop"}</button>}
+                ))}>{backgroundModelWorkStopLabel(session)}</button>}
                 {session.status === "consolidated" ? (
                   <button className="primary" aria-label={`Continue this work from ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
                     type: "continueSession", sessionId: session.id
@@ -1404,7 +1400,24 @@ function conceptPeekAnchorLabel(session: LearningSession, sourceAnchorId: string
 }
 
 function hasBackgroundModelWork(session: LearningSession): boolean {
-  return session.teachingCard.status === "streaming" || session.pendingConceptPeek !== null;
+  const agentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId);
+  return session.teachingCard.status === "streaming" || session.pendingConceptPeek !== null
+    || Boolean(agentTask && (agentTask.status === "working" || agentTask.status === "waiting"));
+}
+
+function backgroundModelWorkLabel(session: LearningSession): string {
+  const agentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId);
+  if (agentTask?.status === "working" || agentTask?.status === "waiting") {
+    return `Specialist Agent is ${agentTask.status} in the background`;
+  }
+  if (session.pendingConceptPeek) return `Codex is creating the Concept Peek ${session.pendingConceptPeek.prerequisite}`;
+  return "Codex is teaching in the background";
+}
+
+function backgroundModelWorkStopLabel(session: LearningSession): string {
+  const agentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId);
+  if (agentTask?.status === "working" || agentTask?.status === "waiting") return "Stop Agent Task";
+  return session.pendingConceptPeek ? "Stop Concept Peek generation" : "Stop background teaching";
 }
 
 function ArgumentRoadmapPanel({ state, session, onState }: {
@@ -1867,6 +1880,7 @@ function accessPolicyDescription(policy: LearningSession["accessPolicy"]): strin
 
 function TeachingCard({ session, modelAvailable, onState }: { session: LearningSession; modelAvailable: boolean; onState: StateHandler }) {
   const card = session.teachingCard;
+  const agentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId) ?? null;
   if (session.proposal.status === "awaitingConfirmation" && modelAvailable) {
     return <div className="next-step"><span>Session Confirmation</span><strong>Review the proposal before Codex begins.</strong></div>;
   }
@@ -1879,7 +1893,7 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
       </section>
     );
   }
-  return (
+  return <>
     <section className={`teaching-card ${card.status}`} aria-live="polite" aria-label="Current Teaching Card">
       <div className="card-heading">
         <div><p className="eyebrow">Teaching Card</p><h2 id="teaching-card-title">{session.learningGoal}</h2></div>
@@ -1894,6 +1908,59 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
       <div className="teaching-actions">
         {card.status === "streaming" && <button className="secondary" onClick={() => void window.quickStudy.submit({ type: "cancelModelWork" }).then(onState)}>Stop teaching</button>}
         {card.retryable && modelAvailable && <button className="primary" onClick={() => void window.quickStudy.submit({ type: "retryModelWork" }).then(onState)}>Retry Teaching Card</button>}
+        {card.status === "completed" && modelAvailable && !agentTask && <button className="secondary"
+          onClick={() => void window.quickStudy.submit({ type: "requestSpecialistReview" }).then(onState)}>
+          Request Specialist Agent review
+        </button>}
+      </div>
+    </section>
+    {agentTask && <AgentTaskStatusCard task={agentTask} modelAvailable={modelAvailable} onState={onState} />}
+  </>;
+}
+
+function AgentTaskStatusCard({ task, modelAvailable, onState }: {
+  task: LearningSession["agentTasks"][number];
+  modelAvailable: boolean;
+  onState: StateHandler;
+}) {
+  return (
+    <section className={`teaching-card ${task.integratedTeachingCard.status}`} aria-live="polite" aria-label="Agent Task Status">
+      <div className="card-heading">
+        <div><p className="eyebrow">Agent Task Status</p><h2>{task.purpose}</h2></div>
+        <span className="saved">{agentTaskStatusLabel(task.status)}</span>
+      </div>
+      {task.statusMessage && <p className={task.status === "failed" ? "failure-message" : "subtle"}>{task.statusMessage}</p>}
+      <details>
+        <summary>Inspect Agent Brief</summary>
+        <dl>
+          <div><dt>Identified need</dt><dd>{task.identifiedNeed.description}</dd></div>
+          <div><dt>Learning Goal</dt><dd>{task.brief.learningGoal}</dd></div>
+          <div><dt>Source Anchors</dt><dd>{task.brief.sourceAnchors.length}</dd></div>
+          <div><dt>Constraints</dt><dd>{task.brief.constraints.join(" ")}</dd></div>
+          <div><dt>Learner evidence</dt><dd>{task.brief.learnerEvidence.join(" ") || "None"}</dd></div>
+          <div><dt>Expected output</dt><dd>{task.brief.expectedOutput}</dd></div>
+          <div><dt>Verification needs</dt><dd>{task.brief.verificationNeeds.join(" ")}</dd></div>
+        </dl>
+      </details>
+      <details>
+        <summary>Inspect Agent Budget</summary>
+        <p>{task.budget.agentCount} agent · concurrency {task.budget.concurrency} · {task.budget.reasoningEffort} reasoning · {task.budget.tools.length} tools · {task.budget.maxOutputTokens} output tokens · {task.budget.maxLatencyMs / 1000} seconds</p>
+      </details>
+      {(task.integratedTeachingCard.content || task.status === "complete") && <div className="teaching-section">
+        <h3>{task.integratedTeachingCard.title}</h3>
+        <div className="teaching-content">{task.integratedTeachingCard.content}</div>
+      </div>}
+      {task.priorAgentWorkLogReferences.map((reference, index) => (
+        <AgentWorkLogLink key={`${reference.fromSequence}-${index}`} reference={reference} />
+      ))}
+      {task.agentWorkLogReference && <AgentWorkLogLink reference={task.agentWorkLogReference} />}
+      <div className="teaching-actions">
+        {(task.status === "working" || task.status === "waiting") && <button className="secondary"
+          onClick={() => void window.quickStudy.submit({ type: "cancelModelWork" }).then(onState)}>Stop Agent Task</button>}
+        {task.integratedTeachingCard.retryable && modelAvailable && <button className="primary"
+          onClick={() => void window.quickStudy.submit({ type: "retryAgentTask", taskId: task.id }).then(onState)}>
+          Retry Agent Task
+        </button>}
       </div>
     </section>
   );
@@ -1902,7 +1969,7 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
 function SessionRecord({ session }: { session: LearningSession }) {
   if (session.submittedPendingQuestions.length === 0 && session.teachingCardHistory.length === 0
     && session.questionCards.length === 0 && session.anchoredTeachingCards.length === 0
-    && session.annotations.length === 0 && session.learningArtifacts.length === 0) return null;
+    && session.annotations.length === 0 && session.learningArtifacts.length === 0 && session.agentTasks.length === 0) return null;
   return (
     <section className="session-record" aria-labelledby="session-record-title">
       <p className="eyebrow">Session Record</p>
@@ -1948,6 +2015,17 @@ function SessionRecord({ session }: { session: LearningSession }) {
             {card.revisions.map((revision, index) => <p key={revision.id}>Revision {index + 1}: {revision.content || revision.error}</p>)}
             {card.variants.map((variant) => <p key={variant.id}>{variant.name}: {variant.revision.content || variant.revision.error}</p>)}
           </details>}
+        </article>
+      ))}
+      {session.agentTasks.map((task) => (
+        <article key={task.id}>
+          <h3>Agent Task · {task.purpose}</h3>
+          <p>{task.integratedTeachingCard.content || task.integratedTeachingCard.error || task.statusMessage || "Specialist work has not produced content."}</p>
+          <p className="record-link">Agent Task Status: {agentTaskStatusLabel(task.status)}</p>
+          {task.priorAgentWorkLogReferences.map((reference, index) => (
+            <AgentWorkLogLink key={`${reference.fromSequence}-${index}`} reference={reference} />
+          ))}
+          {task.agentWorkLogReference && <AgentWorkLogLink reference={task.agentWorkLogReference} />}
         </article>
       ))}
       {session.annotations.map((annotation) => (
@@ -2002,4 +2080,8 @@ function AgentWorkLogLink({ reference }: {
 
 function teachingStatusLabel(status: LearningSession["teachingCard"]["status"]): string {
   return ({ idle: "Ready", streaming: "Streaming", completed: "Complete", stopped: "Stopped", failed: "Needs attention" })[status];
+}
+
+function agentTaskStatusLabel(status: LearningSession["agentTasks"][number]["status"]): string {
+  return ({ working: "Working", waiting: "Waiting", failed: "Failed", stopped: "Stopped", complete: "Complete" })[status];
 }

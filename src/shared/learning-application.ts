@@ -4,6 +4,8 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   ModelAccessError,
   type ArtifactSynthesisResult,
+  type AgentBrief,
+  type AgentBudget,
   type AuthenticationState,
   type ModelAccessCause,
   type ModelRuntime,
@@ -13,7 +15,8 @@ import {
   type TeachingRequest,
   type TeachingSourceContext,
   type SessionProposal,
-  type ArgumentRoadmapProposal
+  type ArgumentRoadmapProposal,
+  type SpecialistAgentResult
 } from "./model-runtime";
 import { annotationPurposeLabel, type AnnotationPurpose, type SourceAnnotation } from "./annotations";
 export type { AnnotationPurpose, SourceAnnotation } from "./annotations";
@@ -285,6 +288,25 @@ export interface AgentWorkLogEvidence {
   sequence: number;
   type: ModelRuntimeEvent["type"];
   summary: string;
+}
+
+export type AgentTaskStatus = "working" | "waiting" | "failed" | "stopped" | "complete";
+
+export interface AgentTask {
+  id: string;
+  purpose: string;
+  status: AgentTaskStatus;
+  statusMessage: string | null;
+  identifiedNeed: {
+    kind: "hiddenAssumptionReview";
+    requestedBy: "learner";
+    description: string;
+  };
+  brief: AgentBrief;
+  budget: AgentBudget;
+  integratedTeachingCard: TeachingCardState & { title: string };
+  agentWorkLogReference: TeachingCardRevision["agentWorkLogReference"];
+  priorAgentWorkLogReferences: Array<NonNullable<TeachingCardRevision["agentWorkLogReference"]>>;
 }
 
 interface ModelTeachingTarget {
@@ -618,6 +640,8 @@ export interface LearningSession {
   pendingConceptPeek: { sourceAnchorId: string; prerequisite: string } | null;
   prerequisiteBranchProposals: PrerequisiteBranchProposal[];
   prerequisiteBranch: PrerequisiteBranch | null;
+  agentTasks: AgentTask[];
+  activeAgentTaskId: string | null;
 }
 
 export interface LearningApplicationState {
@@ -663,6 +687,8 @@ export type LearnerAction =
   | { type: "cancelModelWork" }
   | { type: "cancelSessionModelWork"; sessionId: string }
   | { type: "retryModelWork" }
+  | { type: "requestSpecialistReview" }
+  | { type: "retryAgentTask"; taskId: string }
   | { type: "startChatGptLogin" }
   | { type: "loginWithApiKey"; apiKey: string }
   | { type: "refreshAuthentication" }
@@ -813,6 +839,14 @@ export class LearningApplication {
         }
         const activeQuestionCard = session.questionCards.find((card) => card.id === session.activeQuestionCardId);
         if (activeQuestionCard) interruptCardRevision(activeQuestionCard.currentRevision);
+        const activeAgentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId);
+        if (activeAgentTask && (activeAgentTask.status === "working" || activeAgentTask.status === "waiting")) {
+          activeAgentTask.status = "stopped";
+          activeAgentTask.statusMessage = "Specialist work stopped when the application closed. Retry when ready.";
+          Object.assign(activeAgentTask.integratedTeachingCard, {
+            status: "stopped", error: activeAgentTask.statusMessage, retryable: true
+          });
+        }
         refreshAskBarContext(persisted, session);
       }
       persisted.activeSessionId = null;
@@ -923,7 +957,7 @@ export class LearningApplication {
     ).map((event) => ({
       sequence: event.sequence,
       type: event.type,
-      summary: agentWorkEvidenceSummary(event.type)
+      summary: agentWorkEvidenceSummary(event)
     }));
   }
 
@@ -2140,6 +2174,34 @@ export class LearningApplication {
         await this.beginTeaching(session, input.text, submission);
         break;
       }
+      case "requestSpecialistReview": {
+        const session = this.requireActiveSession();
+        this.requireModelAccess();
+        if (!specialistReviewTarget(session)) {
+          throw new Error("Complete a Teaching Card before requesting a Specialist Agent review.");
+        }
+        if (this.modelWorks.has(session.id)) {
+          throw new Error("Wait for the current model teaching to finish before requesting a Specialist Agent review.");
+        }
+        if (session.agentTasks.length > 0) {
+          throw new Error("This Learning Session already has its bounded Specialist Agent review.");
+        }
+        const task = createSpecialistReviewTask(session);
+        session.agentTasks.push(task);
+        session.activeAgentTaskId = task.id;
+        this.beginSpecialistAgentTask(session, task);
+        break;
+      }
+      case "retryAgentTask": {
+        const session = this.requireActiveSession();
+        const task = session.agentTasks.find((candidate) => candidate.id === action.taskId);
+        if (!task) throw new Error("Choose an Agent Task in this Learning Session.");
+        if (!task.integratedTeachingCard.retryable) throw new Error("This Agent Task is not ready to retry.");
+        if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model work before retrying this Agent Task.");
+        session.activeAgentTaskId = task.id;
+        this.beginSpecialistAgentTask(session, task);
+        break;
+      }
       case "startChatGptLogin": {
         if (!this.modelRuntime) throw new Error("Codex is unavailable.");
         try {
@@ -2855,6 +2917,101 @@ export class LearningApplication {
         if (revision.agentWorkLogReference) revision.agentWorkLogReference.toSequence = sequence;
       }
     }, () => this.beginQuestionTeaching(session, card, previous), context, previous);
+  }
+
+  private beginSpecialistAgentTask(session: LearningSession, task: AgentTask): void {
+    this.requireModelAccess();
+    const log = this.agentWorkLogs[session.id] ??= [];
+    const controller = new AbortController();
+    const runtime = this.modelRuntime!;
+    task.status = "working";
+    task.statusMessage = null;
+    const retainedCheckpoint = task.integratedTeachingCard.content;
+    if (task.agentWorkLogReference) {
+      task.priorAgentWorkLogReferences.push(structuredClone(task.agentWorkLogReference));
+    }
+    Object.assign(task.integratedTeachingCard, {
+      title: "Specialist review",
+      status: "streaming",
+      content: retainedCheckpoint,
+      error: null,
+      retryable: false
+    });
+    task.agentWorkLogReference = {
+      sessionId: session.id,
+      fromSequence: log.length + 1,
+      toSequence: log.length + 1
+    };
+    const promise = runtime.runSpecialistAgent({
+      sessionId: session.id,
+      purpose: task.purpose,
+      brief: structuredClone(task.brief),
+      budget: structuredClone(task.budget),
+      signal: controller.signal,
+      onStatus: (status, message) => {
+        if (controller.signal.aborted) return;
+        task.status = status;
+        task.statusMessage = message;
+        this.emitState();
+        this.queuePersistence();
+      },
+      onPartialResult: (content) => {
+        if (controller.signal.aborted || !content) return;
+        task.integratedTeachingCard.content = retainedCheckpoint && !content.startsWith(retainedCheckpoint)
+          ? `${retainedCheckpoint}\n\nRetry checkpoint:\n${content}`
+          : content;
+        this.emitState();
+        this.queuePersistence();
+      },
+      onRuntimeEvent: (event) => {
+        if (controller.signal.aborted) return;
+        log.push({ ...event, sequence: log.length + 1 });
+        if (task.agentWorkLogReference) task.agentWorkLogReference.toSequence = log.length;
+        this.queuePersistence();
+      }
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+      const integrated = validatedSpecialistAgentResult(result, task.budget);
+      task.status = "complete";
+      task.statusMessage = null;
+      Object.assign(task.integratedTeachingCard, {
+        title: integrated.title,
+        status: "completed",
+        content: integrated.content,
+        error: null,
+        retryable: false
+      });
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      task.status = "failed";
+      task.statusMessage = usefulRuntimeError(error);
+      Object.assign(task.integratedTeachingCard, {
+        status: "failed",
+        error: usefulRuntimeError(error),
+        retryable: true
+      });
+      this.recordModelAccessLoss(error);
+    }).finally(() => {
+      if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
+      this.queuePersistence();
+      this.emitState();
+    });
+    this.modelWorks.set(session.id, {
+      controller,
+      promise,
+      stop: () => {
+        task.status = "stopped";
+        task.statusMessage = "Specialist work stopped. Retry when ready.";
+        Object.assign(task.integratedTeachingCard, {
+          status: "stopped", error: task.statusMessage, retryable: true
+        });
+      },
+      markUnconfirmed: () => {
+        task.statusMessage = "Specialist work is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
+        task.integratedTeachingCard.error = task.statusMessage;
+      },
+      restart: async () => this.beginSpecialistAgentTask(session, task)
+    });
   }
 
   private async runModelTeaching(
@@ -3650,6 +3807,15 @@ function validatedArtifactSynthesisResult(
   };
 }
 
+function validatedSpecialistAgentResult(value: unknown, budget: AgentBudget): SpecialistAgentResult {
+  if (!isRecord(value) || typeof value.title !== "string" || !value.title.trim()
+    || typeof value.content !== "string" || !value.content.trim()
+    || new TextEncoder().encode(value.content).byteLength > budget.maxOutputTokens) {
+    throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
+  }
+  return { title: value.title, content: value.content };
+}
+
 function requireTargetDisposition(value: unknown): TargetDisposition {
   if (value !== "addressed" && value !== "deferred" && value !== "unresolved") {
     throw new Error("Choose Addressed, Deferred, or Unresolved for the Session Target.");
@@ -3667,15 +3833,27 @@ function usefulRuntimeError(error: unknown): string {
     : "Codex could not complete this Teaching Card. Check authentication and try again.";
 }
 
-function agentWorkEvidenceSummary(type: ModelRuntimeEvent["type"]): string {
+function agentWorkEvidenceSummary(event: ModelRuntimeEvent): string {
+  if (event.workKind === "specialist") {
+    return {
+      threadStarted: "Specialist Agent task started.",
+      turnStarted: "Specialist Agent turn started.",
+      inputSubmitted: "Bounded Agent Brief submitted.",
+      toolCalled: "Specialist Agent checkpoint retained.",
+      outputDelta: "Specialist Agent output advanced.",
+      turnCompleted: "Specialist Agent turn completed.",
+      turnFailed: "Specialist Agent turn failed."
+    }[event.type];
+  }
   return {
     threadStarted: "Teaching runtime thread started.",
     turnStarted: "Teaching runtime turn started.",
     inputSubmitted: "Bounded teaching input submitted.",
+    toolCalled: "Teaching runtime tool called.",
     outputDelta: "Learner-facing output advanced.",
     turnCompleted: "Teaching runtime turn completed.",
     turnFailed: "Teaching runtime turn failed."
-  }[type];
+  }[event.type];
 }
 
 function usefulSourceError(error: unknown): string {
@@ -3775,13 +3953,16 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       conceptPeeks: migrateConceptPeeks(session.conceptPeeks),
       pendingConceptPeek: migratePendingConceptPeek(session.pendingConceptPeek),
       prerequisiteBranchProposals: migratePrerequisiteBranchProposals(session.prerequisiteBranchProposals),
-      prerequisiteBranch: migratePrerequisiteBranch(session.prerequisiteBranch)
+      prerequisiteBranch: migratePrerequisiteBranch(session.prerequisiteBranch),
+      agentTasks: migrateAgentTasks(session.agentTasks),
+      activeAgentTaskId: typeof session.activeAgentTaskId === "string" ? session.activeAgentTaskId : null
     }));
     addLegacyUnresolvedReanchoringDecisions(current);
     attachManagedSourcesToLegacySessions(current);
     for (const session of current.sessions) {
       validateSessionSourceAnchorReferences(current, session);
       validateQuestionCardReferences(current, session);
+      validateAgentTaskReferences(session);
       refreshAskBarContext(current, session);
     }
     validateReanchoringDecisionReferences(current);
@@ -3827,7 +4008,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       conceptPeeks: [],
       pendingConceptPeek: null,
       prerequisiteBranchProposals: [],
-      prerequisiteBranch: null
+      prerequisiteBranch: null,
+      agentTasks: [],
+      activeAgentTaskId: null
     };
     migrated.sessions.push(session);
     attachManagedSourcesToLegacySessions(migrated);
@@ -3845,6 +4028,88 @@ function migrateAgentWorkLogs(value: unknown): Record<string, Array<ModelRuntime
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, Array<ModelRuntimeEvent & { sequence: number }>>
     : {};
+}
+
+function migrateAgentTasks(value: unknown): AgentTask[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Agent Tasks are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.purpose !== "string" || !candidate.purpose.trim()
+      || !["working", "waiting", "failed", "stopped", "complete"].includes(String(candidate.status))
+      || !(candidate.statusMessage === null || typeof candidate.statusMessage === "string")
+      || !isRecord(candidate.identifiedNeed) || !isRecord(candidate.brief)
+      || !isRecord(candidate.budget) || !isRecord(candidate.integratedTeachingCard)
+      || !(candidate.priorAgentWorkLogReferences === undefined || Array.isArray(candidate.priorAgentWorkLogReferences))) {
+      throw new Error("Stored Agent Tasks are invalid.");
+    }
+    const need = candidate.identifiedNeed;
+    const brief = candidate.brief;
+    const budget = candidate.budget;
+    const card = candidate.integratedTeachingCard;
+    const reference = candidate.agentWorkLogReference;
+    const priorReferences = candidate.priorAgentWorkLogReferences ?? [];
+    if (need.kind !== "hiddenAssumptionReview" || need.requestedBy !== "learner"
+      || typeof need.description !== "string" || !need.description.trim()
+      || typeof brief.learningGoal !== "string" || !brief.learningGoal.trim()
+      || !Array.isArray(brief.sourceAnchors) || !brief.sourceAnchors.every((anchor) => isRecord(anchor)
+        && typeof anchor.sourceAnchorId === "string" && typeof anchor.sourceId === "string"
+        && isSourceAnchorSelection(anchor.selection))
+      || !isNonEmptyStringArray(brief.constraints) || !isStringArray(brief.learnerEvidence)
+      || typeof brief.expectedOutput !== "string" || !brief.expectedOutput.trim()
+      || !isNonEmptyStringArray(brief.verificationNeeds)
+      || budget.agentCount !== 1 || budget.concurrency !== 1 || budget.model !== "runtimeDefault"
+      || budget.reasoningEffort !== "medium" || !Array.isArray(budget.tools)
+      || budget.tools.length !== 1 || budget.tools[0] !== "checkpointSpecialistResult"
+      || !Number.isInteger(budget.maxOutputTokens) || (budget.maxOutputTokens as number) < 1
+      || !Number.isInteger(budget.maxLatencyMs) || (budget.maxLatencyMs as number) < 1
+      || typeof card.title !== "string" || !card.title.trim()
+      || !["idle", "streaming", "completed", "stopped", "failed"].includes(String(card.status))
+      || typeof card.content !== "string" || !(card.error === null || typeof card.error === "string")
+      || typeof card.retryable !== "boolean"
+      || !(reference === null || (isRecord(reference) && typeof reference.sessionId === "string"
+        && Number.isInteger(reference.fromSequence) && Number.isInteger(reference.toSequence)
+        && (reference.fromSequence as number) >= 1 && (reference.toSequence as number) >= (reference.fromSequence as number)))
+      || !(priorReferences as unknown[]).every(validAgentWorkLogReference)) {
+      throw new Error("Stored Agent Tasks are invalid.");
+    }
+    return { ...candidate, priorAgentWorkLogReferences: priorReferences } as unknown as AgentTask;
+  });
+}
+
+function validAgentWorkLogReference(value: unknown): value is NonNullable<TeachingCardRevision["agentWorkLogReference"]> {
+  return isRecord(value) && typeof value.sessionId === "string"
+    && Number.isInteger(value.fromSequence) && Number.isInteger(value.toSequence)
+    && (value.fromSequence as number) >= 1 && (value.toSequence as number) >= (value.fromSequence as number);
+}
+
+function validateAgentTaskReferences(session: LearningSession): void {
+  if (new Set(session.agentTasks.map((task) => task.id)).size !== session.agentTasks.length
+    || (session.activeAgentTaskId !== null && !session.agentTasks.some((task) => task.id === session.activeAgentTaskId))) {
+    throw new Error("Stored Agent Task references are invalid.");
+  }
+  for (const task of session.agentTasks) {
+    if (task.agentWorkLogReference?.sessionId !== undefined && task.agentWorkLogReference.sessionId !== session.id) {
+      throw new Error("Stored Agent Task references are invalid.");
+    }
+    if (task.priorAgentWorkLogReferences.some((reference) => reference.sessionId !== session.id)) {
+      throw new Error("Stored Agent Task references are invalid.");
+    }
+    for (const briefAnchor of task.brief.sourceAnchors) {
+      const anchor = session.sourceAnchors.find((candidate) => candidate.id === briefAnchor.sourceAnchorId);
+      if (!anchor || anchor.sourceId !== briefAnchor.sourceId
+        || JSON.stringify(anchor.selection) !== JSON.stringify(briefAnchor.selection)) {
+        throw new Error("Stored Agent Task references are invalid.");
+      }
+    }
+  }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return isStringArray(value) && value.length > 0 && value.every((item) => Boolean(item.trim()));
 }
 
 function migrateArgumentRoadmaps(value: unknown): ArgumentRoadmap[] {
@@ -4401,8 +4666,89 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     conceptPeeks: [],
     pendingConceptPeek: null,
     prerequisiteBranchProposals: [],
-    prerequisiteBranch: details.prerequisiteBranch ?? null
+    prerequisiteBranch: details.prerequisiteBranch ?? null,
+    agentTasks: [],
+    activeAgentTaskId: null
   };
+}
+
+function createSpecialistReviewTask(session: LearningSession): AgentTask {
+  const target = specialistReviewTarget(session);
+  if (!target) throw new Error("Complete a Teaching Card before requesting a Specialist Agent review.");
+  return {
+    id: crypto.randomUUID(),
+    purpose: "Review the current Teaching Card for a hidden mathematical assumption",
+    status: "working",
+    statusMessage: null,
+    identifiedNeed: {
+      kind: "hiddenAssumptionReview",
+      requestedBy: "learner",
+      description: "The learner requested a focused check for a hidden mathematical assumption in the current Teaching Card."
+    },
+    brief: {
+      learningGoal: session.learningGoal,
+      sourceAnchors: target.sourceAnchor ? [{
+        sourceAnchorId: target.sourceAnchor.id,
+        sourceId: target.sourceAnchor.sourceId,
+        selection: structuredClone(target.sourceAnchor.selection)
+      }] : [],
+      constraints: [
+        "Review only the current learner-facing Teaching Card.",
+        "Do not inspect other Learning Session history or local files.",
+        `Current Teaching Card: ${target.content}`
+      ],
+      learnerEvidence: session.trailDraft.items
+        .filter((item) => item.origin === "learner" && item.kind === "evidence"
+          && (target.sourceAnchor && item.links.sourceAnchorIds.includes(target.sourceAnchor.id)
+            || target.teachingCardId && item.links.teachingCardIds.includes(target.teachingCardId)
+            || !target.sourceAnchor && !target.teachingCardId && isSessionLevelTrailItem(item)))
+        .map((item) => item.content),
+      expectedOutput: "One concise correction or confirmation integrated as a Teaching Card.",
+      verificationNeeds: [
+        "Identify any hidden mathematical assumption and explain whether the argument depends on it."
+      ]
+    },
+    budget: {
+      agentCount: 1,
+      concurrency: 1,
+      model: "runtimeDefault",
+      reasoningEffort: "medium",
+      tools: ["checkpointSpecialistResult"],
+      maxOutputTokens: 512,
+      maxLatencyMs: 120_000
+    },
+    integratedTeachingCard: {
+      title: "Specialist review",
+      status: "streaming",
+      content: "",
+      error: null,
+      retryable: false
+    },
+    agentWorkLogReference: null,
+    priorAgentWorkLogReferences: []
+  };
+}
+
+function specialistReviewTarget(session: LearningSession): {
+  content: string;
+  sourceAnchor: SourceAnchor | null;
+  teachingCardId: string | null;
+} | null {
+  const anchoredCard = session.anchoredTeachingCards.find((card) => card.id === session.activeTeachingCardId);
+  if (anchoredCard?.currentRevision.status === "completed" && anchoredCard.currentRevision.content.trim()) {
+    return {
+      content: anchoredCard.currentRevision.content,
+      sourceAnchor: session.sourceAnchors.find((anchor) => anchor.id === anchoredCard.sourceAnchorId) ?? null,
+      teachingCardId: anchoredCard.id
+    };
+  }
+  if (session.teachingCard.status !== "completed" || !session.teachingCard.content.trim()) return null;
+  return { content: session.teachingCard.content, sourceAnchor: null, teachingCardId: null };
+}
+
+function isSessionLevelTrailItem(item: TrailItem): boolean {
+  return item.links.sourceAnchorIds.length === 0 && item.links.teachingCardIds.length === 0
+    && item.links.learningArtifactIds.length === 0 && item.links.understandingEvidenceIds.length === 0;
 }
 
 function emptySessionLifecycle(): Pick<LearningSession,

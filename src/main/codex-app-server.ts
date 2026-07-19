@@ -7,6 +7,8 @@ import { ModelAccessError, type
   ModelRuntime,
   ModelRuntimeEvent,
   SessionProposal,
+  SpecialistAgentRequest,
+  SpecialistAgentResult,
   TeachingRequest
 } from "../shared/model-runtime";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -231,6 +233,11 @@ export class CodexAppServerRuntime implements ModelRuntime {
     timeout: ReturnType<typeof setTimeout>;
     onRuntimeEvent?: (event: ModelRuntimeEvent) => void;
     onAccessRequest?: TeachingRequest["onAccessRequest"];
+    onSpecialistCheckpoint?: SpecialistAgentRequest["onPartialResult"];
+    specialistMaxOutputTokens?: number;
+    lastSpecialistCheckpoint: string;
+    outputBytes: number;
+    outputBudgetExceeded: boolean;
   }>();
   private readonly earlyTurnNotifications = new Map<string, ProtocolMessage[]>();
   private readonly turnRegistrationWaiters = new Map<string, () => void>();
@@ -321,37 +328,31 @@ export class CodexAppServerRuntime implements ModelRuntime {
   }
 
   async createConceptPeek(request: ConceptPeekRequest): Promise<string> {
-    let resolveStart!: () => void;
-    const start = new Promise<void>((resolve) => {
-      resolveStart = resolve;
+    return this.withTeachingStartSignal(request.sessionId, async () => {
+      try {
+        if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
+        const content = await this.runTurn(
+          [
+            "Write one compact Concept Peek explaining the named prerequisite at the supplied Source Anchor.",
+            "Use two to four learner-facing sentences. State the relevant definition, lemma, or technique and connect it directly to the anchored mathematics. Do not branch into a full lesson, claim verification, or mention internal tools.",
+            `Learning Goal: ${request.learningGoal}`,
+            `Prerequisite: ${request.prerequisite}`,
+            `Source Anchor: ${JSON.stringify(request.selection)}`,
+            "Session mathematics:",
+            request.mathematics
+          ].join("\n\n"),
+          undefined,
+          undefined,
+          request.sessionId,
+          request.onRuntimeEvent
+        );
+        if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
+        return content;
+      } catch (error) {
+        request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+        throw error;
+      }
     });
-    this.teachingStartSignals.set(request.sessionId, { promise: start, resolve: resolveStart });
-    try {
-      if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
-      const content = await this.runTurn(
-        [
-          "Write one compact Concept Peek explaining the named prerequisite at the supplied Source Anchor.",
-          "Use two to four learner-facing sentences. State the relevant definition, lemma, or technique and connect it directly to the anchored mathematics. Do not branch into a full lesson, claim verification, or mention internal tools.",
-          `Learning Goal: ${request.learningGoal}`,
-          `Prerequisite: ${request.prerequisite}`,
-          `Source Anchor: ${JSON.stringify(request.selection)}`,
-          "Session mathematics:",
-          request.mathematics
-        ].join("\n\n"),
-        undefined,
-        undefined,
-        request.sessionId,
-        request.onRuntimeEvent
-      );
-      if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
-      return content;
-    } catch (error) {
-      resolveStart();
-      request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
-      throw error;
-    } finally {
-      this.teachingStartSignals.delete(request.sessionId);
-    }
   }
 
   async synthesizeArtifact(request: ArtifactSynthesisRequest): Promise<ArtifactSynthesisResult> {
@@ -383,39 +384,84 @@ export class CodexAppServerRuntime implements ModelRuntime {
     }
   }
 
+  async runSpecialistAgent(request: SpecialistAgentRequest): Promise<SpecialistAgentResult> {
+    return this.withTeachingStartSignal(request.sessionId, async () => {
+      try {
+        if (request.signal.aborted) throw new Error("Specialist Agent work was stopped.");
+        request.onStatus("waiting", "Waiting for Codex to start the bounded review.");
+        const content = await this.runTurn(
+          [
+            "Act as one task-scoped mathematical review Specialist Agent.",
+            `Keep the entire response within the ${request.budget.maxOutputTokens}-token ceiling. Identify a hidden assumption in the supplied evidence, or confirm concisely that none is needed for the stated step. Do not claim independent or formal verification.`,
+            "Call checkpoint_specialist_result after each useful self-contained conclusion and before returning the same final structured JSON. Every later checkpoint must include all earlier checkpoint content as a prefix. Only checkpoint content suitable for the learner-facing Teaching Card.",
+            `Purpose: ${request.purpose}`,
+            `Agent Brief: ${JSON.stringify(request.brief)}`,
+            `Agent Budget: ${JSON.stringify(request.budget)}`
+          ].join("\n\n"),
+          SPECIALIST_AGENT_RESULT_SCHEMA,
+          undefined,
+          request.sessionId,
+          (event) => {
+            if (event.type === "turnStarted") request.onStatus("working", null);
+            request.onRuntimeEvent?.({ ...event, workKind: "specialist" });
+          },
+          undefined,
+          "You are one bounded Specialist Agent using the runtime-default model with medium reasoning. Use only the supplied Agent Brief. The checkpoint tool is the only permitted tool; do not inspect local files, session history, apps, or the network. Return one structured result for the Teaching Orchestrator to integrate; never produce an agent transcript.",
+          request.budget.maxLatencyMs,
+          request
+        );
+        if (request.signal.aborted) throw new Error("Specialist Agent work was stopped.");
+        return parseSpecialistAgentResult(content, request.budget.maxOutputTokens);
+      } catch (error) {
+        request.onRuntimeEvent?.({ type: "turnFailed", workKind: "specialist", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+        throw error;
+      }
+    });
+  }
+
   async streamTeaching(request: TeachingRequest): Promise<void> {
+    return this.withTeachingStartSignal(request.sessionId, async () => {
+      try {
+        await this.runTurn(
+          [
+            "Create one learner-facing Teaching Card, not a chat transcript.",
+            teachingSessionContext(request),
+            `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
+            authorizedSourceContext(request),
+            questionContext(request),
+            questionRevision(request),
+            tutorFeedbackContext(request),
+            teachingFocus(request),
+            "Mathematics:",
+            request.mathematics,
+            "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
+          ].join("\n\n"),
+          undefined,
+          request.onDelta,
+          request.sessionId,
+          request.onRuntimeEvent,
+          request
+        );
+      } catch (error) {
+        request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+        throw error;
+      }
+    });
+  }
+
+  private async withTeachingStartSignal<Result>(sessionId: string, work: () => Promise<Result>): Promise<Result> {
     let resolveStart!: () => void;
     const start = new Promise<void>((resolve) => {
       resolveStart = resolve;
     });
-    this.teachingStartSignals.set(request.sessionId, { promise: start, resolve: resolveStart });
+    this.teachingStartSignals.set(sessionId, { promise: start, resolve: resolveStart });
     try {
-      await this.runTurn(
-        [
-          "Create one learner-facing Teaching Card, not a chat transcript.",
-          teachingSessionContext(request),
-          `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
-          authorizedSourceContext(request),
-          questionContext(request),
-          questionRevision(request),
-          tutorFeedbackContext(request),
-          teachingFocus(request),
-          "Mathematics:",
-          request.mathematics,
-          "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
-        ].join("\n\n"),
-        undefined,
-        request.onDelta,
-        request.sessionId,
-        request.onRuntimeEvent,
-        request
-      );
+      return await work();
     } catch (error) {
       resolveStart();
-      request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
       throw error;
     } finally {
-      this.teachingStartSignals.delete(request.sessionId);
+      this.teachingStartSignals.delete(sessionId);
     }
   }
 
@@ -438,7 +484,10 @@ export class CodexAppServerRuntime implements ModelRuntime {
     onDelta?: (delta: string) => void,
     sessionId?: string,
     onRuntimeEvent?: (event: ModelRuntimeEvent) => void,
-    teachingRequest?: TeachingRequest
+    teachingRequest?: TeachingRequest,
+    baseInstructionsOverride?: string,
+    turnTimeoutMs = this.turnTimeoutMs,
+    specialistRequest?: SpecialistAgentRequest
   ): Promise<string> {
     const accessPolicy = teachingRequest?.accessScope.policy ?? "focused";
     const anchoredFocus = Boolean(teachingRequest?.focus);
@@ -450,7 +499,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
-      dynamicTools: teachingRequest && !boundedContext ? [SESSION_ACCESS_REQUEST_TOOL] : [],
+      dynamicTools: specialistRequest ? [SPECIALIST_CHECKPOINT_TOOL]
+        : teachingRequest && !boundedContext ? [SESSION_ACCESS_REQUEST_TOOL] : [],
       config: {
         features: {
           apps: false,
@@ -463,13 +513,13 @@ export class CodexAppServerRuntime implements ModelRuntime {
         mcp_servers: {},
         web_search: "disabled"
       },
-      baseInstructions: anchoredFocus
+      baseInstructions: baseInstructionsOverride ?? (anchoredFocus
         ? "You are the bounded teaching runtime for an anchored Teaching Card. Use only the supplied authorized source context so the Context Used Receipt remains complete. Do not request or inspect additional local material. Produce only learner-facing mathematical teaching output."
         : contextualQuestion
         ? "You are the bounded teaching runtime for a Question Card. Use only the learner-approved Ask Bar context and supplied authorized source context so the Context Used Receipt remains complete. Do not request or inspect additional local material. Revise one coherent Question Card rather than producing a chat transcript."
         : fullAccessTools
         ? "You are the bounded teaching runtime for Quick Study. Full Access permits read-only local inspection for this Learning Session. Never modify or delete source files. Produce only learner-facing mathematical teaching output."
-        : "You are the bounded teaching runtime for Quick Study. Use only supplied authorized context. If broader local context is necessary, call request_session_access with the reason, exact scope, and intended action. Do not execute commands or modify files. Produce only learner-facing mathematical teaching output."
+        : "You are the bounded teaching runtime for Quick Study. Use only supplied authorized context. If broader local context is necessary, call request_session_access with the reason, exact scope, and intended action. Do not execute commands or modify files. Produce only learner-facing mathematical teaching output.")
     }) as { thread: { id: string } };
     onRuntimeEvent?.({
       type: "threadStarted",
@@ -480,6 +530,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     const turnResponse = await this.client.request("turn/start", {
       threadId: threadResponse.thread.id,
       input: [{ type: "text", text: prompt, text_elements: [] }],
+      ...(specialistRequest ? { effort: specialistRequest.budget.reasoningEffort } : {}),
       ...(outputSchema ? { outputSchema } : {})
     }) as { turn: { id: string } };
     if (this.runtimeFailure) {
@@ -505,9 +556,14 @@ export class CodexAppServerRuntime implements ModelRuntime {
         onDelta,
         resolve,
         reject,
-        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), this.turnTimeoutMs),
+        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), turnTimeoutMs),
         onRuntimeEvent,
-        onAccessRequest: teachingRequest?.onAccessRequest
+        onAccessRequest: teachingRequest?.onAccessRequest,
+        onSpecialistCheckpoint: specialistRequest?.onPartialResult,
+        specialistMaxOutputTokens: specialistRequest?.budget.maxOutputTokens,
+        lastSpecialistCheckpoint: "",
+        outputBytes: 0,
+        outputBudgetExceeded: false
       });
       this.turnRegistrationWaiters.get(turnResponse.turn.id)?.();
       if (sessionId) this.activeTeachingTurns.set(sessionId, {
@@ -525,22 +581,33 @@ export class CodexAppServerRuntime implements ModelRuntime {
   private readonly activeTeachingTurns = new Map<string, { threadId: string; turnId: string }>();
 
   private async handleDynamicToolCall(params: unknown): Promise<unknown> {
-    const call = parseAccessRequestToolCall(params);
-    let turn = this.turns.get(call.turnId);
-    if (!turn) {
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          this.turnRegistrationWaiters.delete(call.turnId);
-          resolve();
-        }, 1_000);
-        this.turnRegistrationWaiters.set(call.turnId, () => {
-          clearTimeout(timeout);
-          this.turnRegistrationWaiters.delete(call.turnId);
-          resolve();
-        });
+    if (isRecord(params) && params.tool === "checkpoint_specialist_result") {
+      const call = parseSpecialistCheckpointToolCall(params);
+      const turn = await this.awaitRegisteredTurn(call.turnId);
+      if (!turn?.onSpecialistCheckpoint || !turn.specialistMaxOutputTokens) {
+        throw new Error("This turn cannot checkpoint a Specialist Agent result.");
+      }
+      const checkpoint = parseSpecialistAgentResult(JSON.stringify(call.checkpoint), turn.specialistMaxOutputTokens);
+      if (turn.lastSpecialistCheckpoint && !checkpoint.content.startsWith(turn.lastSpecialistCheckpoint)) {
+        throw new Error("Specialist Agent checkpoints must retain all earlier useful conclusions.");
+      }
+      const checkpointBytes = Buffer.byteLength(JSON.stringify(checkpoint), "utf8");
+      if (!this.reserveSpecialistOutput(call.turnId, turn, checkpointBytes)) {
+        throw new Error("Specialist Agent output exceeded its token budget.");
+      }
+      turn.lastSpecialistCheckpoint = checkpoint.content;
+      turn.onSpecialistCheckpoint(checkpoint.content);
+      turn.onRuntimeEvent?.({
+        type: "toolCalled",
+        workKind: "specialist",
+        threadId: turn.threadId,
+        turnId: call.turnId,
+        detail: JSON.stringify(checkpoint)
       });
-      turn = this.turns.get(call.turnId);
+      return { success: true, contentItems: [{ type: "inputText", text: "Checkpoint retained for learner-facing integration." }] };
     }
+    const call = parseAccessRequestToolCall(params);
+    const turn = await this.awaitRegisteredTurn(call.turnId);
     if (!turn?.onAccessRequest) throw new Error("This turn cannot request Session Access elevation.");
     const decision = await turn.onAccessRequest(call.request);
     return {
@@ -554,6 +621,49 @@ export class CodexAppServerRuntime implements ModelRuntime {
     };
   }
 
+  private async awaitRegisteredTurn(turnId: string) {
+    let turn = this.turns.get(turnId);
+    if (turn) return turn;
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.turnRegistrationWaiters.delete(turnId);
+        resolve();
+      }, 1_000);
+      this.turnRegistrationWaiters.set(turnId, () => {
+        clearTimeout(timeout);
+        this.turnRegistrationWaiters.delete(turnId);
+        resolve();
+      });
+    });
+    return this.turns.get(turnId);
+  }
+
+  private reserveSpecialistOutput(turnId: string, turn: {
+    threadId: string;
+    specialistMaxOutputTokens?: number;
+    outputBytes: number;
+    outputBudgetExceeded: boolean;
+    onRuntimeEvent?: (event: ModelRuntimeEvent) => void;
+    reject(error: Error): void;
+  }, bytes: number): boolean {
+    if (turn.outputBudgetExceeded) return false;
+    if (!turn.specialistMaxOutputTokens || turn.outputBytes + bytes <= turn.specialistMaxOutputTokens) {
+      turn.outputBytes += bytes;
+      return true;
+    }
+    turn.outputBudgetExceeded = true;
+    turn.onRuntimeEvent?.({
+      type: "turnFailed",
+      workKind: "specialist",
+      threadId: turn.threadId,
+      turnId,
+      detail: "Specialist Agent output exceeded its conservative token ceiling."
+    });
+    void this.client.request("turn/interrupt", { threadId: turn.threadId, turnId }).catch(() => undefined);
+    turn.reject(new Error("Specialist Agent output exceeded its token budget. Retry to request a shorter review."));
+    return false;
+  }
+
   private receiveNotification(message: ProtocolMessage): void {
     if (message.method === "item/agentMessage/delta") {
       const params = message.params as { turnId: string; delta: string };
@@ -562,6 +672,9 @@ export class CodexAppServerRuntime implements ModelRuntime {
         this.bufferEarlyTurnNotification(params.turnId, message);
         return;
       }
+      if (turn.outputBudgetExceeded) return;
+      const deltaBytes = Buffer.byteLength(params.delta, "utf8");
+      if (!this.reserveSpecialistOutput(params.turnId, turn, deltaBytes)) return;
       turn.content += params.delta;
       turn.onDelta?.(params.delta);
       turn.onRuntimeEvent?.({
@@ -767,6 +880,21 @@ function parseAccessRequestToolCall(params: unknown): {
   };
 }
 
+function parseSpecialistCheckpointToolCall(params: unknown): {
+  turnId: string;
+  checkpoint: SpecialistAgentResult;
+} {
+  if (!isRecord(params) || params.tool !== "checkpoint_specialist_result" || typeof params.turnId !== "string"
+    || !isRecord(params.arguments) || typeof params.arguments.title !== "string"
+    || typeof params.arguments.content !== "string") {
+    throw new Error("Codex sent an invalid Specialist Agent checkpoint.");
+  }
+  return {
+    turnId: params.turnId,
+    checkpoint: { title: params.arguments.title, content: params.arguments.content }
+  };
+}
+
 function dynamicToolFailure(error: unknown): unknown {
   return {
     success: false,
@@ -902,6 +1030,23 @@ const ARTIFACT_SYNTHESIS_SCHEMA = {
   }
 } as const;
 
+const SPECIALIST_AGENT_RESULT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "content"],
+  properties: {
+    title: { type: "string" },
+    content: { type: "string" }
+  }
+} as const;
+
+const SPECIALIST_CHECKPOINT_TOOL = {
+  type: "function",
+  name: "checkpoint_specialist_result",
+  description: "Retain one useful, self-contained Specialist Agent conclusion for learner-facing integration before the final result.",
+  inputSchema: SPECIALIST_AGENT_RESULT_SCHEMA
+} as const;
+
 function parseSessionProposal(content: string): SessionProposal {
   let value: unknown;
   try {
@@ -944,6 +1089,22 @@ function parseArtifactSynthesis(content: string): ArtifactSynthesisResult {
     throw new Error("Codex returned a malformed Learning Artifact synthesis. Retry to request a fresh synthesis.");
   }
   return value as unknown as ArtifactSynthesisResult;
+}
+
+function parseSpecialistAgentResult(content: string, maxOutputTokens: number): SpecialistAgentResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
+  }
+  if (!isRecord(value) || typeof value.title !== "string" || !value.title.trim()
+    || typeof value.content !== "string" || !value.content.trim()
+    // Every encoded token contains at least one byte, so this conservative byte ceiling is a hard token upper bound.
+    || Buffer.byteLength(value.content, "utf8") > maxOutputTokens) {
+    throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
+  }
+  return value as unknown as SpecialistAgentResult;
 }
 
 function validArgumentRoadmapProposal(value: unknown): boolean {
