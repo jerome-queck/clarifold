@@ -27,7 +27,7 @@ describe("External Research contract", () => {
       title: "References", summary: "Evidence returned.",
       sources: [{ title: "Reference", url: "https://example.test/reference" }],
       corroboration: {
-        relevantResult: "A theorem", proposedApproachDeparture: false,
+        relevantResult: "A theorem", errataCheck: "noneFound", proposedApproachDeparture: false,
         evidence: [{
           sourceTitle: "Local file", sourceUrl: "file:///Users/learner/private.pdf",
           authority: "authoritative", relevance: "direct", relation: "supports",

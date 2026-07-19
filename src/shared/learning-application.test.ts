@@ -4518,6 +4518,7 @@ describe("Learning Application", () => {
       sources: [{ title: "Standard theorem reference", url: "https://example.test/orbit-stabilizer" }],
       corroboration: {
         relevantResult: "Orbit-stabilizer theorem",
+        errataCheck: "noneFound",
         proposedApproachDeparture: false,
         evidence: [{
           sourceTitle: "Standard theorem reference",
@@ -4650,7 +4651,12 @@ describe("Learning Application", () => {
       title: "Deterministic benchmark evidence",
       summary: "Pinned corroboration fixture.",
       sources: evidence.map((item) => ({ title: item.sourceTitle, url: item.sourceUrl })),
-      corroboration: { relevantResult: "Orbit-stabilizer theorem", proposedApproachDeparture: false, evidence }
+      corroboration: {
+        relevantResult: "Orbit-stabilizer theorem",
+        errataCheck: evidence.some((item) => item.relation === "erratum") ? "found" : "noneFound",
+        proposedApproachDeparture: false,
+        evidence
+      }
     };
     const { application } = await launchWithExternalResearch(research);
     await application.submit({

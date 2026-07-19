@@ -4390,9 +4390,9 @@ function usefulResearchError(error: unknown): string {
 
 function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery | null {
   const namedTheorem = mathematics.match(
-    /(?:prove|show|verify|study|understand|explain|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
+    /(?:prove|disprove|show|verify|study|understand|explain|establish|demonstrate|justify|derive|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
   )?.[1];
-  const substantive = /\b(prove|proof|show\s+that|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary)\b/i.test(mathematics);
+  const substantive = /\b(prove|disprove|proof|show\s+that|establish|demonstrate|justify|derive|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary|counterexample)\b/i.test(mathematics);
   if (!substantive) return null;
   const assumptions = Array.from(mathematics.matchAll(
     /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi
@@ -4450,7 +4450,8 @@ function completeCorroborationPass(pass: CorroborationPass, research: ResearchAc
   const anySupport = corroboration.evidence.some((item) => item.relation === "supports");
   pass.assumptionComparison = assumptionMismatch ? "mismatch" : matchingSupport ? "matches" : "unchecked";
   pass.conclusionComparison = conclusionMismatch ? "mismatch" : matchingSupport ? "matches" : "unchecked";
-  pass.errataCheck = errata.length > 0 ? "found" : strong.length > 0 ? "noneFound" : "unchecked";
+  pass.errataCheck = corroboration.errataCheck === "found"
+    ? "found" : corroboration.errataCheck === "noneFound" ? "noneFound" : "unchecked";
   pass.independentSupport = conflicts.length > 0 ? "conflicting" : matchingSupport ? "sufficient" : anySupport ? "weakOnly" : "missing";
   const establishedApproaches = strong.flatMap((item) => item.proofApproaches);
   pass.proofApproachResearch = pass.pedagogicalBaselinePresent
@@ -5110,6 +5111,7 @@ function migrateCorroborationPass(value: unknown): CorroborationPass | null {
   }
   const evidence = validatedCorroborationResearchResult({
     relevantResult: value.relevantResult,
+    errataCheck: "noneFound",
     proposedApproachDeparture: false,
     evidence: value.evidence
   }).evidence;
@@ -5126,6 +5128,7 @@ function migrateCorroborationPass(value: unknown): CorroborationPass | null {
       summary: discrepancy.summary,
       competingEvidence: validatedCorroborationResearchResult({
         relevantResult: discrepancy.relevantResult,
+        errataCheck: "noneFound",
         proposedApproachDeparture: false,
         evidence: discrepancy.competingEvidence
       }).evidence

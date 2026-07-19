@@ -34,6 +34,7 @@ export interface ExternalResearchResult {
 
 export interface CorroborationResearchResult {
   relevantResult: string;
+  errataCheck: "noneFound" | "found" | "unavailable";
   proposedApproachDeparture: boolean;
   evidence: CorroborationResearchEvidence[];
 }
@@ -82,6 +83,7 @@ export function validatedCorroborationResearchResult(value: unknown): Corroborat
   if (!value || typeof value !== "object" || Array.isArray(value)) throw malformed;
   const result = value as Partial<CorroborationResearchResult>;
   if (typeof result.relevantResult !== "string" || !result.relevantResult.trim()
+    || !["noneFound", "found", "unavailable"].includes(String(result.errataCheck))
     || typeof result.proposedApproachDeparture !== "boolean" || !Array.isArray(result.evidence)) throw malformed;
   const evidence = result.evidence.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw malformed;
@@ -110,7 +112,12 @@ export function validatedCorroborationResearchResult(value: unknown): Corroborat
       detail: candidate.detail.trim()
     } as CorroborationResearchEvidence;
   });
-  return { relevantResult: result.relevantResult.trim(), proposedApproachDeparture: result.proposedApproachDeparture, evidence };
+  return {
+    relevantResult: result.relevantResult.trim(),
+    errataCheck: result.errataCheck!,
+    proposedApproachDeparture: result.proposedApproachDeparture,
+    evidence
+  };
 }
 
 export function buildDerivedResearchQuery(input: DerivedResearchQueryInput): DerivedResearchQuery {
