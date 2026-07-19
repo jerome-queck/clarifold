@@ -17,8 +17,10 @@ const executablePath = join(
 
 test("packaged Quick Study organizes durable work and resumes the latest session", async () => {
   test.setTimeout(180_000);
-  const packagedManifest = join(executablePath, "..", "..", "Resources", "verifiers",
-    "lean-4.29.1-mathlib-4.29.1-quick-study-v1", "manifest.json");
+  const packagedEnvironment = join(executablePath, "..", "..", "Resources", "verifiers",
+    "lean-4.29.1-mathlib-4.29.1-quick-study-v1");
+  const packagedManifest = join(packagedEnvironment, "manifest.json");
+  expect((await stat(packagedEnvironment)).mode & 0o222).toBe(0);
   expect((await stat(packagedManifest)).mode & 0o222).toBe(0);
   const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-smoke-"));
   const sourceDirectory = await mkdtemp(join(tmpdir(), "quick-study-source-"));

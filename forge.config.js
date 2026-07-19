@@ -42,4 +42,5 @@ async function makeVerifierFilesReadOnly(directory) {
     if (entry.isDirectory()) await makeVerifierFilesReadOnly(path);
     else await chmod(path, path.endsWith(join("bin", "lean")) ? 0o555 : 0o444);
   }
+  await chmod(directory, 0o555);
 }
