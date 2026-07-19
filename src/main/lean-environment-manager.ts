@@ -71,13 +71,16 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     await makeTreeReadOnly(this.registryPath, stagingPath, false);
     const backupPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
     const hadActive = await exists(this.environmentPath);
-    if (hadActive) await rename(this.environmentPath, backupPath);
+    if (hadActive) await renameReadOnlyTree(this.registryPath, this.environmentPath, backupPath);
     try {
       await rename(stagingPath, this.environmentPath);
       await chmod(this.environmentPath, 0o500);
     } catch (error) {
       if (await exists(this.environmentPath)) await removeWritableTree(this.registryPath, this.environmentPath);
-      if (hadActive) await rename(backupPath, this.environmentPath);
+      if (hadActive) {
+        await rename(backupPath, this.environmentPath);
+        await chmod(this.environmentPath, 0o500);
+      }
       throw error;
     }
     await removeWritableTree(this.registryPath, backupPath);
@@ -93,7 +96,7 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     const removedLogicalBytes = await directorySize(this.environmentPath);
     const removalPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
     await writeFile(this.removalMarkerPath, `${BUNDLED_LEAN_ENVIRONMENT.id}\n`, "utf8");
-    await rename(this.environmentPath, removalPath);
+    await renameReadOnlyTree(this.registryPath, this.environmentPath, removalPath);
     await removeWritableTree(this.registryPath, removalPath);
     return { removedLogicalBytes };
   }
@@ -271,6 +274,18 @@ async function removeWritableTree(registryPath: string, path: string): Promise<v
   if (!await exists(path)) return;
   await makeTreeWritable(registryPath, path);
   await rm(path, { recursive: true, force: true });
+}
+
+async function renameReadOnlyTree(registryPath: string, source: string, destination: string): Promise<void> {
+  assertManagedPath(registryPath, source);
+  assertManagedPath(registryPath, destination);
+  await chmod(source, 0o700);
+  try {
+    await rename(source, destination);
+  } catch (error) {
+    await chmod(source, 0o500);
+    throw error;
+  }
 }
 
 async function makeTreeWritable(registryPath: string, path: string): Promise<void> {

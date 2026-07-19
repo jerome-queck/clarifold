@@ -104,6 +104,7 @@ describe("LeanEnvironmentManager", () => {
     await manager.install();
     const interruptedRemoval = join(registry, `.${bundledEnvironment.id}.removing-interrupted`);
     await writeFile(join(registry, ".lean-environment-removed"), `${bundledEnvironment.id}\n`, "utf8");
+    await chmod(join(registry, bundledEnvironment.id), 0o700);
     await rename(join(registry, bundledEnvironment.id), interruptedRemoval);
 
     expect(await manager.inspect()).toMatchObject({ installed: false, cleanupRequired: true });
