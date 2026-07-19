@@ -28,6 +28,11 @@ describe("ReanchoringReview", () => {
       affectedTeachingCards={["Question about Beta lemma"]}
       affectedAnnotations={["Personal Note: Check this step."]}
       affectedTrailItems={["Concept: Beta lemma"]}
+      sourceView={{
+        status: "available", sourceId: "source-1", resourceType: "file", mediaType: "text/plain",
+        content: "Alpha theorem changed. Use $Delta claim$.", fingerprint: { size: 42, modifiedAtMs: 6789 }
+      }}
+      onOpenSource={vi.fn().mockResolvedValue(undefined)}
       onResolve={onResolve} />);
 
     const review = screen.getByRole("region", { name: "Unresolved Anchor review for notes.txt" });
@@ -43,19 +48,18 @@ describe("ReanchoringReview", () => {
       type: "resolveReanchoring", decisionId: "review-1", resolution: "acceptProposal"
     });
 
-    await user.clear(screen.getByLabelText("Replacement exact text"));
-    await user.type(screen.getByLabelText("Replacement exact text"), "Delta claim");
-    await user.clear(screen.getByLabelText("Replacement start offset"));
-    await user.type(screen.getByLabelText("Replacement start offset"), "35");
-    await user.clear(screen.getByLabelText("Replacement end offset"));
-    await user.type(screen.getByLabelText("Replacement end offset"), "46");
-    await user.click(screen.getByRole("button", { name: "Use replacement location for Beta lemma" }));
+    const equation = screen.getByRole("button", { name: "Select equation 1: $Delta claim$" });
+    equation.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Use selected equation as replacement location" })).toBe(document.activeElement);
+    await user.keyboard("{Enter}");
     expect(onResolve).toHaveBeenLastCalledWith(expect.objectContaining({
       type: "resolveReanchoring", decisionId: "review-1", resolution: "selectReplacement",
-      selection: expect.objectContaining({ exactText: "Delta claim", startOffset: 35, endOffset: 46 })
+      selection: expect.objectContaining({ kind: "equation", exactText: "$Delta claim$" })
     }));
 
-    await user.click(screen.getByRole("button", { name: "Leave Beta lemma unresolved" }));
+    screen.getByRole("button", { name: "Leave Beta lemma unresolved" }).focus();
+    await user.keyboard("{Enter}");
     expect(onResolve).toHaveBeenLastCalledWith({
       type: "resolveReanchoring", decisionId: "review-1", resolution: "leaveUnresolved"
     });

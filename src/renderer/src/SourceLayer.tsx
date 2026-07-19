@@ -14,7 +14,8 @@ interface SourceLayerProps {
   mediaType?: "text/plain" | "image/png" | "image/jpeg";
   anchors: SourceAnchor[];
   highlight?: { startOffset: number; endOffset: number; exactText: string };
-  onChooseAction(selection: SourceAnchorSelection, action: SourceAnchorPaletteAction): void;
+  onChooseAction?(selection: SourceAnchorSelection, action: SourceAnchorPaletteAction): void;
+  onChooseReplacement?(selection: SourceAnchorSelection): void;
   onActivateAnchor?(sourceAnchorId: string): void;
   focusAnchorId?: string | null;
 }
@@ -43,7 +44,7 @@ interface PercentSourceRegionBounds {
   height: number;
 }
 
-export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, highlight, onChooseAction, onActivateAnchor, focusAnchorId }: SourceLayerProps) {
+export function SourceLayer({ sourceId, content, mediaType = "text/plain", anchors, highlight, onChooseAction, onChooseReplacement, onActivateAnchor, focusAnchorId }: SourceLayerProps) {
   const sourceRef = useRef<HTMLElement>(null);
   const originRef = useRef<HTMLElement | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -68,8 +69,13 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
     queueMicrotask(() => originRef.current?.focus());
   };
   const chooseAction = (action: SourceAnchorPaletteAction) => {
-    if (!selection) return;
+    if (!selection || !onChooseAction) return;
     onChooseAction(selection, action);
+    closePalette();
+  };
+  const chooseReplacement = () => {
+    if (!selection || !onChooseReplacement) return;
+    onChooseReplacement(selection);
     closePalette();
   };
   const selectEquation = (segment: EquationSegment, origin: HTMLButtonElement) => {
@@ -219,14 +225,16 @@ export function SourceLayer({ sourceId, content, mediaType = "text/plain", ancho
           </ul>
         </section>
       )}
-      {selection && <SelectionPalette selection={selection} onChoose={chooseAction} onClose={closePalette} />}
+      {selection && <SelectionPalette selection={selection} onChoose={onChooseAction ? chooseAction : undefined}
+        onChooseReplacement={onChooseReplacement ? chooseReplacement : undefined} onClose={closePalette} />}
     </section>
   );
 }
 
-function SelectionPalette({ selection, onChoose, onClose }: {
+function SelectionPalette({ selection, onChoose, onChooseReplacement, onClose }: {
   selection: SourceAnchorSelection;
-  onChoose(action: SourceAnchorPaletteAction): void;
+  onChoose?(action: SourceAnchorPaletteAction): void;
+  onChooseReplacement?(): void;
   onClose(): void;
 }) {
   const firstActionRef = useRef<HTMLButtonElement>(null);
@@ -245,11 +253,14 @@ function SelectionPalette({ selection, onChoose, onClose }: {
     >
       <p className="eyebrow">Selection Palette</p>
       <div className="selection-palette-actions">
-        <button ref={firstActionRef} className="primary" aria-label={`Explain or unpack ${selectionLabel}`} onClick={() => onChoose("explain")}>Explain or unpack</button>
-        <button className="secondary" aria-label={`Ask about ${selectionLabel}`} onClick={() => onChoose("question")}>Ask about this</button>
-        <button className="secondary" aria-label={`Add note to ${selectionLabel}`} onClick={() => onChoose("addNote")}>Add note</button>
-        <button className="secondary" aria-label={`Tell tutor about ${selectionLabel}`} onClick={() => onChoose("tellTutor")}>Tell tutor</button>
-        <button className="secondary" aria-label={`Add ${selectionLabel} to the Learning Trail`} onClick={() => onChoose("addToLearningTrail")}>Add to Learning Trail</button>
+        {onChooseReplacement ? <button ref={firstActionRef} className="primary"
+          aria-label={`Use ${selectionLabel} as replacement location`} onClick={onChooseReplacement}>Use as replacement location</button> : <>
+          <button ref={firstActionRef} className="primary" aria-label={`Explain or unpack ${selectionLabel}`} onClick={() => onChoose?.("explain")}>Explain or unpack</button>
+          <button className="secondary" aria-label={`Ask about ${selectionLabel}`} onClick={() => onChoose?.("question")}>Ask about this</button>
+          <button className="secondary" aria-label={`Add note to ${selectionLabel}`} onClick={() => onChoose?.("addNote")}>Add note</button>
+          <button className="secondary" aria-label={`Tell tutor about ${selectionLabel}`} onClick={() => onChoose?.("tellTutor")}>Tell tutor</button>
+          <button className="secondary" aria-label={`Add ${selectionLabel} to the Learning Trail`} onClick={() => onChoose?.("addToLearningTrail")}>Add to Learning Trail</button>
+        </>}
       </div>
       <button className="text-button" aria-label="Close Selection Palette" onClick={onClose}>Cancel</button>
     </div>

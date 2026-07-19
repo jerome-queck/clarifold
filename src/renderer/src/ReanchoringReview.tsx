@@ -1,5 +1,9 @@
-import { useState, type FormEvent } from "react";
-import type { LearnerAction, ReanchoringDecision, SourceAnchorSelection } from "../../shared/learning-application";
+import { useState } from "react";
+import type { LearnerAction, LinkedSourceView, ReanchoringDecision, SourceAnchorSelection } from "../../shared/learning-application";
+import { SourceLayer } from "./SourceLayer";
+
+type AvailableSourceView = Extract<LinkedSourceView, { status: "available" }>;
+type SelectableSourceView = AvailableSourceView & { mediaType: "text/plain" | "image/png" | "image/jpeg" };
 
 export function ReanchoringReview({
   decision,
@@ -7,6 +11,8 @@ export function ReanchoringReview({
   affectedTeachingCards,
   affectedAnnotations,
   affectedTrailItems,
+  sourceView,
+  onOpenSource,
   onResolve
 }: {
   decision: ReanchoringDecision;
@@ -14,20 +20,10 @@ export function ReanchoringReview({
   affectedTeachingCards: string[];
   affectedAnnotations: string[];
   affectedTrailItems: string[];
+  sourceView: AvailableSourceView | null;
+  onOpenSource(): Promise<void>;
   onResolve(action: Extract<LearnerAction, { type: "resolveReanchoring" }>): Promise<void>;
 }) {
-  const initial = decision.proposedSelection ?? decision.oldSelection;
-  const [kind, setKind] = useState<SourceAnchorSelection["kind"]>(initial.kind);
-  const [exactText, setExactText] = useState(initial.kind === "diagramRegion" ? "" : initial.exactText);
-  const [startOffset, setStartOffset] = useState(initial.kind === "diagramRegion" ? "0" : String(initial.startOffset));
-  const [endOffset, setEndOffset] = useState(initial.kind === "diagramRegion" ? "0" : String(initial.endOffset));
-  const [prefix, setPrefix] = useState(initial.kind === "diagramRegion" ? "" : initial.prefix);
-  const [suffix, setSuffix] = useState(initial.kind === "diagramRegion" ? "" : initial.suffix);
-  const [equationIndex, setEquationIndex] = useState(initial.kind === "equation" ? String(initial.equationIndex) : "0");
-  const initialBounds = initial.kind === "diagramRegion" ? initial.bounds : { x: 0, y: 0, width: 0.25, height: 0.25 };
-  const [bounds, setBounds] = useState(Object.fromEntries(
-    Object.entries(initialBounds).map(([key, value]) => [key, String(value)])
-  ) as Record<"x" | "y" | "width" | "height", string>);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = anchorText(decision.oldSelection);
@@ -43,28 +39,23 @@ export function ReanchoringReview({
       setBusy(false);
     }
   };
-  const replace = (event: FormEvent) => {
-    event.preventDefault();
-    const selection = replacementSelection();
-    if (selection) void run({
-      type: "resolveReanchoring", decisionId: decision.id, resolution: "selectReplacement", selection
-    });
-  };
-  const replacementSelection = (): SourceAnchorSelection | null => {
-    if (kind === "diagramRegion") {
-      return {
-        kind,
-        bounds: {
-          x: Number(bounds.x), y: Number(bounds.y), width: Number(bounds.width), height: Number(bounds.height)
-        }
-      };
+  const openSource = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onOpenSource();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The current Source Layer could not be opened.");
+    } finally {
+      setBusy(false);
     }
-    const location = {
-      startOffset: Number(startOffset), endOffset: Number(endOffset), exactText, prefix, suffix
-    };
-    if (!exactText || !Number.isInteger(location.startOffset) || !Number.isInteger(location.endOffset)) return null;
-    return kind === "equation" ? { kind, equationIndex: Number(equationIndex), ...location } : { kind, ...location };
   };
+  const chooseReplacement = (selection: SourceAnchorSelection) => void run({
+    type: "resolveReanchoring", decisionId: decision.id, resolution: "selectReplacement", selection
+  });
+  const selectableView: SelectableSourceView | null = sourceView && isSelectableMediaType(sourceView.mediaType)
+    ? sourceView as SelectableSourceView
+    : null;
 
   return (
     <section className="reanchoring-review" role="region" aria-label={`Unresolved Anchor review for ${sourceName}`}>
@@ -85,30 +76,16 @@ export function ReanchoringReview({
         aria-label={`Accept proposed match for ${label}`} onClick={() => void run({
           type: "resolveReanchoring", decisionId: decision.id, resolution: "acceptProposal"
         })}>Accept proposed match</button>}
-      <form onSubmit={replace}>
-        <fieldset disabled={busy}>
-          <legend>Select a replacement location</legend>
-          <label htmlFor={`replacement-kind-${decision.id}`}>Replacement kind</label>
-          <select id={`replacement-kind-${decision.id}`} value={kind}
-            onChange={(event) => setKind(event.target.value as SourceAnchorSelection["kind"])}>
-            <option value="text">Text</option><option value="equation">Equation</option><option value="diagramRegion">Diagram region</option>
-          </select>
-          {kind === "diagramRegion" ? (["x", "y", "width", "height"] as const).map((field) => <label key={field}>
-            Replacement {field}<input type="number" step="any" value={bounds[field]}
-              onChange={(event) => setBounds((current) => ({ ...current, [field]: event.target.value }))} />
-          </label>) : <>
-            <label>Replacement exact text<input value={exactText} onChange={(event) => setExactText(event.target.value)} /></label>
-            <label>Replacement start offset<input type="number" value={startOffset} onChange={(event) => setStartOffset(event.target.value)} /></label>
-            <label>Replacement end offset<input type="number" value={endOffset} onChange={(event) => setEndOffset(event.target.value)} /></label>
-            <label>Replacement prefix<input value={prefix} onChange={(event) => setPrefix(event.target.value)} /></label>
-            <label>Replacement suffix<input value={suffix} onChange={(event) => setSuffix(event.target.value)} /></label>
-            {kind === "equation" && <label>Replacement equation index<input type="number" value={equationIndex}
-              onChange={(event) => setEquationIndex(event.target.value)} /></label>}
-          </>}
-        </fieldset>
-        <button className="secondary" disabled={busy || replacementSelection() === null}
-          aria-label={`Use replacement location for ${label}`}>Use replacement location</button>
-      </form>
+      <section className="replacement-source-layer" aria-label={`Select replacement location for ${label}`}>
+        <h4>Select a replacement location</h4>
+        <p className="subtle">Open the current Source Layer, select the exact text, equation, or diagram region, then use the Selection Palette.</p>
+        {selectableView ? <SourceLayer sourceId={selectableView.sourceId} content={selectableView.content}
+          mediaType={selectableView.mediaType} anchors={[]} onChooseReplacement={chooseReplacement} />
+          : <button type="button" className="secondary" disabled={busy}
+            aria-label={`Open current Source Layer for ${label}`} onClick={() => void openSource()}>
+            Open current Source Layer
+          </button>}
+      </section>
       <button type="button" className="text-button" disabled={busy} aria-label={`Leave ${label} unresolved`}
         onClick={() => void run({
           type: "resolveReanchoring", decisionId: decision.id, resolution: "leaveUnresolved"
@@ -116,6 +93,10 @@ export function ReanchoringReview({
       {error && <p className="failure-message" role="alert">{error}</p>}
     </section>
   );
+}
+
+function isSelectableMediaType(value: AvailableSourceView["mediaType"]): value is SelectableSourceView["mediaType"] {
+  return value === "text/plain" || value === "image/png" || value === "image/jpeg";
 }
 
 function AffectedLearningWork({ title, items }: { title: string; items: string[] }) {

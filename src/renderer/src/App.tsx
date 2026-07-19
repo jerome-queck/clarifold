@@ -208,6 +208,8 @@ function SourcesPanel({ workspace, state, onState }: {
           ).map((item) => `${item.kind}: ${item.content}`) ?? [];
           return <ReanchoringReview key={decision.id} decision={decision} sourceName={source.name}
             affectedTeachingCards={cards} affectedAnnotations={annotations} affectedTrailItems={trailItems}
+            sourceView={view?.status === "available" && view.sourceId === source.id ? view : null}
+            onOpenSource={() => open(source.id)}
             onResolve={async (action) => onState(await window.quickStudy.submit(action))} />;
         })}
       </section>}

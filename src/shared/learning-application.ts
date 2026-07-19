@@ -3359,68 +3359,78 @@ export class LearningApplication {
   }
 
   private markSourceAnchorsUnresolved(source: LinkedSource, fromRevisionId: string): void {
-    for (const session of this.state.sessions) {
-      let sessionChanged = false;
-      for (const anchor of session.sourceAnchors) {
-        if (anchor.sourceId !== source.id || anchor.sourceRevisionId === source.link.currentRevisionId) continue;
-        const existing = this.state.reanchoringDecisions.find(
-          (decision) => decision.sourceAnchorId === anchor.id
-            && (decision.status === "unresolved" || decision.status === "leftUnresolved")
-        );
-        const decision: ReanchoringDecision = {
-          id: existing?.id ?? crypto.randomUUID(),
-          sessionId: session.id,
-          sourceId: source.id,
-          sourceAnchorId: anchor.id,
-          fromRevisionId: existing?.fromRevisionId ?? anchor.sourceRevisionId ?? fromRevisionId,
-          toRevisionId: source.link.currentRevisionId,
-          oldSelection: structuredClone(existing?.oldSelection ?? anchor.selection),
-          proposedSelection: null,
-          status: "unresolved"
-        };
-        if (existing) Object.assign(existing, decision);
-        else this.state.reanchoringDecisions.push(decision);
-        sessionChanged = true;
-      }
-      if (sessionChanged) refreshAskBarContext(this.state, session, true);
-    }
+    this.visitStaleSourceAnchors(source, (session, anchor) => {
+      const existing = this.state.reanchoringDecisions.find(
+        (decision) => decision.sourceAnchorId === anchor.id
+          && (decision.status === "unresolved" || decision.status === "leftUnresolved")
+      );
+      this.upsertReanchoringDecision(existing, {
+        id: existing?.id ?? crypto.randomUUID(),
+        sessionId: session.id,
+        sourceId: source.id,
+        sourceAnchorId: anchor.id,
+        fromRevisionId: existing ? existing.fromRevisionId : anchor.sourceRevisionId ?? fromRevisionId,
+        toRevisionId: source.link.currentRevisionId,
+        oldSelection: structuredClone(existing?.oldSelection ?? anchor.selection),
+        proposedSelection: null,
+        status: "unresolved"
+      });
+      return true;
+    });
   }
 
   private reanchorSourceAnchors(source: LinkedSource, extraction: SourceIndexExtraction): void {
+    this.visitStaleSourceAnchors(source, (session, anchor) => {
+      const existing = this.state.reanchoringDecisions.find(
+        (decision) => decision.sourceAnchorId === anchor.id && (decision.status === "unresolved"
+          || decision.status === "leftUnresolved"
+          || decision.toRevisionId === source.link.currentRevisionId)
+      );
+      if (existing?.status === "leftUnresolved" && existing.toRevisionId === source.link.currentRevisionId) return false;
+      const fromRevisionId = existing
+        ? existing.fromRevisionId
+        : anchor.sourceRevisionId ?? this.previousSourceRevisionId(source);
+      const oldSelection = structuredClone(existing?.oldSelection ?? anchor.selection);
+      const match = reanchoringMatch(anchor.selection, extraction);
+      if (match.strong) {
+        anchor.selection = match.selection!;
+        anchor.sourceRevisionId = source.link.currentRevisionId;
+      }
+      this.upsertReanchoringDecision(existing, {
+        id: existing?.id ?? crypto.randomUUID(),
+        sessionId: session.id,
+        sourceId: source.id,
+        sourceAnchorId: anchor.id,
+        fromRevisionId,
+        toRevisionId: source.link.currentRevisionId,
+        oldSelection,
+        proposedSelection: match.selection,
+        status: match.strong ? "automatic" : "unresolved"
+      });
+      return true;
+    });
+  }
+
+  private visitStaleSourceAnchors(
+    source: LinkedSource,
+    visit: (session: LearningSession, anchor: SourceAnchor) => boolean
+  ): void {
     for (const session of this.state.sessions) {
-      let sessionChanged = false;
+      let changed = false;
       for (const anchor of session.sourceAnchors) {
         if (anchor.sourceId !== source.id || anchor.sourceRevisionId === source.link.currentRevisionId) continue;
-        const existing = this.state.reanchoringDecisions.find(
-          (decision) => decision.sourceAnchorId === anchor.id && (decision.status === "unresolved"
-            || decision.status === "leftUnresolved"
-            || decision.toRevisionId === source.link.currentRevisionId)
-        );
-        if (existing?.status === "leftUnresolved" && existing.toRevisionId === source.link.currentRevisionId) continue;
-        const fromRevisionId = existing?.fromRevisionId ?? anchor.sourceRevisionId ?? this.previousSourceRevisionId(source);
-        const oldSelection = structuredClone(existing?.oldSelection ?? anchor.selection);
-        const match = reanchoringMatch(anchor.selection, extraction);
-        if (match.strong) {
-          anchor.selection = match.selection!;
-          anchor.sourceRevisionId = source.link.currentRevisionId;
-        }
-        const decision: ReanchoringDecision = {
-          id: existing?.id ?? crypto.randomUUID(),
-          sessionId: session.id,
-          sourceId: source.id,
-          sourceAnchorId: anchor.id,
-          fromRevisionId,
-          toRevisionId: source.link.currentRevisionId,
-          oldSelection,
-          proposedSelection: match.selection,
-          status: match.strong ? "automatic" : "unresolved"
-        };
-        if (existing) Object.assign(existing, decision);
-        else this.state.reanchoringDecisions.push(decision);
-        sessionChanged = true;
+        if (visit(session, anchor)) changed = true;
       }
-      if (sessionChanged) refreshAskBarContext(this.state, session, true);
+      if (changed) refreshAskBarContext(this.state, session, true);
     }
+  }
+
+  private upsertReanchoringDecision(
+    existing: ReanchoringDecision | undefined,
+    decision: ReanchoringDecision
+  ): void {
+    if (existing) Object.assign(existing, decision);
+    else this.state.reanchoringDecisions.push(decision);
   }
 
   private previousSourceRevisionId(source: LinkedSource): string | null {
