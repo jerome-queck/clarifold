@@ -2122,7 +2122,7 @@ function ExternalResearchPanel({ state, session, onState }: {
           ? "Granted"
           : session.researchEgressPermission.status === "revoked" ? "Revoked" : "Not granted"}
       </p>
-      <small>A minimized automatic Corroboration Pass starts when the intake names a theorem. Research Egress Permission applies only to raw Source Excerpts; revoking it stops active excerpt research and never retries silently.</small>
+      <small>A minimized automatic Corroboration Pass starts before substantive proof teaching, including later proof-focused Teaching and Question Cards. Research Egress Permission applies only to raw Source Excerpts; revoking it stops active excerpt research and never retries silently.</small>
       <small>Only inspectable excerpts under the active policy are eligible. Whole-file transmission always needs a separate explicit confirmation and is not available from this control.</small>
       {researchHistory.length > 0 && (
         <section aria-label="External research history">

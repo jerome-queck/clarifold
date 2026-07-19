@@ -4569,6 +4569,76 @@ describe("Learning Application", () => {
     runtime.completeTeaching();
   });
 
+  it("does not treat ambiguous mathematical vocabulary as substantive proof intent", async () => {
+    const research = new DeterministicExternalResearch();
+    const { application } = await launchWithExternalResearch(research);
+
+    const state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "What is the argument of a complex number, and what does equivalent mean?"
+    });
+
+    expect(research.requests).toEqual([]);
+    expect(state.sessions[0].corroborationPass).toBeNull();
+  });
+
+  it("recognizes selected source proof material as a Pedagogical Baseline", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Prove the selected claim",
+      scope: "Use the selected statement",
+      initialTeachingDirection: "Inspect the selection",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const research = new DeterministicExternalResearch();
+    research.result = {
+      title: "Authoritative corroboration",
+      summary: "The selected statement agrees with an authoritative reference.",
+      sources: [{ title: "Topology reference", url: "https://example.test/topology" }],
+      corroboration: {
+        relevantResult: "Compact subsets of Hausdorff spaces are closed",
+        errataCheck: "noneFound",
+        proposedApproachDeparture: false,
+        evidence: [authoritativeEvidence({
+          sourceTitle: "Topology reference",
+          sourceUrl: "https://example.test/topology",
+          proofApproaches: []
+        })]
+      }
+    };
+    const { application } = await launchWithRuntimeAndExternalResearch(runtime, research);
+    const started = await application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Study compact subsets of Hausdorff spaces."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    expect(research.requests).toEqual([]);
+
+    await application.submit({
+      type: "createSourceAnchor",
+      sourceId: started.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text",
+        startOffset: 6,
+        endOffset: 13,
+        exactText: "compact",
+        prefix: "Study ",
+        suffix: " subsets of Hausdorff spaces."
+      },
+      paletteAction: "explain"
+    });
+
+    expect(research.requests).toHaveLength(1);
+    expect(application.getState().sessions[0].corroborationPass).toMatchObject({
+      status: "completed",
+      pedagogicalBaselinePresent: true,
+      proofApproachResearch: "notRequired",
+      deeperResearch: { required: false }
+    });
+    runtime.completeTeaching();
+  });
+
   it("keeps an authoritative assumption mismatch disputed", async () => {
     const pass = await corroborateWithEvidence([authoritativeEvidence({
       assumptions: "mismatch",

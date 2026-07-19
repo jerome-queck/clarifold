@@ -3775,7 +3775,7 @@ export class LearningApplication {
       return session.corroborationPass;
     }
     if (session.corroborationPass) session.corroborationPassHistory.push(structuredClone(session.corroborationPass));
-    const baselinePresent = suppliedPedagogicalBaselinePresent(mathematics);
+    const baselinePresent = informedSourceIds.length > 0 || suppliedPedagogicalBaselinePresent(mathematics);
     const pass: CorroborationPass = {
       id: crypto.randomUUID(),
       researchActionId: null,
@@ -4453,7 +4453,7 @@ function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery 
   const namedTheorem = mathematics.match(
     /(?:prove|disprove|show|verify|study|understand|explain|establish|demonstrate|justify|derive|give\s+(?:me\s+)?a\s+proof\s+of|proof\s+of)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
   )?.[1];
-  const substantive = /\b(prove|disprove|proof|argument|establish|demonstrate|justify|derive|deduce|counterexample|theorems?|lemma|proposition|corollary|implies?|equivalent|necessary|sufficient)\b|\b(?:show|verify|check|confirm)\s+(?:me\s+)?(?:that|whether)\b|\bwhy\s+(?:is|are|does)\b|\bhow\s+(?:can|do|does|would)\b[^.!?]*\b(?:show|prove|establish|derive)\b/i.test(mathematics);
+  const substantive = /\b(prove|disprove|proof|establish|demonstrate|justify|derive|deduce|counterexample|theorems?|lemma|proposition|corollary)\b|\b(?:give|find|write|construct|present|supply|outline)\s+(?:me\s+)?(?:an?\s+)?(?:proof|argument|counterexample)\b|\b(?:show|verify|check|confirm)\s+(?:me\s+)?(?:that|whether)\b|\bwhy\s+(?:is|are|does)\b|\bhow\s+(?:can|do|does|would)\b[^.!?]*\b(?:show|prove|establish|derive)\b/i.test(mathematics);
   if (!substantive) return null;
   const assumptions = Array.from(mathematics.matchAll(
     /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi
