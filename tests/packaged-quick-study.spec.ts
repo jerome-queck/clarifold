@@ -47,7 +47,8 @@ test("packaged Quick Study organizes durable work and resumes the latest session
         QUICK_STUDY_TEST_PRIMARY_FOLDER: primaryFolderPath,
         QUICK_STUDY_TEST_EXTERNAL_ATTACHMENT: attachmentPath,
         QUICK_STUDY_TEST_RELOCATED_SOURCE: relocatedAttachmentPath,
-        QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH: artifactExportPath
+        QUICK_STUDY_TEST_ARTIFACT_EXPORT_PATH: artifactExportPath,
+        QUICK_STUDY_TEST_EXTERNAL_RESEARCH: "stub"
       },
       stdio: "pipe"
     });

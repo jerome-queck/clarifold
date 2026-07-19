@@ -401,7 +401,9 @@ void app.whenReady().then(async () => {
     modelRuntime,
     sourceAccess,
     new MacOsArtifactSharing(app.getPath("temp")),
-    new BrowserExternalResearch((url) => shell.openExternal(url))
+    new BrowserExternalResearch(process.env.QUICK_STUDY_TEST_EXTERNAL_RESEARCH === "stub"
+      ? async () => undefined
+      : (url) => shell.openExternal(url))
   );
   registerLearningApplicationHandlers();
   createWindow();

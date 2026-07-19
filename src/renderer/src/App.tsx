@@ -2007,7 +2007,7 @@ function ExternalResearchPanel({ state, session, onState }: {
         <div>
           <p className="eyebrow">External research</p>
           <h2 id="external-research-title">Privacy-minimized web research</h2>
-          <p>Independent from Codex model access. Every Session Access Policy can use a Derived Research Query after session-scoped Research Egress Permission is granted.</p>
+          <p>Independent from Codex model access. Every Session Access Policy can use a privacy-minimized Derived Research Query.</p>
         </div>
         <span className="saved" role="status">{sessionAccessPolicyLabel(session.accessPolicy)}</span>
       </div>
@@ -2038,9 +2038,9 @@ function ExternalResearchPanel({ state, session, onState }: {
       <label className="confirmation-preference">
         <input type="checkbox" checked={session.researchEgressPermission.status === "granted"}
           onChange={(event) => void submit({ type: "setResearchEgressPermission", enabled: event.target.checked })} />
-        Allow External Research for this Learning Session
+        Allow Source Excerpt Egress for this Learning Session
       </label>
-      <small>Granting permission starts a minimized automatic Corroboration Pass when the intake names a theorem. Revoking it stops active research and never retries silently.</small>
+      <small>A minimized automatic Corroboration Pass starts when the intake names a theorem. Research Egress Permission applies only to raw Source Excerpts; revoking it stops active excerpt research and never retries silently.</small>
       <small>Only inspectable excerpts under the active policy are eligible. Whole-file transmission always needs a separate explicit confirmation and is not available from this control.</small>
       {latestResearch && (
         <article className="research-receipt" aria-label="Latest external research receipt">

@@ -128,6 +128,7 @@ export interface SourceTextLocation {
   exactText: string;
   prefix: string;
   suffix: string;
+  pageNumbers?: number[];
 }
 
 export interface NormalizedSourceRegionBounds {
@@ -2142,6 +2143,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
+        this.beginAutomaticCorroboration(session);
         break;
       }
       case "submitSessionIntake": {
@@ -2196,6 +2198,7 @@ export class LearningApplication {
           this.state.resumeSessionId = selectedSession.id;
           this.state.navigation = { workspaceId: selectedSession.workspaceId, missionId: selectedSession.missionId };
           this.state.screen = "workbench";
+          this.beginAutomaticCorroboration(selectedSession);
           break;
         }
         const session = createLearningSession({
@@ -2228,6 +2231,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
+        this.beginAutomaticCorroboration(session);
         if (!proposal.requiresConfirmation) await this.beginTeaching(session);
         break;
       }
@@ -2491,8 +2495,10 @@ export class LearningApplication {
       case "setResearchEgressPermission": {
         const session = this.requireActiveSession();
         session.researchEgressPermission = { status: action.enabled ? "granted" : "revoked" };
-        if (!action.enabled) this.stopSessionResearch(session, "Research Egress Permission was revoked. No retry was attempted.");
-        else this.beginAutomaticCorroboration(session);
+        if (!action.enabled) this.stopSessionExcerptResearch(
+          session,
+          "Research Egress Permission for Source Excerpts was revoked. No retry was attempted."
+        );
         break;
       }
       case "cancelExternalResearch": {
@@ -2519,14 +2525,10 @@ export class LearningApplication {
           error: null
         };
         session.researchActions.push(researchAction);
-        if (session.researchEgressPermission.status !== "granted") {
-          researchAction.status = "denied";
-          researchAction.error = "Research Egress Permission is not granted for this Learning Session. Nothing was sent.";
-          break;
-        }
         const sourceAnchorIds = [...new Set(action.sourceAnchorIds)];
         if (sourceAnchorIds.length > 0) {
-          if (!this.state.sourceExcerptEgressPreference.enabled) {
+          if (!this.state.sourceExcerptEgressPreference.enabled
+            || session.researchEgressPermission.status !== "granted") {
             researchAction.status = "denied";
             researchAction.error = "Source Excerpt Egress was denied. The Derived Research Query was not sent.";
             break;
@@ -2549,9 +2551,13 @@ export class LearningApplication {
               }
               return {
                 sourceId: anchor.sourceId,
-                kind: anchor.selection.kind === "equation" ? "equation" as const : "excerpt" as const,
+                kind: anchor.selection.pageNumbers
+                  ? "selectedPages" as const
+                  : anchor.selection.kind === "equation" ? "equation" as const : "excerpt" as const,
                 content: anchor.selection.exactText,
-                location: `${anchor.selection.kind === "equation" ? `Equation ${anchor.selection.equationIndex + 1}` : "Text"}: characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`,
+                location: anchor.selection.pageNumbers
+                  ? `Selected pages ${anchor.selection.pageNumbers.join(", ")}: characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`
+                  : `${anchor.selection.kind === "equation" ? `Equation ${anchor.selection.equationIndex + 1}` : "Text"}: characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`,
                 relevance: "learnerSelectedForQuery" as const
               };
             });
@@ -3689,7 +3695,9 @@ export class LearningApplication {
     const query = automaticCorroborationQuery(session.mathematics);
     if (!query) return;
     const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
-    const informedBySourceIds = session.sourceIds.filter((sourceId) => authorizedSourceIds.has(sourceId));
+    const intakeSource = this.state.sources.find((source) => source.kind === "managedAsset"
+      && session.sourceIds.includes(source.id) && managedAssetLearnerContent(source) === session.mathematics);
+    const informedBySourceIds = intakeSource && authorizedSourceIds.has(intakeSource.id) ? [intakeSource.id] : [];
     const research: ResearchAction = {
       id: crypto.randomUUID(),
       accessPolicy: session.accessPolicy,
@@ -3746,9 +3754,9 @@ export class LearningApplication {
     this.researchWorks.set(research.id, { controller, promise });
   }
 
-  private stopSessionResearch(session: LearningSession, message: string): void {
+  private stopSessionExcerptResearch(session: LearningSession, message: string): void {
     for (const research of session.researchActions) {
-      if (research.status === "running") this.stopResearch(research, message);
+      if (research.status === "running" && research.excerpts.length > 0) this.stopResearch(research, message);
     }
   }
 
@@ -4303,20 +4311,23 @@ function usefulResearchError(error: unknown): string {
 
 function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery | null {
   const namedTheorem = mathematics.match(
-    /(?:prove|show|verify|study|understand|explain)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorem)\b/i
+    /(?:prove|show|verify|study|understand|explain)\s+(?:the\s+)?([a-z][a-z'’\-]*(?:\s+[a-z][a-z'’\-]*){0,4}\s+theorems?)\b/i
   )?.[1];
-  if (!namedTheorem) return null;
-  const theoremName = namedTheorem.replace(/\s+/g, " ");
-  const theoremTerms = new Set(theoremName.toLocaleLowerCase().match(/[a-z][a-z'’\-]*/g) ?? []);
-  const excluded = new Set([
-    "prove", "show", "verify", "study", "understand", "explain", "theorem", "that", "this", "with", "from",
-    "the", "for", "using", "where", "when", "then", "into", "learner", "users", "file", "notes", "pdf", "document"
+  const substantive = /\b(prove|proof|show\s+that|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary)\b/i.test(mathematics);
+  if (!substantive) return null;
+  const theoremName = namedTheorem?.replace(/\s+/g, " ");
+  const allowedKeywords = new Set([
+    "abelian", "algebra", "compact", "compactness", "continuous", "convergence", "derivative", "field", "finite",
+    "graph", "group", "hausdorff", "homomorphism", "integral", "isomorphism", "matrix", "measure", "probability",
+    "ring", "sequence", "series", "subgroup", "topology", "vector"
   ]);
+  const theoremTerms = new Set(theoremName?.toLocaleLowerCase().match(/[a-z][a-z'’\-]*/g) ?? []);
   const keywords = (mathematics.match(/[a-z][a-z'’\-]{2,}/gi) ?? [])
     .map((term) => term.toLocaleLowerCase())
-    .filter((term, index, terms) => !theoremTerms.has(term) && !excluded.has(term) && terms.indexOf(term) === index)
+    .filter((term, index, terms) => allowedKeywords.has(term) && !theoremTerms.has(term) && terms.indexOf(term) === index)
     .slice(0, 5);
-  return buildDerivedResearchQuery({ theoremNames: [theoremName], assumptions: [], keywords });
+  if (!theoremName && keywords.length === 0) return null;
+  return buildDerivedResearchQuery({ theoremNames: theoremName ? [theoremName] : [], assumptions: [], keywords });
 }
 
 function researchDestination(query: DerivedResearchQuery, excerpts: ResearchExcerpt[] = []): string {
@@ -5266,6 +5277,9 @@ function sourceAnchorLocation(anchor: SourceAnchor): string {
   if (anchor.selection.kind === "diagramRegion") {
     const { x, y, width, height } = anchor.selection.bounds;
     return `Diagram region at ${Math.round(x * 100)}% left, ${Math.round(y * 100)}% top, ${Math.round(width * 100)}% wide, ${Math.round(height * 100)}% high`;
+  }
+  if (anchor.selection.pageNumbers) {
+    return `Selected pages ${anchor.selection.pageNumbers.join(", ")} at characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`;
   }
   return `${anchor.selection.kind === "equation" ? "Equation" : "Text"} at characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`;
 }
@@ -6317,7 +6331,8 @@ function validatedSourceAnchorSelection(value: unknown, source?: WorkspaceSource
     endOffset: endOffset as number,
     exactText: value.exactText,
     prefix: value.prefix,
-    suffix: value.suffix
+    suffix: value.suffix,
+    ...(value.pageNumbers === undefined ? {} : { pageNumbers: validatedPageNumbers(value.pageNumbers) })
   };
   if (source?.kind === "managedAsset" && !matchesSourceTextLocation(managedAssetLearnerContent(source), location)) {
     throw new Error("The selected source text no longer matches this Source Layer.");
@@ -6336,6 +6351,16 @@ function matchesSourceTextLocation(
   return content.slice(selection.startOffset, selection.endOffset) === selection.exactText
     && content.slice(Math.max(0, selection.startOffset - selection.prefix.length), selection.startOffset) === selection.prefix
     && content.slice(selection.endOffset, selection.endOffset + selection.suffix.length) === selection.suffix;
+}
+
+function validatedPageNumbers(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 12
+    || !value.every((pageNumber) => Number.isInteger(pageNumber) && pageNumber > 0)
+    || new Set(value).size !== value.length
+    || value.some((pageNumber, index) => index > 0 && pageNumber <= value[index - 1])) {
+    throw new Error("Selected pages require 1–12 unique ascending page numbers.");
+  }
+  return value as number[];
 }
 
 function reanchoringMatch(
@@ -6361,7 +6386,8 @@ function reanchoringMatch(
             startOffset,
             endOffset,
             prefix,
-            suffix
+            suffix,
+            ...(selection.pageNumbers ? { pageNumbers: [page.pageNumber] } : {})
           },
           contextMatches: prefix === selection.prefix && suffix === selection.suffix
         });
