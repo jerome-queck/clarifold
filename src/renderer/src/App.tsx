@@ -19,6 +19,7 @@ import { annotationPurposeLabel } from "../../shared/annotations";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
 import { ContextualInspector } from "./ContextualInspector";
+import { ClaimTrust } from "./ClaimTrust";
 import { AskBar } from "./AskBar";
 import { TrailDraft } from "./TrailDraft";
 import { AnnotationInspector } from "./AnnotationInspector";
@@ -1119,6 +1120,9 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             onRevise={async (instruction) => onState(await window.quickStudy.submit({
               type: "reviseTeachingCard", cardId: inspectorCard.id, instruction
             }))}
+            onEditClaims={async (claimEdits) => onState(await window.quickStudy.submit({
+              type: "editTeachingCardClaims", cardId: inspectorCard.id, claimEdits
+            }))}
             onRestore={async (revisionId) => onState(await window.quickStudy.submit({
               type: "restoreTeachingCardRevision", cardId: inspectorCard.id, revisionId
             }))}
@@ -1363,7 +1367,9 @@ function TrailItemOutcomeDetail({ item, session }: { item: LearningSession["trai
   });
   const artifacts = item.links.learningArtifactIds.flatMap((artifactId) => {
     const artifact = session.learningArtifacts.find((candidate) => candidate.id === artifactId);
-    return artifact ? [`${artifact.title} · ${artifact.currentRevision.claimOrigin} · Not independently checked`] : [];
+    return artifact ? artifact.currentRevision.claims.map(
+      (claim) => `${artifact.title} · ${claim.claimOrigin} · ${claim.verificationLevel}`
+    ) : [];
   });
   return (
     <li>
@@ -1737,17 +1743,29 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, modelAvailable =
   statusLabel?: string;
 }) {
   const [content, setContent] = useState(artifact.currentRevision.content);
+  const [claimEdits, setClaimEdits] = useState<Array<{ claimId: string | null; statement: string }>>(
+    artifact.currentRevision.claims.map((claim) => ({ claimId: claim.claimId, statement: claim.claimStatement }))
+  );
   const [portabilityStatus, setPortabilityStatus] = useState<string | null>(null);
   const [portabilityError, setPortabilityError] = useState<string | null>(null);
   const [synthesisStatus, setSynthesisStatus] = useState<string | null>(null);
   const artifactLabel = artifact.kind === "reformulatedProof" ? "Reformulated Proof" : "Learning Artifact";
   const originatingSessionId = sessionId ?? artifact.originatingSessionId;
-  useEffect(() => setContent(artifact.currentRevision.content), [artifact.currentRevision.id, artifact.currentRevision.content]);
+  useEffect(() => {
+    setContent(artifact.currentRevision.content);
+    setClaimEdits(artifact.currentRevision.claims.map(
+      (claim) => ({ claimId: claim.claimId, statement: claim.claimStatement })
+    ));
+  }, [artifact.currentRevision.id, artifact.currentRevision.content, artifact.currentRevision.claims]);
+  const claimsChanged = claimEdits.length !== artifact.currentRevision.claims.length
+    || claimEdits.some((edit, index) => edit.claimId !== artifact.currentRevision.claims[index]?.claimId
+      || edit.statement.trim() !== artifact.currentRevision.claims[index]?.claimStatement);
   const save = async () => onState(await window.quickStudy.submit({
     type: "editLearningArtifact",
     ...(sessionId ? { sessionId } : {}),
     artifactId: artifact.id,
-    content
+    content,
+    claimEdits
   }));
   const exportArtifact = async () => {
     setPortabilityError(null);
@@ -1787,8 +1805,27 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, modelAvailable =
       <label htmlFor={`artifact-content-${artifact.id}`}>Learning Artifact content for {artifact.title}</label>
       <textarea id={`artifact-content-${artifact.id}`} className="artifact-content" value={content}
         onChange={(event) => setContent(event.target.value)} />
+      <fieldset className="artifact-claims">
+        <legend>Exact mathematical claims</legend>
+        {claimEdits.map((claim, index) => <div key={claim.claimId ?? `new-claim-${index}`}>
+          <label htmlFor={`artifact-claim-${artifact.id}-${index}`}>Exact claim {index + 1}</label>
+          <textarea id={`artifact-claim-${artifact.id}-${index}`} value={claim.statement}
+            onChange={(event) => setClaimEdits((current) => current.map((item, itemIndex) =>
+              itemIndex === index ? { ...item, statement: event.target.value } : item
+            ))} />
+          {claimEdits.length > 1 && <button className="text-button" type="button"
+            aria-label={`Remove exact claim ${index + 1} from ${artifact.title}`}
+            onClick={() => setClaimEdits((current) => current.filter((_item, itemIndex) => itemIndex !== index))}>
+            Remove claim
+          </button>}
+        </div>)}
+        <button className="text-button" type="button" onClick={() => setClaimEdits((current) => [
+          ...current, { claimId: null, statement: "" }
+        ])}>Add exact claim</button>
+      </fieldset>
       <button className="secondary" aria-label={`Save Learning Artifact revision for ${artifact.title}`}
-        disabled={!content.trim() || content === artifact.currentRevision.content}
+        disabled={!content.trim() || claimEdits.some((claim) => !claim.statement.trim())
+          || (content === artifact.currentRevision.content && !claimsChanged)}
         onClick={() => void save()}>Save Learning Artifact revision</button>
       <button className="secondary" aria-label={`Synthesize Learning Artifact ${artifact.title}`}
         disabled={!modelAvailable || synthesisStatus === "Synthesizing Learning Artifact…"}
@@ -1799,11 +1836,8 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, modelAvailable =
         <button className="secondary" aria-label={`Share ${artifactLabel} ${artifact.title}`}
           onClick={() => runPortableAction(shareArtifact)}>Share export</button>
       </div>
+      <ClaimTrust revision={artifact.currentRevision} />
       <dl className="artifact-evidence">
-        <div><dt>Claim Origin</dt><dd>{artifact.currentRevision.claimOrigin === "learner"
-          ? "Learner"
-          : artifact.currentRevision.claimOrigin === "mixed" ? "Mixed learner and model" : "Model-generated"}</dd></div>
-        <div><dt>Verification Level</dt><dd>Not independently checked</dd></div>
         <div><dt>Source relationship</dt><dd>{artifact.sourceAnchorIds.length} retained Source Anchor{artifact.sourceAnchorIds.length === 1 ? "" : "s"}</dd></div>
         <div><dt>Revision provenance</dt><dd>{artifactRevisionProvenance(artifact.currentRevision)}</dd></div>
       </dl>

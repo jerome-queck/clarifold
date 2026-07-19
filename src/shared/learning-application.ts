@@ -228,6 +228,7 @@ export interface TeachingCardRevision extends TeachingCardState {
     fromSequence: number;
     toSequence: number;
   } | null;
+  claims?: ClaimVerificationState[];
 }
 
 export interface TeachingVariant {
@@ -260,15 +261,96 @@ export interface LearningArtifact {
 export interface LearningArtifactRevision {
   id: string;
   content: string;
-  claimOrigin: "modelGenerated" | "learner" | "mixed";
-  verificationLevel: "notIndependentlyChecked";
-  verificationCurrency: "current";
+  claims: ClaimVerificationState[];
   personalNoteContributions: PersonalNoteContribution[];
   provenance: {
     action: "promoted" | "edited" | "restored" | "synthesized";
     createdAt: string | null;
     priorRevisionId: string | null;
   };
+}
+
+export interface AcceptedFormalVerification {
+  target: "teachingCard" | "learningArtifact";
+  targetId: string;
+  claimId: string;
+  exactStatement: string;
+  checker: string;
+  verificationEnvironment: string;
+}
+
+export interface FormalVerificationAuthority {
+  resolveAcceptedReceipt(receiptId: string): Promise<AcceptedFormalVerification | null>;
+}
+
+export type ClaimOrigin = "learner" | "suppliedSource" | "modelGenerated" | "mixed";
+export type VerificationLevel = "notIndependentlyChecked" | "reasoningReviewed" | "sourceGrounded"
+  | "independentlyCorroborated" | "formallyVerified";
+export type VerificationCurrency = "current" | "changedSinceCheck";
+export type ClaimCheckMethod = "reasoningReview" | "sourceGrounded" | "independentCorroboration" | "formalVerification";
+export type ClaimCheckOutcome = "supports" | "disagrees" | "unresolved";
+export type ClaimEvidenceReference =
+  | { kind: "sourceAnchor"; sourceAnchorId: string }
+  | { kind: "researchEvidence"; researchActionId: string }
+  | { kind: "agentWork"; sessionId: string; fromSequence: number; toSequence: number }
+  | { kind: "learnerRevision"; revisionId: string; subject: "teachingCard" | "learningArtifact" }
+  | { kind: "formalChecker"; checker: string; verificationEnvironment: string };
+
+export interface ClaimVerificationEvidence {
+  id: string;
+  method: ClaimCheckMethod;
+  outcome: ClaimCheckOutcome;
+  summary: string;
+  limitation: string | null;
+  reference: ClaimEvidenceReference;
+  currency: VerificationCurrency;
+  changedBecause: string | null;
+  createdAt: string;
+}
+
+export interface VerificationGap {
+  id: string;
+  reason: string;
+  affectedConclusion: string;
+  evidenceId: string;
+}
+
+export type VerificationRiskFactor = "nonTrivial" | "weakSupport" | "disputed" | "longDependencyChain"
+  | "substantialDeparture" | "checkerFailure";
+
+export interface VerificationEscalation {
+  recommended: boolean;
+  reasons: string[];
+}
+
+export interface ClaimVerificationState {
+  claimId: string;
+  claimStatement: string;
+  claimOrigin: ClaimOrigin;
+  claimOriginReferences: ClaimEvidenceReference[];
+  verificationLevel: VerificationLevel;
+  verificationCurrency: VerificationCurrency;
+  verificationEvidence: ClaimVerificationEvidence[];
+  verificationGaps: VerificationGap[];
+  verificationEscalation: VerificationEscalation;
+}
+
+export interface ClaimCheckRecord {
+  target: "teachingCard" | "learningArtifact";
+  targetId: string;
+  claimId: string;
+  method: Exclude<ClaimCheckMethod, "formalVerification">;
+  outcome: ClaimCheckOutcome;
+  summary: string;
+  evidence: ClaimEvidenceReference;
+}
+
+export interface VerificationEscalationAssessment {
+  target: "teachingCard" | "learningArtifact";
+  targetId: string;
+  claimId: string;
+  riskFactors: VerificationRiskFactor[];
+  modelConfidence?: number;
 }
 
 export interface PersonalNoteContribution {
@@ -809,12 +891,24 @@ export type LearnerAction =
   | { type: "createAnnotation"; sourceAnchorId: string; purpose: AnnotationPurpose; content: string }
   | { type: "convertAnnotation"; annotationId: string; purpose: AnnotationPurpose }
   | { type: "reviseTeachingCard"; cardId: string; instruction: string }
+  | {
+      type: "editTeachingCardClaims";
+      cardId: string;
+      claimEdits: Array<{ claimId: string | null; statement: string }>;
+    }
   | { type: "restoreTeachingCardRevision"; cardId: string; revisionId: string }
   | { type: "createTeachingVariant"; cardId: string; name: string; instruction: string }
   | { type: "retryAnchoredTeachingCard"; cardId: string; variantId?: string }
   | { type: "pinTeachingCardArtifact"; cardId: string; artifactKind?: LearningArtifact["kind"] }
   | { type: "synthesizeLearningArtifact"; sessionId?: string; artifactId: string }
-  | { type: "editLearningArtifact"; sessionId?: string; artifactId: string; content: string }
+  | {
+      type: "editLearningArtifact";
+      sessionId?: string;
+      artifactId: string;
+      content: string;
+      mathematicalChange?: "semantic" | "formattingOnly";
+      claimEdits?: Array<{ claimId: string | null; statement: string }>;
+    }
   | { type: "restoreLearningArtifactRevision"; sessionId?: string; artifactId: string; revisionId: string }
   | { type: "addTrailItem"; kind: TrailItemKind; content: string }
   | { type: "editTrailItem"; trailItemId: string; content: string }
@@ -902,7 +996,8 @@ export class LearningApplication {
     modelRuntime: ModelRuntime | null,
     private readonly sourceAccess: LocalSourceAccess | null,
     private readonly artifactSharing: ArtifactSharing | null,
-    private readonly externalResearch: ExternalResearch | null
+    private readonly externalResearch: ExternalResearch | null,
+    private readonly formalVerificationAuthority: FormalVerificationAuthority | null
   ) {
     this.statePath = join(dataDirectory, "learning-application.json");
     this.sourceIndexPath = join(dataDirectory, "source-index.json");
@@ -914,9 +1009,12 @@ export class LearningApplication {
     modelRuntime: ModelRuntime | null = null,
     sourceAccess: LocalSourceAccess | null = null,
     artifactSharing: ArtifactSharing | null = null,
-    externalResearch: ExternalResearch | null = null
+    externalResearch: ExternalResearch | null = null,
+    formalVerificationAuthority: FormalVerificationAuthority | null = null
   ): Promise<LearningApplication> {
-    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess, artifactSharing, externalResearch);
+    const application = new LearningApplication(
+      dataDirectory, modelRuntime, sourceAccess, artifactSharing, externalResearch, formalVerificationAuthority
+    );
     try {
       const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
       const { agentWorkLogs, ...storedState } = stored;
@@ -995,6 +1093,138 @@ export class LearningApplication {
     return structuredClone(this.state);
   }
 
+  async recordClaimCheck(sessionId: string, record: ClaimCheckRecord): Promise<LearningApplicationState> {
+    const session = this.requireSession(sessionId);
+    const revision = claimCheckRevision(session, record.target, record.targetId);
+    const claim = requireClaimVerification(revision, record.claimId);
+    const method = requiredClaimCheckMethod(record.method);
+    if (method === "formalVerification") {
+      throw new Error("Only the Verifier Runtime may record an accepted formal statement.");
+    }
+    const outcome = requiredClaimCheckOutcome(record.outcome);
+    const summary = requiredText(record.summary, "Claim check summary");
+    const reference = validatedClaimEvidenceReference(record.evidence);
+    validateClaimCheckEvidence(method, reference);
+    const sourceGroundedOutcome = method === "sourceGrounded"
+      ? sourceGroundedCheckOutcome(session, claim, reference) : null;
+    if (sourceGroundedOutcome !== null && outcome !== sourceGroundedOutcome) {
+      throw new Error(`The stored Corroboration Pass requires a ${sourceGroundedOutcome} Source-grounded outcome.`);
+    }
+    if ((method === "reasoningReview" || method === "independentCorroboration")
+      && [...claim.claimOriginReferences, ...claim.verificationEvidence.map((item) => item.reference)]
+        .some((existing) => sameClaimEvidenceReference(existing, reference))) {
+      throw new Error("Independent checking must link to evidence separate from the work that produced or already checked this claim.");
+    }
+    if (reference.kind === "sourceAnchor") requireSourceAnchor(session, reference.sourceAnchorId);
+    if (reference.kind === "researchEvidence"
+      && !session.researchActions.some((research) => research.id === reference.researchActionId && research.result !== null)) {
+      throw new Error("Link the claim check to completed research evidence in this Learning Session.");
+    }
+    if (reference.kind === "agentWork") {
+      if (reference.sessionId !== session.id
+        || this.getAgentWorkLogEvidence(reference.sessionId, reference.fromSequence, reference.toSequence).length === 0) {
+        throw new Error("Link the claim check to recorded Agent Work in this Learning Session.");
+      }
+    }
+    const evidence: ClaimVerificationEvidence = {
+      id: crypto.randomUUID(),
+      method,
+      outcome,
+      summary,
+      limitation: method === "sourceGrounded"
+        ? "Consistent with the cited source; this does not prove that the claim or source is correct."
+        : null,
+      reference,
+      currency: "current",
+      changedBecause: null,
+      createdAt: new Date().toISOString()
+    };
+    const verificationEvidence = [...claim.verificationEvidence, evidence];
+    const verificationGaps = [...claim.verificationGaps];
+    if (outcome !== "supports") {
+      verificationGaps.push({
+        id: crypto.randomUUID(),
+        reason: summary,
+        affectedConclusion: claim.claimStatement,
+        evidenceId: evidence.id
+      });
+    }
+    Object.assign(claim, {
+      verificationEvidence,
+      verificationGaps,
+      verificationCurrency: "current" as const,
+      verificationLevel: currentVerificationLevel(verificationEvidence),
+      verificationEscalation: escalationForEvidence(verificationEvidence, verificationGaps)
+    });
+    return this.publishAndPersist();
+  }
+
+  /** Adapter boundary for accepted results returned by the Verifier Runtime; this is intentionally absent from renderer IPC. */
+  async recordFormalVerification(
+    sessionId: string,
+    receiptId: string
+  ): Promise<LearningApplicationState> {
+    if (!this.formalVerificationAuthority) {
+      throw new Error("The Verifier Runtime is unavailable; no formal status was recorded.");
+    }
+    const receipt = await this.formalVerificationAuthority.resolveAcceptedReceipt(
+      requiredText(receiptId, "Verifier receipt")
+    );
+    if (!receipt) throw new Error("The Verifier Runtime did not return an accepted receipt.");
+    const revision = claimCheckRevision(this.requireSession(sessionId), receipt.target, receipt.targetId);
+    const claim = requireClaimVerification(revision, receipt.claimId);
+    if (requiredText(receipt.exactStatement, "Exact formal statement") !== claim.claimStatement) {
+      throw new Error("The accepted formal statement must exactly match the current claim.");
+    }
+    const checker = requiredText(receipt.checker, "Formal checker");
+    const verificationEnvironment = requiredText(receipt.verificationEnvironment, "Verification environment");
+    const evidence: ClaimVerificationEvidence = {
+      id: crypto.randomUUID(),
+      method: "formalVerification",
+      outcome: "supports",
+      summary: `${checker} accepted the exact current statement.`,
+      limitation: "Formal verification covers only the exact accepted statement in the recorded environment.",
+      reference: { kind: "formalChecker", checker, verificationEnvironment },
+      currency: "current",
+      changedBecause: null,
+      createdAt: new Date().toISOString()
+    };
+    const verificationEvidence = [...claim.verificationEvidence, evidence];
+    Object.assign(claim, {
+      verificationEvidence,
+      verificationCurrency: "current" as const,
+      verificationLevel: currentVerificationLevel(verificationEvidence),
+      verificationEscalation: escalationForEvidence(verificationEvidence, claim.verificationGaps)
+    });
+    return this.publishAndPersist();
+  }
+
+  async assessVerificationEscalation(
+    sessionId: string,
+    assessment: VerificationEscalationAssessment
+  ): Promise<LearningApplicationState> {
+    const revision = claimCheckRevision(this.requireSession(sessionId), assessment.target, assessment.targetId);
+    const claim = requireClaimVerification(revision, assessment.claimId);
+    if (!Array.isArray(assessment.riskFactors) || !assessment.riskFactors.every(isVerificationRiskFactor)) {
+      throw new Error("Choose valid observable Verification Escalation risks.");
+    }
+    if (assessment.modelConfidence !== undefined
+      && (typeof assessment.modelConfidence !== "number" || assessment.modelConfidence < 0 || assessment.modelConfidence > 1)) {
+      throw new Error("Model confidence must be between zero and one when recorded.");
+    }
+    const reasons = [...new Set(assessment.riskFactors.map(verificationRiskReason))];
+    const evidenceEscalation = escalationForEvidence(
+      claim.verificationEvidence, claim.verificationGaps
+    );
+    Object.assign(claim, {
+      verificationEscalation: {
+        recommended: evidenceEscalation.recommended || reasons.length > 0,
+        reasons: [...new Set([...evidenceEscalation.reasons, ...reasons])]
+      }
+    });
+    return this.publishAndPersist();
+  }
+
   createArtifactPortableCopy(sessionId: string, artifactId: string): ArtifactPortableCopy {
     const session = this.requireSession(sessionId);
     const artifact = requireLearningArtifact(session, artifactId);
@@ -1018,10 +1248,20 @@ export class LearningApplication {
         `# ${kindLabel}: ${artifact.title}`,
         "",
         `- Originating Learning Session: ${artifact.originatingSessionId}`,
-        `- Claim Origin: ${artifact.currentRevision.claimOrigin}`,
-        "- Verification Level: Not independently checked",
         `- Revision action: ${artifact.currentRevision.provenance.action}`,
         `- Revision created: ${artifact.currentRevision.provenance.createdAt ?? "Unavailable for migrated revision"}`,
+        "",
+        "## Claims",
+        "",
+        ...artifact.currentRevision.claims.flatMap((claim, index) => [
+          `### Claim ${index + 1}`,
+          `- Exact Claim: ${claim.claimStatement}`,
+          `- Claim Origin: ${claimOriginLabel(claim.claimOrigin)}`,
+          `- Origin Evidence: ${claim.claimOriginReferences.map(claimEvidenceReferenceLabel).join("; ") || "No external origin reference"}`,
+          `- Verification Level: ${verificationLevelLabel(claim.verificationLevel)}`,
+          `- Verification Currency: ${verificationCurrencyLabel(claim.verificationCurrency)}`,
+          ""
+        ]),
         "",
         "## Source Anchors",
         "",
@@ -1030,6 +1270,40 @@ export class LearningApplication {
         "## Content",
         "",
         artifact.currentRevision.content,
+        ...(artifact.currentRevision.claims.every((claim) => claim.verificationEvidence.length === 0) ? [] : [
+          "",
+          "## Verification Evidence",
+          "",
+          ...artifact.currentRevision.claims.flatMap((claim) => claim.verificationEvidence.flatMap((evidence) => [
+            `### ${claimCheckMethodLabel(evidence.method)} · ${claimCheckOutcomeLabel(evidence.outcome)}`,
+            `- Exact Claim: ${claim.claimStatement}`,
+            `- Currency: ${verificationCurrencyLabel(evidence.currency)}`,
+            `- Evidence link: ${claimEvidenceReferenceLabel(evidence.reference)}`,
+            ...(evidence.changedBecause ? [`- Changed because: ${evidence.changedBecause}`] : []),
+            ...(evidence.limitation ? [`- Limitation: ${evidence.limitation}`] : []),
+            "",
+            evidence.summary,
+            ""
+          ]))
+        ]),
+        ...(artifact.currentRevision.claims.every((claim) => claim.verificationGaps.length === 0) ? [] : [
+          "## Verification Gaps",
+          "",
+          ...artifact.currentRevision.claims.flatMap((claim) => claim.verificationGaps.flatMap((gap) => [
+            `### Verification Gap ${gap.id}`,
+            `- Exact Claim: ${claim.claimStatement}`,
+            `- Reason: ${gap.reason}`,
+            `- Affected conclusion: ${gap.affectedConclusion}`,
+            ""
+          ]))
+        ]),
+        ...(artifact.currentRevision.claims.some((claim) => claim.verificationEscalation.recommended) ? [
+          "## Verification Escalation recommended",
+          "",
+          ...artifact.currentRevision.claims.flatMap((claim) => claim.verificationEscalation.recommended
+            ? claim.verificationEscalation.reasons.map((reason) => `- ${claim.claimStatement}: ${reason}`) : []),
+          ""
+        ] : []),
         ...artifact.currentRevision.personalNoteContributions.flatMap((note) => [
           "",
           `## Personal Note ${note.annotationId}`,
@@ -1762,6 +2036,24 @@ export class LearningApplication {
         await this.beginAnchoredTeaching(session, anchor, card.currentRevision, previous.status === "idle" ? null : previous.content);
         break;
       }
+      case "editTeachingCardClaims": {
+        const session = this.requireActiveSession();
+        const card = requireAnchoredTeachingCard(session, action.cardId);
+        if (card.currentRevision.status === "streaming") {
+          throw new Error("Wait for the current Teaching Card revision to finish.");
+        }
+        const previous = structuredClone(card.currentRevision);
+        const revisionId = crypto.randomUUID();
+        card.revisions.push(previous);
+        card.currentRevision = {
+          ...previous,
+          id: revisionId,
+          claims: curatedClaimEdits(previous.claims ?? [], action.claimEdits, revisionId, "Teaching Card")
+        };
+        session.activeTeachingCardId = card.id;
+        session.activeSourceAnchorId = card.sourceAnchorId;
+        break;
+      }
       case "restoreTeachingCardRevision": {
         const session = this.requireActiveSession();
         const card = requireAnchoredTeachingCard(session, action.cardId);
@@ -1830,17 +2122,18 @@ export class LearningApplication {
           ? session.learningArtifacts.find((artifact) => artifact.id === card.artifactId)
           : null;
         if (!existing) {
+          const revisionId = crypto.randomUUID();
           const artifact: LearningArtifact = {
             id: crypto.randomUUID(),
             title: card.title,
             kind: action.artifactKind ?? "learningArtifact",
             originatingSessionId: session.id,
             currentRevision: {
-              id: crypto.randomUUID(),
+              id: revisionId,
               content: card.currentRevision.content,
-              claimOrigin: "modelGenerated",
-              verificationLevel: "notIndependentlyChecked",
-              verificationCurrency: "current",
+              claims: card.currentRevision.claims?.length
+                ? structuredClone(card.currentRevision.claims)
+                : [claimVerificationFrom(card.currentRevision, revisionId, card.currentRevision.content)],
               personalNoteContributions: [],
               provenance: {
                 action: "promoted",
@@ -1882,6 +2175,7 @@ export class LearningApplication {
           : [];
         const controller = new AbortController();
         const log = this.agentWorkLogs[session.id] ??= [];
+        const synthesisFromSequence = log.length + 1;
         const promise = Promise.resolve().then(() => this.modelRuntime!.synthesizeArtifact({
           sessionId: session.id,
           learningGoal: session.learningGoal,
@@ -1911,15 +2205,33 @@ export class LearningApplication {
           if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
         }
         const synthesized = validatedArtifactSynthesisResult(result, personalNotes.map((note) => note.annotationId));
+        const synthesisOriginReferences: ClaimEvidenceReference[] = [
+          ...artifact.currentRevision.claims.flatMap((claim) => claim.claimOriginReferences),
+          ...(log.length >= synthesisFromSequence ? [{
+            kind: "agentWork" as const,
+            sessionId: session.id,
+            fromSequence: synthesisFromSequence,
+            toSequence: log.length
+          }] : [])
+        ];
         const interpretations = new Map(synthesized.noteInterpretations.map((item) => [item.annotationId, item.interpretation]));
         artifact.revisions.push(structuredClone(artifact.currentRevision));
+        const synthesizedRevisionId = crypto.randomUUID();
         artifact.currentRevision = {
-          id: crypto.randomUUID(),
+          id: synthesizedRevisionId,
           content: synthesized.content,
-          claimOrigin: personalNotes.length > 0 || artifact.currentRevision.claimOrigin !== "modelGenerated"
-            ? "mixed" : "modelGenerated",
-          verificationLevel: "notIndependentlyChecked",
-          verificationCurrency: "current",
+          claims: [{
+            claimId: synthesizedRevisionId,
+            claimStatement: synthesized.content,
+            claimOrigin: personalNotes.length > 0 || artifact.currentRevision.claims.some(
+              (claim) => claim.claimOrigin !== "modelGenerated"
+            ) ? "mixed" : "modelGenerated",
+            claimOriginReferences: structuredClone(synthesisOriginReferences),
+            ...staleVerificationState(
+              combinedClaimVerification(artifact.currentRevision.claims),
+              "Artifact synthesis changed the mathematical claim."
+            )
+          }],
           personalNoteContributions: personalNotes.map((note) => ({
             annotationId: note.annotationId,
             sourceAnchorId: note.sourceAnchorId,
@@ -1942,14 +2254,21 @@ export class LearningApplication {
         const session = this.requireArtifactEditingSession(action.sessionId);
         const artifact = requireLearningArtifact(session, action.artifactId);
         const content = requiredText(action.content, "Learning Artifact");
-        if (content === artifact.currentRevision.content) break;
+        const claimEditsChanged = action.claimEdits !== undefined && (
+          action.claimEdits.length !== artifact.currentRevision.claims.length
+          || action.claimEdits.some((edit, index) => edit.claimId !== artifact.currentRevision.claims[index]?.claimId
+            || edit.statement.trim() !== artifact.currentRevision.claims[index]?.claimStatement)
+        );
+        if (content === artifact.currentRevision.content && !claimEditsChanged) break;
         artifact.revisions.push(structuredClone(artifact.currentRevision));
+        const editedRevisionId = crypto.randomUUID();
         artifact.currentRevision = {
-          id: crypto.randomUUID(),
+          id: editedRevisionId,
           content,
-          claimOrigin: artifact.currentRevision.claimOrigin === "learner" ? "learner" : "mixed",
-          verificationLevel: "notIndependentlyChecked",
-          verificationCurrency: "current",
+          claims: editedArtifactClaims(
+            artifact.currentRevision.claims, content, action, editedRevisionId,
+            content !== artifact.currentRevision.content
+          ),
           personalNoteContributions: structuredClone(artifact.currentRevision.personalNoteContributions),
           provenance: {
             action: "edited",
@@ -3079,6 +3398,7 @@ export class LearningApplication {
       append: (delta) => { revision.content += delta; },
       complete: () => {
         revision.status = "completed";
+        bindTeachingClaim(revision, anchor);
         const card = session.anchoredTeachingCards.find((candidate) => candidate.currentRevision.id === revision.id
           || candidate.variants.some((variant) => variant.revision.id === revision.id));
         if (card) {
@@ -4077,6 +4397,7 @@ export class LearningApplication {
 
   private markSourceAnchorsUnresolved(source: LinkedSource, fromRevisionId: string): void {
     this.visitStaleSourceAnchors(source, (session, anchor) => {
+      staleSourceClaimEvidence(session, anchor, `Source ${source.name} changed to a new Source Revision.`);
       const existing = this.state.reanchoringDecisions.find(
         (decision) => decision.sourceAnchorId === anchor.id
           && (decision.status === "unresolved" || decision.status === "leftUnresolved")
@@ -4321,6 +4642,36 @@ export class LearningApplication {
   }
 }
 
+function staleSourceClaimEvidence(session: LearningSession, anchor: SourceAnchor, changedBecause: string): void {
+  const revisions: Array<TeachingCardRevision | LearningArtifactRevision> = [
+    ...session.anchoredTeachingCards.flatMap((card) => [
+      card.currentRevision,
+      ...card.variants.map((variant) => variant.revision)
+    ]),
+    ...session.learningArtifacts.map((artifact) => artifact.currentRevision)
+  ];
+  for (const revision of revisions) {
+    for (const claim of revision.claims ?? []) {
+      const originDependsOnAnchor = claim.claimOriginReferences.some(
+        (reference) => reference.kind === "sourceAnchor" && reference.sourceAnchorId === anchor.id
+      );
+      let changed = false;
+      const evidence = claim.verificationEvidence.map((item) => {
+        const dependsOnAnchor = item.reference.kind === "sourceAnchor" && item.reference.sourceAnchorId === anchor.id;
+        if (!dependsOnAnchor && !(originDependsOnAnchor && item.method === "sourceGrounded")) return item;
+        changed = true;
+        return { ...item, currency: "changedSinceCheck" as const, changedBecause };
+      });
+      if (!changed) continue;
+      Object.assign(claim, {
+        verificationEvidence: evidence,
+        verificationCurrency: "changedSinceCheck" as const,
+        verificationLevel: currentVerificationLevel(evidence)
+      });
+    }
+  }
+}
+
 function mergeSpecialistCheckpoint(retained: string, current: string, label: string): string {
   if (!retained || current.includes(retained)) return current;
   return `${retained}\n\n${label}:\n${current}`;
@@ -4385,6 +4736,362 @@ function requiredText(value: string, subject: string): string {
   const text = value.trim();
   if (!text) throw new Error(`${subject} text is required.`);
   return text;
+}
+
+function emptyVerificationState(): Pick<ClaimVerificationState,
+  "verificationLevel" | "verificationCurrency" | "verificationEvidence" | "verificationGaps" | "verificationEscalation"> {
+  return {
+    verificationLevel: "notIndependentlyChecked",
+    verificationCurrency: "current",
+    verificationEvidence: [],
+    verificationGaps: [],
+    verificationEscalation: { recommended: false, reasons: [] }
+  };
+}
+
+function verificationStateFrom(revision: Partial<Pick<ClaimVerificationState,
+  "verificationLevel" | "verificationCurrency" | "verificationEvidence" | "verificationGaps" | "verificationEscalation">>) {
+  return {
+    verificationLevel: revision.verificationLevel ?? "notIndependentlyChecked",
+    verificationCurrency: revision.verificationCurrency ?? "current",
+    verificationEvidence: structuredClone(revision.verificationEvidence ?? []),
+    verificationGaps: structuredClone(revision.verificationGaps ?? []),
+    verificationEscalation: structuredClone(revision.verificationEscalation ?? { recommended: false, reasons: [] })
+  } satisfies ReturnType<typeof emptyVerificationState>;
+}
+
+function bindTeachingClaim(revision: TeachingCardRevision, anchor: SourceAnchor): void {
+  if (!revision.content.trim()) {
+    revision.claims = [];
+    return;
+  }
+  revision.claims = [{
+    claimId: revision.id,
+    claimStatement: revision.content,
+    claimOrigin: "modelGenerated",
+    claimOriginReferences: [
+      { kind: "sourceAnchor", sourceAnchorId: anchor.id },
+      ...(revision.agentWorkLogReference ? [{
+        kind: "agentWork" as const,
+        sessionId: revision.agentWorkLogReference.sessionId,
+        fromSequence: revision.agentWorkLogReference.fromSequence,
+        toSequence: revision.agentWorkLogReference.toSequence
+      }] : [])
+    ],
+    ...emptyVerificationState()
+  }];
+}
+
+function claimVerificationFrom(
+  revision: TeachingCardRevision,
+  fallbackClaimId: string,
+  fallbackStatement: string
+): ClaimVerificationState {
+  const claim = revision.claims?.[0];
+  return {
+    claimId: claim?.claimId ?? fallbackClaimId,
+    claimStatement: claim?.claimStatement.trim() ? claim.claimStatement : fallbackStatement,
+    claimOrigin: claim?.claimOrigin ?? "modelGenerated",
+    claimOriginReferences: structuredClone(claim?.claimOriginReferences ?? []),
+    ...verificationStateFrom(claim ?? {})
+  };
+}
+
+function combinedClaimVerification(claims: ClaimVerificationState[]): ClaimVerificationState {
+  const first = claims[0];
+  return {
+    claimId: first?.claimId ?? crypto.randomUUID(),
+    claimStatement: claims.map((claim) => claim.claimStatement).join("\n\n"),
+    claimOrigin: claims.some((claim) => claim.claimOrigin !== first?.claimOrigin) ? "mixed" : first?.claimOrigin ?? "mixed",
+    claimOriginReferences: claims.flatMap((claim) => claim.claimOriginReferences),
+    verificationLevel: "notIndependentlyChecked",
+    verificationCurrency: claims.some((claim) => claim.verificationCurrency === "changedSinceCheck") ? "changedSinceCheck" : "current",
+    verificationEvidence: claims.flatMap((claim) => claim.verificationEvidence),
+    verificationGaps: claims.flatMap((claim) => claim.verificationGaps),
+    verificationEscalation: {
+      recommended: claims.some((claim) => claim.verificationEscalation.recommended),
+      reasons: [...new Set(claims.flatMap((claim) => claim.verificationEscalation.reasons))]
+    }
+  };
+}
+
+function editedArtifactClaims(
+  claims: ClaimVerificationState[],
+  content: string,
+  action: Extract<LearnerAction, { type: "editLearningArtifact" }>,
+  revisionId: string,
+  contentChanged: boolean
+): ClaimVerificationState[] {
+  if (action.mathematicalChange === "formattingOnly") return structuredClone(claims);
+  if (action.claimEdits) {
+    if (action.claimEdits.length === 0) throw new Error("Keep at least one exact mathematical claim.");
+    const existing = new Map(claims.map((claim) => [claim.claimId, claim]));
+    const usedIds = action.claimEdits.flatMap((edit) => edit.claimId ? [edit.claimId] : []);
+    if (new Set(usedIds).size !== usedIds.length || usedIds.some((claimId) => !existing.has(claimId))) {
+      throw new Error("Choose each exact claim from the current Artifact at most once.");
+    }
+    const hasExplicitClaimChange = action.claimEdits.length !== claims.length
+      || action.claimEdits.some((edit) => edit.claimId === null
+        || edit.statement.trim() !== existing.get(edit.claimId)?.claimStatement);
+    if (contentChanged && !hasExplicitClaimChange) {
+      return claims.map((claim) => ({
+        ...claim,
+        ...staleVerificationState(claim, "The Artifact content changed without an exact claim-change classification.")
+      }));
+    }
+    return curatedClaimEdits(claims, action.claimEdits, revisionId, "Artifact");
+  }
+  const combined = combinedClaimVerification(claims);
+  return [{
+    ...combined,
+    claimId: revisionId,
+    claimStatement: content,
+    claimOrigin: combined.claimOrigin === "learner" ? "learner" : "mixed",
+    ...staleVerificationState(combined, "A semantic Artifact edit changed the mathematical claim.")
+  }];
+}
+
+function curatedClaimEdits(
+  claims: ClaimVerificationState[],
+  edits: Array<{ claimId: string | null; statement: string }>,
+  revisionId: string,
+  subject: "Teaching Card" | "Artifact"
+): ClaimVerificationState[] {
+  if (edits.length === 0) throw new Error("Keep at least one exact mathematical claim.");
+  const existing = new Map(claims.map((claim) => [claim.claimId, claim]));
+  const usedIds = edits.flatMap((edit) => edit.claimId ? [edit.claimId] : []);
+  if (new Set(usedIds).size !== usedIds.length || usedIds.some((claimId) => !existing.has(claimId))) {
+    throw new Error(`Choose each exact claim from the current ${subject} at most once.`);
+  }
+  return edits.map((edit) => {
+    const statement = requiredText(edit.statement, "Exact claim");
+    if (edit.claimId === null) return {
+      claimId: crypto.randomUUID(),
+      claimStatement: statement,
+      claimOrigin: "learner" as const,
+      claimOriginReferences: [{
+        kind: "learnerRevision" as const,
+        revisionId,
+        subject: subject === "Teaching Card" ? "teachingCard" as const : "learningArtifact" as const
+      }],
+      ...emptyVerificationState()
+    };
+    const previous = existing.get(edit.claimId)!;
+    if (statement === previous.claimStatement) return structuredClone(previous);
+    return {
+      ...previous,
+      claimId: crypto.randomUUID(),
+      claimStatement: statement,
+      claimOrigin: previous.claimOrigin === "learner" ? "learner" as const : "mixed" as const,
+      claimOriginReferences: [...previous.claimOriginReferences, {
+        kind: "learnerRevision" as const,
+        revisionId,
+        subject: subject === "Teaching Card" ? "teachingCard" as const : "learningArtifact" as const
+      }],
+      ...staleVerificationState(previous, `A learner changed this exact ${subject} claim.`)
+    };
+  });
+}
+
+function staleVerificationState(
+  revision: Pick<ClaimVerificationState,
+    "verificationLevel" | "verificationCurrency" | "verificationEvidence" | "verificationGaps" | "verificationEscalation">,
+  changedBecause: string
+) {
+  const previous = verificationStateFrom(revision);
+  return {
+    verificationLevel: "notIndependentlyChecked" as const,
+    verificationCurrency: previous.verificationEvidence.length > 0 ? "changedSinceCheck" as const : "current" as const,
+    verificationEvidence: previous.verificationEvidence.map((evidence) => ({
+      ...evidence,
+      currency: "changedSinceCheck" as const,
+      changedBecause
+    })),
+    verificationGaps: previous.verificationGaps,
+    verificationEscalation: previous.verificationEscalation
+  };
+}
+
+function claimCheckRevision(
+  session: LearningSession,
+  target: "teachingCard" | "learningArtifact",
+  targetId: string
+): TeachingCardRevision | LearningArtifactRevision {
+  if (target === "teachingCard") return requireAnchoredTeachingCard(session, targetId).currentRevision;
+  if (target === "learningArtifact") return requireLearningArtifact(session, targetId).currentRevision;
+  throw new Error("Choose a Teaching Card or Learning Artifact claim.");
+}
+
+function requireClaimVerification(
+  revision: TeachingCardRevision | LearningArtifactRevision,
+  claimId: string
+): ClaimVerificationState {
+  const claim = revision.claims?.find((candidate) => candidate.claimId === claimId);
+  if (!claim) throw new Error("Choose an exact mathematical claim in the current revision.");
+  return claim;
+}
+
+function sourceGroundedCheckOutcome(
+  session: LearningSession,
+  claim: ClaimVerificationState,
+  reference: ClaimEvidenceReference
+): ClaimCheckOutcome {
+  const pass = session.corroborationPass;
+  if (!pass || pass.status === "running") throw new Error("Complete the Corroboration Pass before recording a Source-grounded check.");
+  if (pass.currentUse.conclusion !== claim.claimStatement) {
+    throw new Error("The Corroboration Pass must check the exact current claim before it can be Source-grounded.");
+  }
+  if (reference.kind !== "researchEvidence" || reference.researchActionId !== pass.researchActionId) {
+    throw new Error("Source-grounded evidence must cite the research action that produced this Corroboration Pass.");
+  }
+  if (pass.status === "disputed" || pass.sourceDiscrepancies.length > 0) return "disagrees";
+  if (pass.status === "completed" && pass.assumptionComparison === "matches"
+    && pass.conclusionComparison === "matches" && pass.independentSupport === "sufficient") return "supports";
+  return "unresolved";
+}
+
+function requiredClaimCheckMethod(value: unknown): ClaimCheckMethod {
+  if (!["reasoningReview", "sourceGrounded", "independentCorroboration", "formalVerification"].includes(String(value))) {
+    throw new Error("Choose a valid claim-checking method.");
+  }
+  return value as ClaimCheckMethod;
+}
+
+function requiredClaimCheckOutcome(value: unknown): ClaimCheckOutcome {
+  if (!["supports", "disagrees", "unresolved"].includes(String(value))) {
+    throw new Error("Choose support, disagreement, or an unresolved claim-check outcome.");
+  }
+  return value as ClaimCheckOutcome;
+}
+
+function validatedClaimEvidenceReference(value: unknown): ClaimEvidenceReference {
+  if (!validClaimEvidenceReference(value)) throw new Error("Link claim evidence to its exact source, research, agent work, or formal checker.");
+  return structuredClone(value);
+}
+
+function validClaimEvidenceReference(value: unknown): value is ClaimEvidenceReference {
+  if (!isRecord(value)) return false;
+  if (value.kind === "sourceAnchor") return typeof value.sourceAnchorId === "string" && Boolean(value.sourceAnchorId);
+  if (value.kind === "researchEvidence") return typeof value.researchActionId === "string" && Boolean(value.researchActionId);
+  if (value.kind === "agentWork") return typeof value.sessionId === "string" && Boolean(value.sessionId)
+    && Number.isInteger(value.fromSequence) && Number.isInteger(value.toSequence)
+    && (value.fromSequence as number) >= 1 && (value.toSequence as number) >= (value.fromSequence as number);
+  if (value.kind === "learnerRevision") return typeof value.revisionId === "string" && Boolean(value.revisionId)
+    && (value.subject === "teachingCard" || value.subject === "learningArtifact");
+  return value.kind === "formalChecker" && typeof value.checker === "string" && Boolean(value.checker.trim())
+    && typeof value.verificationEnvironment === "string" && Boolean(value.verificationEnvironment.trim());
+}
+
+function validateClaimCheckEvidence(method: ClaimCheckMethod, reference: ClaimEvidenceReference): void {
+  if (method === "reasoningReview" && reference.kind !== "agentWork") {
+    throw new Error("A reasoning review must link to the separate Agent Work that performed it.");
+  }
+  if (method === "sourceGrounded" && reference.kind !== "researchEvidence") {
+    throw new Error("A Source-grounded check must link to the Corroboration Pass research evidence.");
+  }
+  if (method === "independentCorroboration" && reference.kind !== "agentWork" && reference.kind !== "researchEvidence") {
+    throw new Error("Independent corroboration must link to a separate reasoning attempt or independent evidence.");
+  }
+  if (method === "formalVerification" && reference.kind !== "formalChecker") {
+    throw new Error("Formal verification must identify the checker and exact Verification Environment.");
+  }
+}
+
+function sameClaimEvidenceReference(left: ClaimEvidenceReference, right: ClaimEvidenceReference): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "sourceAnchor" && right.kind === "sourceAnchor") return left.sourceAnchorId === right.sourceAnchorId;
+  if (left.kind === "researchEvidence" && right.kind === "researchEvidence") return left.researchActionId === right.researchActionId;
+  if (left.kind === "agentWork" && right.kind === "agentWork") {
+    return left.sessionId === right.sessionId
+      && left.fromSequence <= right.toSequence && right.fromSequence <= left.toSequence;
+  }
+  if (left.kind === "learnerRevision" && right.kind === "learnerRevision") {
+    return left.revisionId === right.revisionId && left.subject === right.subject;
+  }
+  return left.kind === "formalChecker" && right.kind === "formalChecker"
+    && left.checker === right.checker && left.verificationEnvironment === right.verificationEnvironment;
+}
+
+function currentVerificationLevel(evidence: ClaimVerificationEvidence[]): VerificationLevel {
+  const current = evidence.filter((item) => item.currency === "current");
+  if (current.some((item) => item.outcome !== "supports")) return "notIndependentlyChecked";
+  const supported = new Set(current.filter((item) => item.outcome === "supports").map((item) => item.method));
+  if (supported.has("formalVerification")) return "formallyVerified";
+  if (supported.has("independentCorroboration")) return "independentlyCorroborated";
+  if (supported.has("sourceGrounded")) return "sourceGrounded";
+  if (supported.has("reasoningReview")) return "reasoningReviewed";
+  return "notIndependentlyChecked";
+}
+
+function escalationForEvidence(evidence: ClaimVerificationEvidence[], gaps: VerificationGap[]): VerificationEscalation {
+  const currentProblem = evidence.find((item) => item.currency === "current" && item.outcome !== "supports");
+  if (!currentProblem && gaps.length === 0) return { recommended: false, reasons: [] };
+  const reason = currentProblem?.outcome === "disagrees"
+    ? "Independent checking disagreed with the claim."
+    : "A claim check remains unresolved.";
+  return { recommended: true, reasons: [reason] };
+}
+
+function isVerificationRiskFactor(value: unknown): value is VerificationRiskFactor {
+  return ["nonTrivial", "weakSupport", "disputed", "longDependencyChain", "substantialDeparture", "checkerFailure"]
+    .includes(String(value));
+}
+
+function verificationRiskReason(value: VerificationRiskFactor): string {
+  return {
+    nonTrivial: "The claim is mathematically non-trivial.",
+    weakSupport: "The available support is weak or sparse.",
+    disputed: "Available evidence disputes the claim.",
+    longDependencyChain: "The claim depends on a long reasoning chain.",
+    substantialDeparture: "The argument substantially departs from an established route.",
+    checkerFailure: "A checker failed or could not complete the check."
+  }[value];
+}
+
+export function claimOriginLabel(value: ClaimOrigin): string {
+  return {
+    learner: "Learner",
+    suppliedSource: "Supplied source",
+    modelGenerated: "Model-generated",
+    mixed: "Mixed origins"
+  }[value];
+}
+
+export function verificationLevelLabel(value: VerificationLevel): string {
+  return {
+    notIndependentlyChecked: "Not independently checked",
+    reasoningReviewed: "Reasoning-reviewed",
+    sourceGrounded: "Source-grounded",
+    independentlyCorroborated: "Independently corroborated",
+    formallyVerified: "Formally verified"
+  }[value];
+}
+
+export function verificationCurrencyLabel(value: VerificationCurrency): string {
+  return value === "current" ? "Current" : "Changed since check";
+}
+
+export function claimCheckMethodLabel(value: ClaimCheckMethod): string {
+  return {
+    reasoningReview: "Reasoning review",
+    sourceGrounded: "Source-grounded check",
+    independentCorroboration: "Independent corroboration",
+    formalVerification: "Formal verification"
+  }[value];
+}
+
+export function claimCheckOutcomeLabel(value: ClaimCheckOutcome): string {
+  return { supports: "Supports", disagrees: "Disagrees", unresolved: "Unresolved" }[value];
+}
+
+export function claimEvidenceReferenceLabel(value: ClaimEvidenceReference): string {
+  if (value.kind === "sourceAnchor") return `Source Anchor ${value.sourceAnchorId}`;
+  if (value.kind === "researchEvidence") return `Research evidence ${value.researchActionId}`;
+  if (value.kind === "agentWork") return `Agent Work ${value.sessionId} events ${value.fromSequence}–${value.toSequence}`;
+  if (value.kind === "learnerRevision") {
+    return `Learner ${value.subject === "teachingCard" ? "Teaching Card" : "Artifact"} Revision ${value.revisionId}`;
+  }
+  return `${value.checker} · Verification Environment ${value.verificationEnvironment}`;
 }
 
 function requiredVerbatimText(value: string, subject: string): string {
@@ -5413,15 +6120,17 @@ function emptyTeachingCard(): LearningSession["teachingCard"] {
 }
 
 function teachingCardRevision(instruction: string): TeachingCardRevision {
+  const id = crypto.randomUUID();
   return {
-    id: crypto.randomUUID(),
+    id,
     instruction,
     status: "idle",
     content: "",
     error: null,
     retryable: false,
     contextUsed: [],
-    agentWorkLogReference: null
+    agentWorkLogReference: null,
+    claims: []
   };
 }
 
@@ -6314,8 +7023,31 @@ function migrateAnchoredTeachingCards(value: unknown): AnchoredTeachingCard[] {
       || !(candidate.artifactId === null || typeof candidate.artifactId === "string")) {
       throw new Error("Stored anchored Teaching Cards are invalid.");
     }
-    return candidate as unknown as AnchoredTeachingCard;
+    return {
+      ...candidate,
+      currentRevision: migrateTeachingCardVerification(candidate.currentRevision),
+      revisions: candidate.revisions.map(migrateTeachingCardVerification),
+      variants: candidate.variants.map((variant) => ({
+        ...(variant as TeachingVariant),
+        revision: migrateTeachingCardVerification((variant as TeachingVariant).revision)
+      }))
+    } as unknown as AnchoredTeachingCard;
   });
+}
+
+function migrateTeachingCardVerification(value: unknown): TeachingCardRevision {
+  if (!validTeachingCardRevision(value)) throw new Error("Stored anchored Teaching Cards are invalid.");
+  const revision = value as TeachingCardRevision;
+  return {
+    ...revision,
+    claims: migrateClaims(revision as unknown as Record<string, unknown>, revision.id, revision.content,
+      revision.agentWorkLogReference ? [{
+        kind: "agentWork",
+        sessionId: revision.agentWorkLogReference.sessionId,
+        fromSequence: revision.agentWorkLogReference.fromSequence,
+        toSequence: revision.agentWorkLogReference.toSequence
+      }] : [])
+  };
 }
 
 function migrateLearningArtifacts(value: unknown, sessionId: string): LearningArtifact[] {
@@ -6358,11 +7090,52 @@ function migrateLearningArtifactRevision(
   }
   const migrated = {
     ...value,
+    claims: migrateClaims(value, String(value.id), String(value.content), []),
     personalNoteContributions: migratePersonalNoteContributions(value.personalNoteContributions),
     provenance
   };
   if (!validLearningArtifactRevision(migrated)) throw new Error("Stored Learning Artifact revision is invalid.");
   return migrated as unknown as LearningArtifactRevision;
+}
+
+function migrateClaims(
+  value: Record<string, unknown>, fallbackId: string, fallbackStatement: string, fallbackReferences: ClaimEvidenceReference[]
+): ClaimVerificationState[] {
+  if (Array.isArray(value.claims)) {
+    if (!value.claims.every(validClaimVerificationState)) throw new Error("Stored claim verification evidence is invalid.");
+    return structuredClone(value.claims);
+  }
+  return [{
+    claimId: typeof value.claimId === "string" ? value.claimId : fallbackId,
+    claimStatement: typeof value.claimStatement === "string" && value.claimStatement.trim()
+      ? value.claimStatement : fallbackStatement,
+    claimOrigin: isClaimOrigin(value.claimOrigin) ? value.claimOrigin : "modelGenerated",
+    claimOriginReferences: Array.isArray(value.claimOriginReferences)
+      && value.claimOriginReferences.every(validClaimEvidenceReference)
+      ? structuredClone(value.claimOriginReferences) : structuredClone(fallbackReferences),
+    ...migrateVerificationState(value)
+  }];
+}
+
+function migrateVerificationState(value: Record<string, unknown>): ReturnType<typeof emptyVerificationState> {
+  const hasAny = ["verificationEvidence", "verificationGaps", "verificationEscalation"].some((field) => field in value);
+  if (!hasAny && (value.verificationLevel === undefined || value.verificationLevel === "notIndependentlyChecked")
+    && (value.verificationCurrency === undefined || value.verificationCurrency === "current")) {
+    return emptyVerificationState();
+  }
+  if (!isVerificationLevel(value.verificationLevel) || !isVerificationCurrency(value.verificationCurrency)
+    || !Array.isArray(value.verificationEvidence) || !value.verificationEvidence.every(validClaimVerificationEvidence)
+    || !Array.isArray(value.verificationGaps) || !value.verificationGaps.every(validVerificationGap)
+    || !validVerificationEscalation(value.verificationEscalation)) {
+    throw new Error("Stored claim verification evidence is invalid.");
+  }
+  return {
+    verificationLevel: value.verificationLevel,
+    verificationCurrency: value.verificationCurrency,
+    verificationEvidence: structuredClone(value.verificationEvidence),
+    verificationGaps: structuredClone(value.verificationGaps),
+    verificationEscalation: structuredClone(value.verificationEscalation)
+  };
 }
 
 function migratePersonalNoteContributions(value: unknown): PersonalNoteContribution[] {
@@ -6495,15 +7268,64 @@ function validTeachingCardRevision(value: unknown): value is TeachingCardRevisio
       && typeof context.sourceName === "string" && typeof context.location === "string")
     && (value.agentWorkLogReference === null || (isRecord(value.agentWorkLogReference)
       && typeof value.agentWorkLogReference.sessionId === "string"
-      && Number.isInteger(value.agentWorkLogReference.fromSequence) && Number.isInteger(value.agentWorkLogReference.toSequence)));
+      && Number.isInteger(value.agentWorkLogReference.fromSequence) && Number.isInteger(value.agentWorkLogReference.toSequence)))
+    && (value.claims === undefined || (Array.isArray(value.claims) && value.claims.every(validClaimVerificationState)));
 }
 
 function validLearningArtifactRevision(value: unknown): boolean {
   return isRecord(value) && typeof value.id === "string" && typeof value.content === "string"
-    && (value.claimOrigin === "modelGenerated" || value.claimOrigin === "learner" || value.claimOrigin === "mixed")
-    && value.verificationLevel === "notIndependentlyChecked" && value.verificationCurrency === "current"
+    && Array.isArray(value.claims) && value.claims.length > 0 && value.claims.every(validClaimVerificationState)
     && Array.isArray(value.personalNoteContributions) && value.personalNoteContributions.every(validPersonalNoteContribution)
     && validLearningArtifactRevisionProvenance(value.provenance);
+}
+
+function validClaimVerificationState(value: unknown): value is ClaimVerificationState {
+  return isRecord(value) && typeof value.claimId === "string" && Boolean(value.claimId)
+    && typeof value.claimStatement === "string" && Boolean(value.claimStatement.trim())
+    && isClaimOrigin(value.claimOrigin) && Array.isArray(value.claimOriginReferences)
+    && value.claimOriginReferences.every(validClaimEvidenceReference) && isVerificationLevel(value.verificationLevel)
+    && isVerificationCurrency(value.verificationCurrency)
+    && Array.isArray(value.verificationEvidence) && value.verificationEvidence.every(validClaimVerificationEvidence)
+    && Array.isArray(value.verificationGaps) && value.verificationGaps.every(validVerificationGap)
+    && validVerificationEscalation(value.verificationEscalation);
+}
+
+function isClaimOrigin(value: unknown): value is ClaimOrigin {
+  return ["learner", "suppliedSource", "modelGenerated", "mixed"].includes(String(value));
+}
+
+function isVerificationLevel(value: unknown): value is VerificationLevel {
+  return ["notIndependentlyChecked", "reasoningReviewed", "sourceGrounded", "independentlyCorroborated", "formallyVerified"]
+    .includes(String(value));
+}
+
+function isVerificationCurrency(value: unknown): value is VerificationCurrency {
+  return value === "current" || value === "changedSinceCheck";
+}
+
+function validClaimVerificationEvidence(value: unknown): value is ClaimVerificationEvidence {
+  return isRecord(value) && typeof value.id === "string" && Boolean(value.id)
+    && ["reasoningReview", "sourceGrounded", "independentCorroboration", "formalVerification"].includes(String(value.method))
+    && ["supports", "disagrees", "unresolved"].includes(String(value.outcome))
+    && typeof value.summary === "string" && Boolean(value.summary.trim())
+    && (value.limitation === null || (typeof value.limitation === "string" && Boolean(value.limitation.trim())))
+    && validClaimEvidenceReference(value.reference) && isVerificationCurrency(value.currency)
+    && (value.changedBecause === null || (typeof value.changedBecause === "string" && Boolean(value.changedBecause.trim())))
+    && typeof value.createdAt === "string" && !Number.isNaN(Date.parse(value.createdAt))
+    && new Date(value.createdAt).toISOString() === value.createdAt;
+}
+
+function validVerificationGap(value: unknown): value is VerificationGap {
+  return isRecord(value) && typeof value.id === "string" && Boolean(value.id)
+    && typeof value.reason === "string" && Boolean(value.reason.trim())
+    && typeof value.affectedConclusion === "string" && Boolean(value.affectedConclusion.trim())
+    && typeof value.evidenceId === "string" && Boolean(value.evidenceId);
+}
+
+function validVerificationEscalation(value: unknown): value is VerificationEscalation {
+  return isRecord(value) && typeof value.recommended === "boolean" && Array.isArray(value.reasons)
+    && value.reasons.every((reason) => typeof reason === "string" && Boolean(reason.trim()))
+    && (value.recommended || value.reasons.length === 0);
 }
 
 function validPersonalNoteContribution(value: unknown): value is PersonalNoteContribution {

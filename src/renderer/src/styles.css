@@ -343,6 +343,15 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .artifact-evidence div { display: grid; grid-template-columns: 140px 1fr; gap: 12px; }
 .artifact-evidence dt { font-weight: 750; }
 .artifact-evidence dd { margin: 0; }
+.claim-trust { margin-top: 16px; padding: 14px; border: 1px solid #c9d8cd; border-radius: 12px; background: rgba(255,255,255,.54); }
+.claim-trust .artifact-evidence { margin-top: 0; padding-top: 0; border-top: 0; }
+.verification-evidence { margin-top: 12px; }
+.verification-evidence summary { cursor: pointer; font-weight: 750; }
+.verification-evidence li + li { margin-top: 10px; }
+.verification-gap, .verification-escalation { margin-top: 12px; padding: 12px; border-radius: 9px; }
+.verification-gap { border: 1px solid #c89b77; color: #70412f; background: #fff8ed; }
+.verification-escalation { border: 1px solid #b99b54; color: #5f4b1b; background: #fff9df; }
+.verification-gap p, .verification-escalation ul { margin: 6px 0 0; }
 .record-link { color: #557069 !important; font-size: 12px; }
 .artifact-history, .agent-work-log-link { margin-top: 14px; }
 .artifact-history summary { cursor: pointer; font-weight: 750; }

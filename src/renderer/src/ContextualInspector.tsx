@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { AnchoredTeachingCard, LearningArtifact } from "../../shared/learning-application";
+import { ClaimTrust } from "./ClaimTrust";
 
 interface ContextualInspectorProps {
   card: AnchoredTeachingCard;
@@ -7,6 +8,7 @@ interface ContextualInspectorProps {
   autoFocusClose?: boolean;
   onClose(): void;
   onRevise(instruction: string): Promise<void>;
+  onEditClaims(claims: Array<{ claimId: string | null; statement: string }>): Promise<void>;
   onRestore(revisionId: string): Promise<void>;
   onCreateVariant(name: string, instruction: string): Promise<void>;
   onRetry(variantId?: string): Promise<void>;
@@ -19,6 +21,7 @@ export function ContextualInspector({
   autoFocusClose = true,
   onClose,
   onRevise,
+  onEditClaims,
   onRestore,
   onCreateVariant,
   onRetry,
@@ -29,12 +32,18 @@ export function ContextualInspector({
   const [variantName, setVariantName] = useState("");
   const [variantInstruction, setVariantInstruction] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [claimEdits, setClaimEdits] = useState<Array<{ claimId: string | null; statement: string }>>(
+    (card.currentRevision.claims ?? []).map((claim) => ({ claimId: claim.claimId, statement: claim.claimStatement }))
+  );
   const [busy, setBusy] = useState(false);
   const isQuestionDraft = card.currentRevision.status === "idle" && card.title.startsWith("Question about");
 
   useEffect(() => {
     if (autoFocusClose) closeRef.current?.focus();
   }, [autoFocusClose, card.id]);
+  useEffect(() => setClaimEdits((card.currentRevision.claims ?? []).map(
+    (claim) => ({ claimId: claim.claimId, statement: claim.claimStatement })
+  )), [card.currentRevision.id, card.currentRevision.claims]);
 
   const submitRevision = async (event: FormEvent) => {
     event.preventDefault();
@@ -100,6 +109,28 @@ export function ContextualInspector({
             <strong>{context.sourceName}</strong> · {context.location}
           </li>)}</ul>
         </details>}
+        <ClaimTrust revision={card.currentRevision} />
+        {card.currentRevision.status === "completed" && <fieldset className="teaching-card-claims">
+          <legend>Exact mathematical claims</legend>
+          {claimEdits.map((claim, index) => <div key={claim.claimId ?? `new-claim-${index}`}>
+            <label htmlFor={`teaching-claim-${card.id}-${index}`}>Exact claim {index + 1}</label>
+            <textarea id={`teaching-claim-${card.id}-${index}`} value={claim.statement}
+              onChange={(event) => setClaimEdits((current) => current.map((item, itemIndex) =>
+                itemIndex === index ? { ...item, statement: event.target.value } : item
+              ))} />
+            {claimEdits.length > 1 && <button type="button" className="text-button"
+              aria-label={`Remove Teaching Card exact claim ${index + 1}`}
+              onClick={() => setClaimEdits((current) => current.filter((_item, itemIndex) => itemIndex !== index))}>
+              Remove claim
+            </button>}
+          </div>)}
+          <button type="button" className="text-button" onClick={() => setClaimEdits((current) => [
+            ...current, { claimId: null, statement: "" }
+          ])}>Add exact claim</button>
+          <button type="button" className="secondary" disabled={busy || claimEdits.length === 0
+            || claimEdits.some((claim) => !claim.statement.trim())}
+            onClick={() => void onEditClaims(claimEdits)}>Save exact claims</button>
+        </fieldset>}
       </section>
 
       {card.revisions.length > 0 && (

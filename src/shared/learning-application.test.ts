@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LearningApplication,
+  type AcceptedFormalVerification,
+  type ClaimCheckRecord,
+  type FormalVerificationAuthority,
   type LinkedSource,
   type LocalSourceAccess,
   type SelectedLocalSource,
@@ -69,10 +72,26 @@ describe("Learning Application", () => {
     return { dataDirectory, application };
   }
 
-  async function launchWithRuntimeAndExternalResearch(runtime: ModelRuntime, externalResearch: ExternalResearch) {
+  async function launchWithRuntimeAndExternalResearch(
+    runtime: ModelRuntime,
+    externalResearch: ExternalResearch,
+    formalVerificationAuthority: FormalVerificationAuthority | null = null
+  ) {
     const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
     dataDirectories.push(dataDirectory);
-    const application = await LearningApplication.launch(dataDirectory, runtime, null, null, externalResearch);
+    const application = await LearningApplication.launch(
+      dataDirectory, runtime, null, null, externalResearch, formalVerificationAuthority
+    );
+    applications.push(application);
+    return { dataDirectory, application };
+  }
+
+  async function launchWithRuntimeSourceAccessAndExternalResearch(
+    runtime: ModelRuntime, sourceAccess: LocalSourceAccess, externalResearch: ExternalResearch
+  ) {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, runtime, sourceAccess, null, externalResearch);
     applications.push(application);
     return { dataDirectory, application };
   }
@@ -332,7 +351,7 @@ describe("Learning Application", () => {
     expect(state.sessions[0].annotations[0]).toEqual(originalAnnotation);
     expect(state.sessions[0].learningArtifacts[0].currentRevision).toMatchObject({
       content: "Use compactness to make the pointwise separation argument finite. The learner connects this to a finite-choice picture.",
-      claimOrigin: "mixed",
+      claims: [expect.objectContaining({ claimOrigin: "mixed" })],
       provenance: { action: "synthesized" },
       personalNoteContributions: [{
         annotationId: originalAnnotation.id,
@@ -384,6 +403,368 @@ describe("Learning Application", () => {
     const relaunched = await LearningApplication.launch(dataDirectory);
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].learningArtifacts[0].currentRevision).toEqual(revision);
+  });
+
+  it("records every claim level through evidence-specific boundaries and ignores model confidence", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const verifier = new DeterministicFormalVerificationAuthority();
+    const { application } = await launchWithRuntimeAndExternalResearch(
+      runtime, supportingExternalResearch(), verifier
+    );
+    const { artifactId, researchActionId } = await createCorroboratedPinnedArtifact(application, runtime);
+    const prelaunchArtifact = application.getState().sessions[0].learningArtifacts[0];
+    verifier.receipts.set("mismatched-statement", {
+      target: "learningArtifact", targetId: artifactId,
+      claimId: prelaunchArtifact.currentRevision.claims[0].claimId,
+      exactStatement: `${prelaunchArtifact.currentRevision.claims[0].claimStatement} changed`,
+      checker: "Lean", verificationEnvironment: "lean-fixture-1"
+    });
+    verifier.receipts.set("accepted-exact-statement", {
+      target: "learningArtifact", targetId: artifactId,
+      claimId: prelaunchArtifact.currentRevision.claims[0].claimId,
+      exactStatement: prelaunchArtifact.currentRevision.claims[0].claimStatement,
+      checker: "Lean", verificationEnvironment: "lean-fixture-1"
+    });
+    const artifact = application.getState().sessions[0].learningArtifacts[0];
+    const claimId = artifact.currentRevision.claims[0].claimId;
+
+    let state = await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "reasoningReview", outcome: "supports",
+      summary: "A separate reasoning pass found the finite-subcover step continuous.",
+      evidence: { kind: "agentWork", sessionId: artifact.originatingSessionId, fromSequence: 1, toSequence: 2 }
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationLevel).toBe("reasoningReviewed");
+
+    state = await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "sourceGrounded", outcome: "supports",
+      summary: "The exact assumptions and conclusion are consistent with the cited source.",
+      evidence: { kind: "researchEvidence", researchActionId }
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "sourceGrounded",
+      verificationCurrency: "current",
+      verificationEvidence: [
+        expect.objectContaining({ method: "reasoningReview", outcome: "supports", currency: "current" }),
+        expect.objectContaining({
+          method: "sourceGrounded", outcome: "supports", currency: "current",
+          limitation: "Consistent with the cited source; this does not prove that the claim or source is correct."
+        })
+      ]
+    });
+    const producingWork = artifact.currentRevision.claims[0].claimOriginReferences.find(
+      (reference) => reference.kind === "agentWork"
+    )!;
+    await expect(application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "independentCorroboration", outcome: "supports",
+      summary: "This incorrectly reuses the work that produced the claim.",
+      evidence: producingWork
+    })).rejects.toThrow("separate from the work that produced");
+
+    await application.submit({
+      type: "reviseTeachingCard",
+      cardId: state.sessions[0].anchoredTeachingCards[0].id,
+      instruction: "Run a separate derivation for corroboration."
+    });
+    runtime.emitTeaching("A separate derivation reaches the same conclusion.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const independentWork = application.getState().sessions[0].anchoredTeachingCards[0].currentRevision.agentWorkLogReference!;
+
+    state = await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "independentCorroboration", outcome: "supports",
+      summary: "An independent derivation supports the same conclusion.",
+      evidence: { kind: "agentWork", ...independentWork }
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationLevel).toBe("independentlyCorroborated");
+
+    await expect(application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "formalVerification", outcome: "supports",
+      summary: "The exact formal statement was accepted.",
+      evidence: { kind: "formalChecker", checker: "Lean", verificationEnvironment: "lean-fixture-1" }
+    } as unknown as ClaimCheckRecord)).rejects.toThrow("Only the Verifier Runtime");
+
+    await expect(application.recordFormalVerification(
+      artifact.originatingSessionId, "mismatched-statement"
+    )).rejects.toThrow("exactly match the current claim");
+
+    state = await application.recordFormalVerification(artifact.originatingSessionId, "accepted-exact-statement");
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "formallyVerified",
+      verificationEvidence: expect.arrayContaining([expect.objectContaining({
+        method: "formalVerification", outcome: "supports",
+        limitation: "Formal verification covers only the exact accepted statement in the recorded environment."
+      })])
+    });
+
+    state = await application.assessVerificationEscalation(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      riskFactors: [], modelConfidence: 1
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "formallyVerified",
+      verificationEscalation: { recommended: false, reasons: [] }
+    });
+  });
+
+  it("attaches inspectable provenance and verification evidence to a Teaching Card claim", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntimeAndExternalResearch(
+      runtime, supportingExternalResearch()
+    );
+    await createPinnedArtifact(application, runtime);
+    const session = application.getState().sessions[0];
+    const card = session.anchoredTeachingCards[0];
+    const claimId = card.currentRevision.claims![0].claimId;
+
+    const state = await application.recordClaimCheck(session.id, {
+      target: "teachingCard", targetId: card.id, claimId,
+      method: "reasoningReview", outcome: "supports",
+      summary: "A separate reasoning pass preserved the Hausdorff assumption and conclusion.",
+      evidence: { kind: "agentWork", sessionId: session.id, fromSequence: 1, toSequence: 2 }
+    });
+    expect(state.sessions[0].anchoredTeachingCards[0].currentRevision.claims![0]).toMatchObject({
+      claimOrigin: "modelGenerated",
+      verificationLevel: "reasoningReviewed",
+      verificationCurrency: "current",
+      verificationEvidence: [expect.objectContaining({
+        method: "reasoningReview", outcome: "supports",
+        reference: { kind: "agentWork", sessionId: session.id, fromSequence: 1, toSequence: 2 }
+      })]
+    });
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].anchoredTeachingCards[0].currentRevision)
+      .toEqual(state.sessions[0].anchoredTeachingCards[0].currentRevision);
+  });
+
+  it("rejects a successful Corroboration Pass that checked a different claim", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntimeAndExternalResearch(runtime, supportingExternalResearch());
+    const { artifactId, researchActionId } = await createCorroboratedPinnedArtifact(application, runtime);
+    const initial = application.getState().sessions[0].learningArtifacts[0];
+    const edited = await application.submit({
+      type: "editLearningArtifact", artifactId, content: "An unrelated theorem is true.",
+      claimEdits: [{ claimId: initial.currentRevision.claims[0].claimId, statement: "An unrelated theorem is true." }]
+    });
+    const artifact = edited.sessions[0].learningArtifacts[0];
+    await expect(application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId,
+      claimId: artifact.currentRevision.claims[0].claimId,
+      method: "sourceGrounded", outcome: "supports", summary: "The other theorem was corroborated.",
+      evidence: { kind: "researchEvidence", researchActionId }
+    })).rejects.toThrow("exact current claim");
+  });
+
+  it("keeps disagreement and semantic staleness visible in durable state and portable copies", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntimeAndExternalResearch(
+      runtime, supportingExternalResearch()
+    );
+    const { artifactId, researchActionId } = await createCorroboratedPinnedArtifact(application, runtime);
+    const artifact = application.getState().sessions[0].learningArtifacts[0];
+    const claimId = artifact.currentRevision.claims[0].claimId;
+    await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "sourceGrounded", outcome: "supports", summary: "The source states the same claim.",
+      evidence: { kind: "researchEvidence", researchActionId }
+    });
+
+    let state = await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "independentCorroboration", outcome: "disagrees",
+      summary: "The independent route requires a Hausdorff assumption missing from this claim.",
+      evidence: { kind: "agentWork", sessionId: artifact.originatingSessionId, fromSequence: 1, toSequence: 2 }
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "notIndependentlyChecked",
+      verificationGaps: [expect.objectContaining({
+        reason: "The independent route requires a Hausdorff assumption missing from this claim.",
+        affectedConclusion: artifact.currentRevision.claims[0].claimStatement
+      })],
+      verificationEscalation: {
+        recommended: true,
+        reasons: ["Independent checking disagreed with the claim."]
+      }
+    });
+
+    state = await application.submit({
+      type: "editLearningArtifact", artifactId,
+      content: "Learner-edited proof with a changed separation assumption.", mathematicalChange: "semantic"
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "notIndependentlyChecked",
+      verificationCurrency: "changedSinceCheck",
+      verificationEvidence: [
+        expect.objectContaining({ method: "sourceGrounded", currency: "changedSinceCheck" }),
+        expect.objectContaining({ method: "independentCorroboration", currency: "changedSinceCheck" })
+      ],
+      verificationGaps: [expect.objectContaining({ reason: expect.stringContaining("Hausdorff") })]
+    });
+    const portable = application.createArtifactPortableCopy(state.sessions[0].id, artifactId);
+    expect(portable.content).toContain("Verification Currency: Changed since check");
+    expect(portable.content).toContain("Verification Gap");
+    expect(portable.content).toContain("Hausdorff assumption");
+    expect(portable.content).toContain("Verification Escalation recommended");
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].learningArtifacts[0].currentRevision)
+      .toEqual(state.sessions[0].learningArtifacts[0].currentRevision);
+  });
+
+  it("retains current verification for formatting-only artifact edits and escalates observable risk", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntimeAndExternalResearch(runtime, supportingExternalResearch());
+    const { artifactId, researchActionId } = await createCorroboratedPinnedArtifact(application, runtime);
+    const artifact = application.getState().sessions[0].learningArtifacts[0];
+    const claimId = artifact.currentRevision.claims[0].claimId;
+    await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "sourceGrounded", outcome: "supports", summary: "The exact claim matches the source.",
+      evidence: { kind: "researchEvidence", researchActionId }
+    });
+    let state = await application.submit({
+      type: "editLearningArtifact", artifactId,
+      content: `${artifact.currentRevision.content}\n`,
+      mathematicalChange: "formattingOnly"
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "sourceGrounded",
+      verificationCurrency: "current",
+      verificationEvidence: [expect.objectContaining({ currency: "current" })]
+    });
+
+    state = await application.assessVerificationEscalation(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      riskFactors: ["nonTrivial", "weakSupport"], modelConfidence: 0.99
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "sourceGrounded",
+      verificationEscalation: {
+        recommended: true,
+        reasons: ["The claim is mathematically non-trivial.", "The available support is weak or sparse."]
+      }
+    });
+
+    const currentArtifact = state.sessions[0].learningArtifacts[0];
+    state = await application.submit({
+      type: "editLearningArtifact", artifactId,
+      content: `${currentArtifact.currentRevision.content}\nAdd a new mathematical inference.`,
+      claimEdits: currentArtifact.currentRevision.claims.map((claim) => ({
+        claimId: claim.claimId, statement: claim.claimStatement
+      }))
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "notIndependentlyChecked",
+      verificationCurrency: "changedSinceCheck",
+      verificationEvidence: [expect.objectContaining({
+        currency: "changedSinceCheck",
+        changedBecause: "The Artifact content changed without an exact claim-change classification."
+      })]
+    });
+  });
+
+  it("stales only the exact changed claim in a multi-claim Artifact revision", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Explain two steps",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    let state = await application.submit({
+      type: "submitSessionIntake", mathematics: "Every compact subset of a Hausdorff space is closed."
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "createSourceAnchor", sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "explain"
+    });
+    runtime.emitTeaching("Use a finite subcover, so the complement is open.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const card = application.getState().sessions[0].anchoredTeachingCards[0];
+    state = await application.submit({
+      type: "editTeachingCardClaims", cardId: card.id,
+      claimEdits: [
+        { claimId: card.currentRevision.claims![0].claimId, statement: "Use a finite subcover." },
+        { claimId: null, statement: "The complement is open." }
+      ]
+    });
+    expect(state.sessions[0].anchoredTeachingCards[0].currentRevision.claims).toMatchObject([
+      { claimStatement: "Use a finite subcover.", claimOrigin: "mixed" },
+      { claimStatement: "The complement is open.", claimOrigin: "learner",
+        claimOriginReferences: [expect.objectContaining({ kind: "learnerRevision" })] }
+    ]);
+    state = await application.submit({ type: "pinTeachingCardArtifact", cardId: card.id });
+    const artifact = state.sessions[0].learningArtifacts[0];
+    const artifactId = artifact.id;
+    for (const claim of artifact.currentRevision.claims) {
+      await application.recordClaimCheck(artifact.originatingSessionId, {
+        target: "learningArtifact", targetId: artifactId, claimId: claim.claimId,
+        method: "reasoningReview", outcome: "supports", summary: "A separate pass supports this step.",
+        evidence: { kind: "agentWork", sessionId: artifact.originatingSessionId, fromSequence: 1, toSequence: 2 }
+      });
+    }
+    const firstClaimId = artifact.currentRevision.claims[0].claimId;
+    const secondClaimId = artifact.currentRevision.claims[1].claimId;
+    const edited = await application.submit({
+      type: "editLearningArtifact",
+      artifactId,
+      content: "The complement is open.\n\nUse a finite subcover of the chosen neighbourhoods.\n\nThe proof uses Hausdorff separation.",
+      claimEdits: [
+        { claimId: secondClaimId, statement: "The complement is open." },
+        { claimId: firstClaimId, statement: "Use a finite subcover of the chosen neighbourhoods." },
+        { claimId: null, statement: "The proof uses Hausdorff separation." }
+      ]
+    });
+    const claims = edited.sessions[0].learningArtifacts[0].currentRevision.claims;
+    expect(claims).toHaveLength(3);
+    expect(claims[0]).toMatchObject({
+      claimId: secondClaimId,
+      claimStatement: "The complement is open.",
+      verificationLevel: "reasoningReviewed",
+      verificationCurrency: "current",
+      verificationEvidence: [expect.objectContaining({ currency: "current" })]
+    });
+    expect(claims[1]).toMatchObject({
+      claimStatement: "Use a finite subcover of the chosen neighbourhoods.",
+      verificationLevel: "notIndependentlyChecked",
+      verificationCurrency: "changedSinceCheck",
+      verificationEvidence: [expect.objectContaining({ currency: "changedSinceCheck" })]
+    });
+    expect(claims[1].claimId).not.toBe(firstClaimId);
+    expect(claims[2]).toMatchObject({
+      claimStatement: "The proof uses Hausdorff separation.",
+      claimOrigin: "learner",
+      verificationLevel: "notIndependentlyChecked",
+      verificationCurrency: "current",
+      verificationEvidence: []
+    });
   });
 
   it("stops in-flight synthesis on shutdown without stranding or partially persisting a revision", async () => {
@@ -974,7 +1355,10 @@ describe("Learning Application", () => {
       content: "Learner revision after consolidation."
     });
     expect(state.sessions[0].learningArtifacts[0]).toMatchObject({
-      currentRevision: { content: "Learner revision after consolidation.", claimOrigin: "mixed" },
+      currentRevision: {
+        content: "Learner revision after consolidation.",
+        claims: [expect.objectContaining({ claimOrigin: "mixed" })]
+      },
       revisions: [expect.objectContaining({ content: "Use compactness to select finitely many separating neighbourhoods." })]
     });
 
@@ -1048,6 +1432,9 @@ describe("Learning Application", () => {
       title: "Compactness proof",
       currentRevision: {
         id: "legacy-revision",
+        claimId: "legacy-revision",
+        claimStatement: "Use a finite subcover.",
+        claimOriginReferences: [],
         content: "Use a finite subcover.",
         claimOrigin: "modelGenerated",
         verificationLevel: "notIndependentlyChecked",
@@ -1067,6 +1454,13 @@ describe("Learning Application", () => {
       originatingSessionId: anchored.sessions[0].id,
       currentRevision: {
         id: "legacy-revision",
+        claims: [expect.objectContaining({
+          verificationLevel: "notIndependentlyChecked",
+          verificationCurrency: "current",
+          verificationEvidence: [],
+          verificationGaps: [],
+          verificationEscalation: { recommended: false, reasons: [] }
+        })],
         personalNoteContributions: [],
         provenance: { action: "promoted", createdAt: null, priorRevisionId: null }
       }
@@ -1476,9 +1870,11 @@ describe("Learning Application", () => {
       title: "Explain compact",
       currentRevision: {
         content: "Use a finite subcover to prove the complement is open.",
-        claimOrigin: "modelGenerated",
-        verificationLevel: "notIndependentlyChecked",
-        verificationCurrency: "current"
+        claims: [expect.objectContaining({
+          claimOrigin: "modelGenerated",
+          verificationLevel: "notIndependentlyChecked",
+          verificationCurrency: "current"
+        })]
       },
       revisions: [],
       sourceAnchorIds: [anchorId],
@@ -1495,7 +1891,10 @@ describe("Learning Application", () => {
       content: "Learner-edited finite-subcover proof."
     });
     expect(edited.sessions[0].learningArtifacts[0]).toMatchObject({
-      currentRevision: { content: "Learner-edited finite-subcover proof.", claimOrigin: "mixed" },
+      currentRevision: {
+        content: "Learner-edited finite-subcover proof.",
+        claims: [expect.objectContaining({ claimOrigin: "mixed" })]
+      },
       revisions: [{ id: originalArtifactRevisionId, content: "Use a finite subcover to prove the complement is open." }]
     });
     const restoredArtifact = await application.submit({
@@ -1878,6 +2277,72 @@ describe("Learning Application", () => {
       toRevisionId: currentRevisionId,
       status: "automatic"
     }));
+  });
+
+  it("marks source-dependent claim evidence stale when its Linked Source changes", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Audit compactness", scope: "Check one claim", initialTeachingDirection: "Compare assumptions",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const sourceAccess = new DeterministicSourceAccess();
+    const original = "Prove the orbit-stabilizer theorem for a finite group acting on a set.";
+    sourceAccess.contentBySourceName.set("proof.txt", original);
+    sourceAccess.indexBySourceName.set("proof.txt", textExtraction(original));
+    const launched = await launchWithRuntimeSourceAccessAndExternalResearch(
+      runtime, sourceAccess, supportingExternalResearch()
+    );
+    const { application } = launched;
+    const workspace = await application.submit({ type: "createWorkspace", name: "Topology" });
+    const mission = await application.submit({
+      type: "createMission", workspaceId: workspace.navigation.workspaceId, name: "Separation axioms"
+    });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "proof.txt", resourceType: "file", lastKnownPath: "/Users/learner/proof.txt",
+      canonicalPath: "/Users/learner/proof.txt", accessGrant: null, fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    await application.submit({
+      type: "startQuickStudy", mathematics: original,
+      location: { workspaceId: workspace.navigation.workspaceId, missionId: mission.navigation.missionId! }
+    });
+    await application.submit({ type: "addSourceToSession", sourceId: source.id });
+    const withCard = await application.submit({
+      type: "createSourceAnchor", sourceId: source.id,
+      selection: {
+        kind: "text", startOffset: 10, endOffset: 34, exactText: "orbit-stabilizer theorem",
+        prefix: "Prove the ", suffix: " for a finit"
+      },
+      paletteAction: "explain"
+    });
+    runtime.emitTeaching(withCard.sessions[0].corroborationPass!.currentUse.conclusion);
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const card = application.getState().sessions[0].anchoredTeachingCards[0];
+    const pinned = await application.submit({ type: "pinTeachingCardArtifact", cardId: card.id });
+    const artifact = pinned.sessions[0].learningArtifacts[0];
+    await application.recordClaimCheck(pinned.sessions[0].id, {
+      target: "learningArtifact", targetId: artifact.id, claimId: artifact.currentRevision.claims[0].claimId,
+      method: "sourceGrounded", outcome: "supports",
+      summary: "The exact assumptions and conclusion match the cited Source Revision.",
+      evidence: {
+        kind: "researchEvidence",
+        researchActionId: withCard.sessions[0].corroborationPass!.researchActionId!
+      }
+    });
+
+    sourceAccess.fingerprint = { size: 72, modifiedAtMs: 5678 };
+    sourceAccess.contentBySourceName.set("proof.txt", `Recall: ${original}`);
+    await application.openLinkedSource(source.id);
+
+    expect(application.getState().sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      verificationLevel: "notIndependentlyChecked",
+      verificationCurrency: "changedSinceCheck",
+      verificationEvidence: [expect.objectContaining({
+        method: "sourceGrounded",
+        currency: "changedSinceCheck",
+        changedBecause: "Source proof.txt changed to a new Source Revision."
+      })]
+    });
   });
 
   it("keeps uncertain and missing matches unresolved until the learner confirms a replacement, across relaunch", async () => {
@@ -5621,6 +6086,65 @@ async function createPinnedArtifact(application: LearningApplication, runtime: D
   return { artifactId: artifact.id, revision: structuredClone(artifact.currentRevision) };
 }
 
+async function createCorroboratedPinnedArtifact(
+  application: LearningApplication,
+  runtime: DeterministicModelRuntime
+) {
+  let state = await application.submit({
+    type: "submitSessionIntake",
+    mathematics: "Prove the orbit-stabilizer theorem for a finite group acting on a set."
+  });
+  runtime.completeTeaching();
+  await application.waitForModelWork();
+  const source = state.sources.find((candidate) => candidate.id === state.sessions[0].sourceIds[0])!;
+  if (source.kind !== "managedAsset") throw new Error("Expected the typed mathematics source fixture.");
+  const exactText = "orbit-stabilizer theorem";
+  const startOffset = source.content.indexOf(exactText);
+  state = await application.submit({
+    type: "createSourceAnchor", sourceId: source.id,
+    selection: {
+      kind: "text", startOffset, endOffset: startOffset + exactText.length, exactText,
+      prefix: source.content.slice(Math.max(0, startOffset - 6), startOffset),
+      suffix: source.content.slice(startOffset + exactText.length, startOffset + exactText.length + 12)
+    },
+    paletteAction: "explain"
+  });
+  const pass = state.sessions[0].corroborationPass!;
+  runtime.emitTeaching(pass.currentUse.conclusion);
+  runtime.completeTeaching();
+  await application.waitForModelWork();
+  state = await application.submit({
+    type: "pinTeachingCardArtifact", cardId: application.getState().sessions[0].anchoredTeachingCards[0].id
+  });
+  const artifact = state.sessions[0].learningArtifacts[0];
+  return {
+    artifactId: artifact.id,
+    revision: structuredClone(artifact.currentRevision),
+    researchActionId: pass.researchActionId!
+  };
+}
+
+function supportingExternalResearch(): DeterministicExternalResearch {
+  const research = new DeterministicExternalResearch();
+  research.result = {
+    title: "Authoritative corroboration",
+    summary: "The assumptions and conclusion agree with an authoritative reference.",
+    sources: [{ title: "Authoritative algebra reference", url: "https://example.test/orbit-stabilizer" }],
+    corroboration: {
+      relevantResult: "Orbit-stabilizer theorem",
+      errataCheck: "noneFound",
+      proposedApproachDeparture: false,
+      evidence: [authoritativeEvidence({
+        sourceTitle: "Authoritative algebra reference",
+        sourceUrl: "https://example.test/orbit-stabilizer",
+        proofApproaches: ["Identify the orbit with cosets of the stabilizer"],
+        detail: "The group-action assumptions and orbit-cardinality conclusion match the current use."
+      })]
+    }
+  };
+  return research;
+}
+
 class DeterministicSourceAccess implements LocalSourceAccess {
   readonly openedSourceIds: string[] = [];
   readonly indexedSourceIds: string[] = [];
@@ -5729,6 +6253,14 @@ class DeterministicExternalResearch implements ExternalResearch {
       ));
     }
     return structuredClone(this.resultsByDepth.get(request.researchDepth) ?? this.result);
+  }
+}
+
+class DeterministicFormalVerificationAuthority implements FormalVerificationAuthority {
+  readonly receipts = new Map<string, AcceptedFormalVerification>();
+
+  async resolveAcceptedReceipt(receiptId: string): Promise<AcceptedFormalVerification | null> {
+    return structuredClone(this.receipts.get(receiptId) ?? null);
   }
 }
 

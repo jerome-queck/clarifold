@@ -287,7 +287,7 @@ The provenance dimension identifying whether an exact mathematical claim or revi
 _Avoid_: Verification Level, ownership, correctness
 
 **Verification Level**:
-The assurance dimension describing whether an exact mathematical claim is Not independently checked, Independently checked, or Formally verified, without treating the level itself as a correctness guarantee.
+The assurance dimension describing whether an exact mathematical claim is Not independently checked, Reasoning-reviewed, Source-grounded, Independently corroborated, or Formally verified, without treating the level itself as a correctness guarantee.
 _Avoid_: Claim Origin, confidence score, correctness guarantee
 
 **Verification Currency**:
@@ -302,9 +302,17 @@ _Avoid_: Not independently checked, verified, reliable by default
 A Verification Level indicating that no qualifying independent examination applies to the exact current claim revision, including after a semantic change invalidates the currency of prior evidence.
 _Avoid_: Model-generated, false, unchecked source origin
 
-**Independently checked**:
-A Verification Level indicating that a separate agent, tool, or authoritative source examined the exact mathematical claim and found no unresolved conflict; it is not a proof of correctness.
-_Avoid_: Formally verified, proven
+**Reasoning-reviewed**:
+A Verification Level indicating that a separate reasoning pass examined the exact claim and found no unresolved conflict. It records review, not proof of correctness.
+_Avoid_: Model self-confidence, Source-grounded, proven
+
+**Source-grounded**:
+A Verification Level indicating that the exact claim is consistent with the cited source under the compared assumptions and conclusion. It does not prove that either the claim or source is correct.
+_Avoid_: Citation attached, Independently corroborated, proven
+
+**Independently corroborated**:
+A Verification Level indicating that a separate reasoning attempt or independent evidence supports the exact claim without unresolved disagreement; it is not a proof of correctness.
+_Avoid_: Source-grounded, Formally verified, proven
 
 **Formally verified**:
 A Verification Level reserved for the exact formal statement accepted by an identified proof checker under a recorded verification environment.
