@@ -21,5 +21,5 @@ jobs:
           path: |
             node_modules/.cache/quick-study-lean
             dist/verifiers
-          key: bundled-lean-4.29.1-mathlib-4.29.1-foundations-v1-${{ runner.arch }}
+          key: bundled-lean-4.29.1-mathlib-4.29.1-foundations-v2-${{ runner.arch }}
       - run: npm run verify

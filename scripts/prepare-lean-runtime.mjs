@@ -63,7 +63,7 @@ await run(lake, ["exe", "cache", "get", ...specification.mathlibModules], false,
 
 await rm(staging, { recursive: true, force: true });
 await copySelectedLeanRuntime(leanSource, staging);
-await copyMathlibSupport(lake, leanSource, mathlibDirectory, staging);
+await copyMathlibSupport(mathlibDirectory, staging);
 await chmod(join(staging, "bin", "lean"), 0o755);
 await mkdir(join(staging, "app-support"), { recursive: true });
 await writeFile(join(staging, "app-support", "QuickStudyNatAddZero.lean"), proofSource(), "utf8");
@@ -114,66 +114,33 @@ async function copySelectedLeanRuntime(sourceRoot, destinationRoot) {
   const leanLibrary = join(sourceRoot, "lib", "lean");
   for (const entry of await readdir(leanLibrary, { withFileTypes: true })) {
     if (entry.isFile() && /^lib.*shared.*\.dylib$/.test(entry.name)) paths.push(join("lib", "lean", entry.name));
-    if (entry.isFile() && (entry.name.startsWith("Init.olean") || entry.name === "Init.ir")) paths.push(join("lib", "lean", entry.name));
   }
-  await collectCompiledFiles(join(leanLibrary, "Init"), sourceRoot, paths);
   for (const path of paths) await copyPath(join(sourceRoot, path), join(destinationRoot, path));
+  await copyCompiledTree(leanLibrary, leanLibrary, join(destinationRoot, "lib", "lean"));
 }
 
-async function copyMathlibSupport(lakePath, leanRoot, mathlibRoot, destinationRoot) {
-  const roots = [{
-    source: join(leanRoot, "src", "lean"),
-    library: join(leanRoot, "lib", "lean")
-  }, {
-    source: mathlibRoot,
-    library: join(mathlibRoot, ".lake", "build", "lib", "lean")
-  }];
+async function copyMathlibSupport(mathlibRoot, destinationRoot) {
+  const libraries = [join(mathlibRoot, ".lake", "build", "lib", "lean")];
   const packagesDirectory = join(mathlibRoot, ".lake", "packages");
   for (const entry of await readdir(packagesDirectory, { withFileTypes: true })) {
-    if (entry.isDirectory()) roots.push({
-      source: join(packagesDirectory, entry.name),
-      library: join(packagesDirectory, entry.name, ".lake", "build", "lib", "lean")
-    });
+    if (entry.isDirectory()) libraries.push(join(packagesDirectory, entry.name, ".lake", "build", "lib", "lean"));
   }
-
-  const queue = specification.mathlibModules.map((module) => join(mathlibRoot, `${module.replaceAll(".", "/")}.lean`));
-  const visited = new Set();
-  while (queue.length > 0) {
-    const source = queue.shift();
-    if (!source || visited.has(source)) continue;
-    visited.add(source);
-    const ownRoot = roots.find((candidate) => source.startsWith(`${candidate.source}/`));
-    if (ownRoot) await copyModuleArtifacts(join(ownRoot.library,
-      relative(ownRoot.source, source).replace(/\.lean$/, ".olean")), destinationRoot, roots);
-    const output = await run(lakePath, ["env", "lean", "--deps", source], true, mathlibRoot);
-    for (const dependency of output.split("\n").map((line) => line.trim()).filter(Boolean)) {
-      await copyModuleArtifacts(dependency, destinationRoot, roots);
-      const dependencyRoot = roots.find((candidate) => dependency.startsWith(`${candidate.library}/`));
-      if (!dependencyRoot || (dependencyRoot.source === join(leanRoot, "src", "lean")
-        && relative(dependencyRoot.library, dependency).startsWith("Init/"))) continue;
-      const dependencySource = join(dependencyRoot.source,
-        relative(dependencyRoot.library, dependency).replace(/\.olean$/, ".lean"));
-      try {
-        await access(dependencySource);
-        if (!visited.has(dependencySource)) queue.push(dependencySource);
-      } catch {
-        // Some generated modules have no source counterpart and are already copied as compiled artifacts.
-      }
+  for (const library of libraries) {
+    try {
+      await copyCompiledTree(library, library, join(destinationRoot, "lib", "lean"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
     }
   }
   await copyPath(join(mathlibRoot, "LICENSE"), join(destinationRoot, "mathlib-LICENSE"));
 }
 
-async function copyModuleArtifacts(modulePath, destinationRoot, roots) {
-  const moduleRoot = roots.find((candidate) => modulePath.startsWith(`${candidate.library}/`));
-  if (!moduleRoot || !modulePath.endsWith(".olean")) return;
-  const stem = modulePath.slice(0, -".olean".length);
-  for (const suffix of [".olean", ".olean.private", ".olean.server", ".ir"]) {
-    const source = `${stem}${suffix}`;
-    try {
-      await copyPath(source, join(destinationRoot, "lib", "lean", relative(moduleRoot.library, source)));
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+async function copyCompiledTree(directory, libraryRoot, destinationRoot) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await copyCompiledTree(path, libraryRoot, destinationRoot);
+    else if ([".olean", ".olean.private", ".olean.server", ".ir"].some((suffix) => entry.name.endsWith(suffix))) {
+      await copyPath(path, join(destinationRoot, relative(libraryRoot, path)));
     }
   }
 }
@@ -183,14 +150,6 @@ async function copyPath(from, to) {
   const sourceStat = await stat(from);
   if (sourceStat.isDirectory()) await mkdir(to, { recursive: true });
   else await copyFile(from, to);
-}
-
-async function collectCompiledFiles(directory, sourceRoot, paths) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) await collectCompiledFiles(path, sourceRoot, paths);
-    else if (entry.name.includes(".olean") || entry.name.endsWith(".ir")) paths.push(relative(sourceRoot, path));
-  }
 }
 
 async function fileHasDigest(path, expected) {
