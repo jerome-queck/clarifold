@@ -516,8 +516,7 @@ describe("Linked Source recovery", () => {
     expect(screen.getByText(/Historical content unavailable/).textContent).toContain("Source Index and Source Fingerprint are not backups");
     await user.click(screen.getByRole("button", { name: "Locate Linked Source proof.txt again" }));
     expect(window.quickStudy.locateLinkedSource).toHaveBeenCalledWith("linked-source-1");
-    await user.click(screen.getByRole("button", { name: "Preserve current Source Revision for proof.txt" }));
-    expect(window.quickStudy.preserveSourceSnapshot).toHaveBeenCalledWith("linked-source-1");
+    expect(screen.queryByRole("button", { name: "Preserve current Source Revision for proof.txt" })).toBeNull();
   });
 });
 

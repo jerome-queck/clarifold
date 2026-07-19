@@ -283,6 +283,36 @@ describe("macOS source access", () => {
     });
   });
 
+  it("preserves every supported Primary Folder file in an exact snapshot manifest", async () => {
+    const sourceDependencies = dependencies();
+    sourceDependencies.stat.mockImplementation(async (path: string) => ({
+      size: path.endsWith("course") ? 64 : 8,
+      mtimeMs: 1234,
+      isFile: () => !path.endsWith("course"),
+      isDirectory: () => path.endsWith("course")
+    }));
+    sourceDependencies.readdir.mockResolvedValue(["diagram.png", "notes.txt", "private.bin"]);
+    sourceDependencies.readFile.mockImplementation(async (path: string) => Buffer.from(`bytes:${path.split("/").at(-1)}`));
+    const source = {
+      ...linkedFile(),
+      name: "course",
+      resourceType: "folder" as const,
+      link: { ...linkedFile().link, lastKnownPath: "/Users/learner/course" }
+    };
+
+    const snapshot = await new MacOsSourceAccess(sourceDependencies).snapshot(source);
+    const manifest = JSON.parse(Buffer.from(snapshot.contentBase64, "base64").toString("utf8"));
+
+    expect(manifest).toEqual({
+      format: "quick-study-folder-snapshot-v1",
+      files: [
+        { path: "diagram.png", contentBase64: Buffer.from("bytes:diagram.png").toString("base64") },
+        { path: "notes.txt", contentBase64: Buffer.from("bytes:notes.txt").toString("base64") }
+      ]
+    });
+    expect(sourceDependencies.readFile).not.toHaveBeenCalledWith("/Users/learner/course/private.bin");
+  });
+
   it("extracts searchable text, equation geometry, page geometry, and a small thumbnail", async () => {
     const sourceDependencies = dependencies();
     sourceDependencies.readFile.mockResolvedValue(Buffer.from("First page has $x^2$.\fSecond page proves compactness."));

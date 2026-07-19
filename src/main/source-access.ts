@@ -125,18 +125,17 @@ export class MacOsSourceAccess implements LocalSourceAccess {
           ...(view.linkRefresh ? { linkRefresh: view.linkRefresh } : {})
         };
       }
-      const files = (await this.readBoundedFolderFiles(
-        location.path,
-        (name) => sourceMediaType(name) === "text/plain",
-        "This folder is too large to preserve as a Source Snapshot."
-      )).map((file) => ({ path: file.path, contentBase64: file.content.toString("base64") }));
+      const revision = await this.readSupportedFolderRevision(location.path);
       const afterSnapshot = await this.readAtLocation(source, location);
       if (!sameFingerprint(view.fingerprint, afterSnapshot.fingerprint)) {
         throw new Error("This source changed while its Source Snapshot was being preserved. Retry after the source is stable.");
       }
       return {
         mediaType: "application/vnd.quick-study.folder-snapshot+json" as const,
-        contentBase64: Buffer.from(JSON.stringify({ format: "quick-study-folder-snapshot-v1", files })).toString("base64"),
+        contentBase64: Buffer.from(JSON.stringify({
+          format: "quick-study-folder-snapshot-v1",
+          files: revision.files
+        })).toString("base64"),
         fingerprint: view.fingerprint,
         ...(view.linkRefresh ? { linkRefresh: view.linkRefresh } : {})
       };
@@ -173,15 +172,17 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       throw new Error("This source is too large for the read-only preview.");
     }
     const mediaType = source.resourceType === "folder" ? "text/plain" : sourceMediaType(source.name);
-    const content = source.resourceType === "folder"
-      ? await this.readSupportedFolder(location.path)
-      : sourceContent(await this.dependencies.readFile(location.path), mediaType);
+    const folderRevision = source.resourceType === "folder"
+      ? await this.readSupportedFolderRevision(location.path)
+      : null;
+    const content = folderRevision?.preview
+      ?? sourceContent(await this.dependencies.readFile(location.path), mediaType);
     return {
       sourceId: source.id,
       resourceType: source.resourceType,
       content,
       mediaType,
-      fingerprint: fingerprint(stat, source.resourceType === "folder" ? content : undefined),
+      fingerprint: fingerprint(stat, folderRevision?.fingerprintContent),
       ...(location.refreshed ? {
         linkRefresh: {
           lastKnownPath: location.path,
@@ -194,13 +195,23 @@ export class MacOsSourceAccess implements LocalSourceAccess {
     };
   }
 
-  private async readSupportedFolder(rootPath: string): Promise<string> {
+  private async readSupportedFolderRevision(rootPath: string): Promise<{
+    preview: string;
+    fingerprintContent: string;
+    files: Array<{ path: string; contentBase64: string }>;
+  }> {
     const files = await this.readBoundedFolderFiles(
       rootPath,
-      (name) => sourceMediaType(name) === "text/plain",
+      (name) => sourceMediaType(name) !== "application/octet-stream",
       "This folder's supported files are too large for the read-only preview."
     );
-    return files.map((file) => `--- ${file.path} ---\n${file.content.toString("utf8")}`).join("\n\n");
+    const snapshotFiles = files.map((file) => ({ path: file.path, contentBase64: file.content.toString("base64") }));
+    return {
+      preview: files.filter((file) => sourceMediaType(file.path) === "text/plain")
+        .map((file) => `--- ${file.path} ---\n${file.content.toString("utf8")}`).join("\n\n"),
+      fingerprintContent: JSON.stringify(snapshotFiles),
+      files: snapshotFiles
+    };
   }
 
   private async readBoundedFolderFiles(
@@ -253,7 +264,9 @@ export class MacOsSourceAccess implements LocalSourceAccess {
       accessGrant: bookmarkData
         ? { kind: "securityScopedBookmark", bookmarkData }
         : null,
-      fingerprint: fingerprint(stat, resourceType === "folder" ? await this.readSupportedFolder(path) : undefined)
+      fingerprint: fingerprint(stat, resourceType === "folder"
+        ? (await this.readSupportedFolderRevision(path)).fingerprintContent
+        : undefined)
     };
   }
 }

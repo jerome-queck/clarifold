@@ -326,7 +326,7 @@ export interface SourceIndexExtraction {
 
 export interface SourceIndexExtractionResult extends SourceIndexExtraction {
   fingerprint: SourceFingerprint;
-  linkRefresh?: Pick<SelectedLocalSource, "lastKnownPath" | "canonicalPath" | "accessGrant">;
+  linkRefresh?: SourceLinkRefresh;
 }
 
 export interface SourceIndexSummary {
@@ -426,6 +426,8 @@ export interface SelectedLocalSource {
   fingerprint: SourceFingerprint;
 }
 
+export type SourceLinkRefresh = Pick<SelectedLocalSource, "lastKnownPath" | "canonicalPath" | "accessGrant">;
+
 export interface LinkedSource {
   id: string;
   kind: "linkedSource";
@@ -473,7 +475,7 @@ export interface AvailableLinkedSourceView {
   content: string;
   mediaType: "text/plain" | "application/pdf" | "image/png" | "image/jpeg" | "inode/directory" | "application/octet-stream";
   fingerprint: SourceFingerprint;
-  linkRefresh?: Pick<SelectedLocalSource, "lastKnownPath" | "canonicalPath" | "accessGrant">;
+  linkRefresh?: SourceLinkRefresh;
 }
 
 export interface LocalSourceAccess {
@@ -483,7 +485,7 @@ export interface LocalSourceAccess {
     mediaType: ManagedAsset["mediaType"];
     contentBase64: string;
     fingerprint: SourceFingerprint;
-    linkRefresh?: Pick<SelectedLocalSource, "lastKnownPath" | "canonicalPath" | "accessGrant">;
+    linkRefresh?: SourceLinkRefresh;
   }>;
 }
 
@@ -737,6 +739,7 @@ export class LearningApplication {
   private modelRuntime: ModelRuntime | null;
   private persistence = Promise.resolve();
   private sourceIndexWork = Promise.resolve();
+  private sourceSnapshotWork = Promise.resolve();
   private readonly modelWorks = new Map<string, {
     controller: AbortController;
     promise: Promise<unknown>;
@@ -1254,7 +1257,13 @@ export class LearningApplication {
     return this.getState();
   }
 
-  async preserveSourceSnapshot(sourceId: string): Promise<LearningApplicationState> {
+  preserveSourceSnapshot(sourceId: string): Promise<LearningApplicationState> {
+    const result = this.sourceSnapshotWork.catch(() => undefined).then(() => this.preserveSourceSnapshotNow(sourceId));
+    this.sourceSnapshotWork = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async preserveSourceSnapshotNow(sourceId: string): Promise<LearningApplicationState> {
     let source = this.state.sources.find(
       (candidate): candidate is LinkedSource => candidate.id === sourceId && candidate.kind === "linkedSource"
     );
@@ -1292,11 +1301,20 @@ export class LearningApplication {
   }
 
   async openLinkedSource(sourceId: string): Promise<LinkedSourceView> {
-    const opened = await this.readLinkedSourceNow(sourceId);
-    if (opened.view.status === "available" && opened.changed) {
-      await this.serializeSourceIndexOperation(() => this.indexSourceNow(sourceId, true));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const opened = await this.readLinkedSourceNow(sourceId);
+      if (opened.view.status === "unavailable") return opened.view;
+      if (opened.changed) await this.serializeSourceIndexOperation(() => this.indexSourceNow(sourceId, true));
+      const source = this.state.sources.find(
+        (candidate): candidate is LinkedSource => candidate.id === sourceId && candidate.kind === "linkedSource"
+      )!;
+      if (sameFingerprint(opened.view.fingerprint, source.link.fingerprint)) return opened.view;
     }
-    return opened.view;
+    return {
+      status: "unavailable",
+      sourceId,
+      error: "This source kept changing while it was being opened. Retry after the source is stable."
+    };
   }
 
   private async readLinkedSourceNow(sourceId: string): Promise<{ view: LinkedSourceView; changed: boolean }> {
@@ -5098,7 +5116,7 @@ function validAccessGrant(value: unknown): value is LocalSourceAccessGrant {
 
 function validSourceLinkRefresh(
   value: unknown
-): value is Pick<SelectedLocalSource, "lastKnownPath" | "canonicalPath" | "accessGrant"> {
+): value is SourceLinkRefresh {
   return isRecord(value) && typeof value.lastKnownPath === "string" && isAbsolute(value.lastKnownPath)
     && typeof value.canonicalPath === "string" && isAbsolute(value.canonicalPath)
     && validAccessGrant(value.accessGrant);

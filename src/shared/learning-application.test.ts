@@ -1898,6 +1898,59 @@ describe("Learning Application", () => {
     expect(indexed.sourceIndexes).toContainEqual(expect.objectContaining({ sourceId: source.id, status: "ready" }));
   });
 
+  it("returns a Source Layer bound to the final Source Revision after rebuilding", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    sourceAccess.indexBySourceName.set("lemma.txt", textExtraction("Final lemma."));
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Algebra" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "lemma.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/lemma.txt",
+      canonicalPath: "/Users/learner/lemma.txt",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    sourceAccess.fingerprint = { size: 72, modifiedAtMs: 5678 };
+    sourceAccess.indexFingerprint = { size: 80, modifiedAtMs: 6789 };
+
+    const opened = await application.openLinkedSource(source.id);
+
+    expect(opened).toMatchObject({ status: "available", fingerprint: { size: 80, modifiedAtMs: 6789 } });
+    expect(application.getState().sources.find((candidate) => candidate.id === source.id)).toMatchObject({
+      link: { fingerprint: { size: 80, modifiedAtMs: 6789 } }
+    });
+  });
+
+  it("serializes concurrent requests to preserve one Source Revision", async () => {
+    const sourceAccess = new DeterministicSourceAccess();
+    const { application } = await launchWithSourceAccess(sourceAccess);
+    const workspace = await application.submit({ type: "createWorkspace", name: "Analysis" });
+    const linked = await application.linkExternalAttachment(workspace.navigation.workspaceId, {
+      name: "proof.txt",
+      resourceType: "file",
+      lastKnownPath: "/Users/learner/proof.txt",
+      canonicalPath: "/Users/learner/proof.txt",
+      accessGrant: null,
+      fingerprint: sourceAccess.fingerprint
+    });
+    const source = linked.sources.find((candidate): candidate is LinkedSource => candidate.kind === "linkedSource")!;
+    let releaseSnapshot!: () => void;
+    sourceAccess.snapshotGate = new Promise((resolve) => { releaseSnapshot = resolve; });
+
+    const first = application.preserveSourceSnapshot(source.id);
+    await vi.waitFor(() => expect(sourceAccess.activeSnapshots).toBe(1));
+    const second = application.preserveSourceSnapshot(source.id);
+    await Promise.resolve();
+    expect(sourceAccess.activeSnapshots).toBe(1);
+    releaseSnapshot();
+    const [, state] = await Promise.all([first, second]);
+
+    expect(sourceAccess.snapshotSourceIds).toEqual([source.id]);
+    expect(state.sources.filter((candidate) => candidate.kind === "managedAsset")).toHaveLength(1);
+  });
+
   it("indexes, searches, clears, and rebuilds source content without disturbing anchors or canonical records", async () => {
     const sourceAccess = new DeterministicSourceAccess();
     sourceAccess.contentBySourceName.set(
@@ -3828,6 +3881,8 @@ class DeterministicSourceAccess implements LocalSourceAccess {
   indexGate: Promise<void> | null = null;
   activeIndexExtractions = 0;
   maxConcurrentIndexExtractions = 0;
+  snapshotGate: Promise<void> | null = null;
+  activeSnapshots = 0;
   snapshotContent = "Every open cover has a finite subcover.";
 
   async read(source: LinkedSource) {
@@ -3852,7 +3907,9 @@ class DeterministicSourceAccess implements LocalSourceAccess {
       if (this.indexGate) await this.indexGate;
       const extraction = this.indexBySourceName.get(source.name);
       if (!extraction) throw new Error("This source does not have indexable content.");
-      return { ...structuredClone(extraction), fingerprint: this.indexFingerprint ?? this.fingerprint };
+      const extractionFingerprint = this.indexFingerprint ?? this.fingerprint;
+      if (this.indexFingerprint) this.fingerprint = this.indexFingerprint;
+      return { ...structuredClone(extraction), fingerprint: extractionFingerprint };
     } finally {
       this.activeIndexExtractions -= 1;
     }
@@ -3861,12 +3918,18 @@ class DeterministicSourceAccess implements LocalSourceAccess {
   async snapshot(source: LinkedSource) {
     this.snapshotSourceIds.push(source.id);
     if (this.error) throw this.error;
-    return {
-      mediaType: "text/plain" as const,
-      contentBase64: Buffer.from(this.snapshotContent).toString("base64"),
-      fingerprint: this.fingerprint,
-      ...(this.snapshotLinkRefresh ? { linkRefresh: this.snapshotLinkRefresh } : {})
-    };
+    this.activeSnapshots += 1;
+    try {
+      if (this.snapshotGate) await this.snapshotGate;
+      return {
+        mediaType: "text/plain" as const,
+        contentBase64: Buffer.from(this.snapshotContent).toString("base64"),
+        fingerprint: this.fingerprint,
+        ...(this.snapshotLinkRefresh ? { linkRefresh: this.snapshotLinkRefresh } : {})
+      };
+    } finally {
+      this.activeSnapshots -= 1;
+    }
   }
 }
 

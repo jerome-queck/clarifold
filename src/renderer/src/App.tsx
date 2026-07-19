@@ -400,8 +400,9 @@ function SourceGroup({ title, empty, sources, revisions, assets, onOpen, onLocat
               {source.link.accessStatus === "unavailable" && <button className="text-button"
                 aria-label={`Locate Linked Source ${source.name} again`}
                 onClick={() => void onLocate(source.id)}>Locate again</button>}
-              <button className="text-button" aria-label={`Preserve current Source Revision for ${source.name}`}
-                onClick={() => void onPreserveSnapshot(source.id)}>Preserve source snapshot</button>
+              {source.link.accessStatus === "available" && <button className="text-button"
+                aria-label={`Preserve current Source Revision for ${source.name}`}
+                onClick={() => void onPreserveSnapshot(source.id)}>Preserve source snapshot</button>}
               <ul aria-label={`Source Revisions for ${source.name}`}>
                 {revisions.filter((revision) => revision.sourceId === source.id).map((revision) => {
                   const snapshot = revision.snapshotAssetId
