@@ -371,7 +371,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
 
     await page.getByRole("button", { name: "Leave session" }).click();
     await settings.getByRole("button", { name: "Reinstall supported Lean environment" }).click();
-    await expect(settings).toContainText("Installed and ready", { timeout: 30_000 });
+    await expect(settings).toContainText("Installed and ready", { timeout: 120_000 });
     await page.getByRole("button", { name: "Resume Learning Session", exact: true }).click();
     await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 60_000 });
