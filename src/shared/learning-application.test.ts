@@ -42,6 +42,125 @@ describe("Learning Application", () => {
     };
   }
 
+  it("records skippable reasoning checks as contextual Understanding Evidence and explains the adaptive next Teaching Move", async () => {
+    const { application, dataDirectory } = await launch();
+    let state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Show that a compact subset of a Hausdorff space is closed."
+    });
+    const session = state.sessions[0];
+
+    state = await application.submit({
+      type: "offerUnderstandingCheck",
+      kind: "apply",
+      prompt: "Which separation property would you use for a point outside the compact set, and why?",
+      concept: "compactness in Hausdorff spaces",
+      representation: "proofStructural"
+    });
+    const check = state.sessions[0].understandingChecks[0];
+    expect(check).toMatchObject({
+      kind: "apply",
+      status: "offered",
+      concept: "compactness in Hausdorff spaces",
+      representation: "proofStructural"
+    });
+
+    state = await application.submit({
+      type: "recordUnderstandingEvidence",
+      checkId: check.id,
+      response: "I would use Hausdorff separation, but I do not see how to make finitely many neighbourhoods.",
+      interpretation: "specificGap"
+    });
+    const adapted = state.sessions[0];
+    expect(adapted.understandingEvidence).toHaveLength(1);
+    expect(adapted.understandingEvidence[0]).toMatchObject({
+      checkId: check.id,
+      concept: "compactness in Hausdorff spaces",
+      task: adapted.sessionTarget,
+      representation: "proofStructural",
+      elicitingTeachingMoveId: adapted.teachingMoves[0].id,
+      interpretation: "specificGap"
+    });
+    expect(adapted.currentTeachingMove).toMatchObject({
+      kind: "demonstrate",
+      reason: expect.stringContaining("specific gap")
+    });
+
+    state = await application.submit({
+      type: "offerUnderstandingCheck",
+      kind: "diagnose",
+      prompt: "Identify the missing step in this proof outline.",
+      concept: "compactness in Hausdorff spaces",
+      representation: "proofStructural"
+    });
+    const skippable = state.sessions[0].understandingChecks[1];
+    state = await application.submit({ type: "skipUnderstandingCheck", checkId: skippable.id });
+    expect(state.sessions[0].understandingChecks[1].status).toBe("skipped");
+    expect(state.sessions[0].understandingEvidence).toHaveLength(1);
+
+    const relaunched = await LearningApplication.launch(dataDirectory);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0].understandingEvidence).toEqual(state.sessions[0].understandingEvidence);
+    expect(relaunched.getState().sessions[0].understandingChecks[1].status).toBe("skipped");
+  });
+
+  it("keeps representation preferences contextual and lets the learner correct adaptation or test another route", async () => {
+    const { application } = await launch();
+    let state = await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Explain why every compact subset of a Hausdorff space is closed."
+    });
+    state = await application.submit({
+      type: "offerUnderstandingCheck",
+      kind: "explain",
+      prompt: "Explain the finite-subcover step in your own words.",
+      concept: "compactness",
+      representation: "proofStructural"
+    });
+    const checkId = state.sessions[0].understandingChecks[0].id;
+    state = await application.submit({
+      type: "recordUnderstandingEvidence",
+      checkId,
+      response: "I can explain the finite-subcover step.",
+      interpretation: "secureUnderstanding"
+    });
+    expect(state.sessions[0].currentTeachingMove).toMatchObject({ kind: "apply" });
+
+    state = await application.submit({
+      type: "startTeachingExperiment",
+      route: "visual",
+      reason: "Try a neighbourhood picture before another proof-structural explanation."
+    });
+    const experiment = state.sessions[0].teachingExperiments[0];
+    expect(state.sessions[0].currentTeachingMove).toMatchObject({ kind: "visualize", experimentId: experiment.id });
+
+    state = await application.submit({
+      type: "completeTeachingExperiment",
+      experimentId: experiment.id,
+      outcome: "helpful"
+    });
+    expect(state.sessions[0].interactionPreferences[0]).toMatchObject({
+      route: "visual",
+      context: { concept: "compactness", task: state.sessions[0].sessionTarget },
+      status: "supported"
+    });
+
+    state = await application.submit({
+      type: "correctUnderstandingEvidence",
+      evidenceId: state.sessions[0].understandingEvidence[0].id,
+      interpretation: "excessivePace",
+      correction: "I recognized the step, but the pace hid why compactness supplies the finite cover."
+    });
+    expect(state.sessions[0].understandingEvidence[0]).toMatchObject({
+      interpretation: "excessivePace",
+      learnerCorrection: "I recognized the step, but the pace hid why compactness supplies the finite cover."
+    });
+    expect(state.sessions[0].currentTeachingMove).toMatchObject({
+      kind: "slowDown",
+      reason: expect.stringContaining("corrected")
+    });
+  });
+
   async function launchWithRuntime(runtime: ModelRuntime) {
     const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
     dataDirectories.push(dataDirectory);
