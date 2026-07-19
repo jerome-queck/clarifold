@@ -65,13 +65,18 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       throw new Error("The staged Lean environment did not match the signed application payload.");
     }
     await this.validate(stagingPath);
-    await makeTreeReadOnly(this.registryPath, stagingPath);
+    // Keep the staging root writable until it has been renamed. Hosted macOS
+    // runners reject renaming a directory after its own write bit is removed,
+    // even though the registry parent remains writable.
+    await makeTreeReadOnly(this.registryPath, stagingPath, false);
     const backupPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
     const hadActive = await exists(this.environmentPath);
     if (hadActive) await rename(this.environmentPath, backupPath);
     try {
       await rename(stagingPath, this.environmentPath);
+      await chmod(this.environmentPath, 0o500);
     } catch (error) {
+      if (await exists(this.environmentPath)) await removeWritableTree(this.registryPath, this.environmentPath);
       if (hadActive) await rename(backupPath, this.environmentPath);
       throw error;
     }
@@ -239,7 +244,7 @@ async function copySeedToWritableRegistry(source: string, destination: string): 
   }
 }
 
-async function makeTreeReadOnly(registryPath: string, path: string): Promise<void> {
+async function makeTreeReadOnly(registryPath: string, path: string, includeRoot = true): Promise<void> {
   assertManagedPath(registryPath, path);
   const info = await lstat(path);
   if (info.isSymbolicLink()) throw new Error("The Lean environment contains an unsafe filesystem link.");
@@ -248,7 +253,7 @@ async function makeTreeReadOnly(registryPath: string, path: string): Promise<voi
     return;
   }
   for (const entry of await readdir(path)) await makeTreeReadOnly(registryPath, join(path, entry));
-  await chmod(path, 0o500);
+  if (includeRoot) await chmod(path, 0o500);
 }
 
 async function treeIsImmutable(path: string): Promise<boolean> {
