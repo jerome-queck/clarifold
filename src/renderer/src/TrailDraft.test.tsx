@@ -94,6 +94,7 @@ function trailSession(): LearningSession {
     accessPolicy: "focused", accessRequests: [], pendingFullAccessConfirmation: false,
     sourceAnchors: [{
       id: "anchor-1", sourceId: "source-1",
+      sourceRevisionId: null,
       selection: { kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset", prefix: "Every ", suffix: " is closed." }
     }],
     sourceAnchorRequests: [], annotations: [], activeSourceAnchorId: "anchor-1",

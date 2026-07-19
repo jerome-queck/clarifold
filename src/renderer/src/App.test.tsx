@@ -538,6 +538,7 @@ function workbenchState(): LearningApplicationState {
   const anchor = {
     id: "anchor-1",
     sourceId: "source-1",
+    sourceRevisionId: null,
     selection: {
       kind: "text" as const,
       startOffset: 6,
@@ -637,6 +638,7 @@ function workbenchState(): LearningApplicationState {
     }],
     sourceIndexes: [],
     sourceRevisions: [],
+    reanchoringDecisions: [],
     activeSessionId: "session-1",
     resumeSessionId: "session-1",
     navigation: { workspaceId: "quick-study-workspace", missionId: "quick-study-unfiled-mission" },
