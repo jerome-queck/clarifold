@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -77,6 +77,7 @@ describe("LeanEnvironmentManager", () => {
     await writeFile(join(interrupted, "partial"), "partial", "utf8");
     await writeFile(join(outside, "must-stay-read-only"), "outside", { encoding: "utf8", mode: 0o400 });
     await symlink(outside, join(interrupted, "unsafe-link"));
+    await link(join(outside, "must-stay-read-only"), join(interrupted, "unsafe-hard-link"));
 
     expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: true });
     expect(await manager.cleanup()).toEqual({ installed: false, installedBytes: 0 });
@@ -95,6 +96,30 @@ describe("LeanEnvironmentManager", () => {
     expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: true });
     rejectReferenceProof = false;
     await manager.install();
+    expect(await manager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });
+  });
+
+  it("preserves removal intent when cleanup finishes an interrupted post-deactivation removal", async () => {
+    const { registry, manager } = await fixture();
+    await manager.install();
+    const interruptedRemoval = join(registry, `.${bundledEnvironment.id}.removing-interrupted`);
+    await writeFile(join(registry, ".lean-environment-removed"), `${bundledEnvironment.id}\n`, "utf8");
+    await rename(join(registry, bundledEnvironment.id), interruptedRemoval);
+
+    expect(await manager.inspect()).toMatchObject({ installed: false, cleanupRequired: true });
+    await manager.cleanup();
+    expect(await manager.defaultInstallationNeeded()).toBe(false);
+  });
+
+  it("rejects a read-only installed tree whose content differs from the signed seed", async () => {
+    const { registry, manager } = await fixture();
+    await manager.install();
+    const executable = join(registry, bundledEnvironment.id, "bin", "lean");
+    await chmod(executable, 0o700);
+    await writeFile(executable, "tampered executable", "utf8");
+    await chmod(executable, 0o500);
+
+    await expect(manager.assertInstalledIntegrity()).rejects.toThrow("does not match the signed application payload");
     expect(await manager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });
   });
 });

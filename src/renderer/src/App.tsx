@@ -1132,7 +1132,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             {workbenchError && <p className="failure-message" role="alert">{workbenchError}</p>}
             {session.learningArtifacts.map((artifact) => <PinnedLearningArtifact artifact={artifact} onState={onState}
               verifierManifests={state.verifierManifests} modelAvailable={state.modelAccess.status === "available"}
-              verifierAvailable={state.verifierEnvironment.status === "installed"} key={artifact.id} />)}
+              verifierEnvironmentStatus={state.verifierEnvironment.status} key={artifact.id} />)}
             {!session.consolidationDraft && <TrailDraft session={session} onAction={async (action) => {
               onState(await window.quickStudy.submit(action));
             }} onActivateSourceAnchor={async (sourceAnchorId) => {
@@ -1416,7 +1416,7 @@ function ConsolidatedOutcome({ state, session, onState }: {
           <PinnedLearningArtifact key={artifact.id} artifact={artifact} sessionId={session.id}
             verifierManifests={state.verifierManifests}
             modelAvailable={state.modelAccess.status === "available"}
-            verifierAvailable={state.verifierEnvironment.status === "installed"}
+            verifierEnvironmentStatus={state.verifierEnvironment.status}
             statusLabel="Included in this Consolidated Session Outcome" onState={onState} />
         )) : <p>None included.</p>}
         <p className="subtle">Proof, source, note, Teaching Variant, and verification details appear above when they were retained in this Learning Session.</p>
@@ -1805,13 +1805,13 @@ function annotationAnchorLabel(anchor: LearningSession["sourceAnchors"][number])
 }
 
 function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifests = [], modelAvailable = false,
-  verifierAvailable = true, statusLabel = "Pinned on the main canvas" }: {
+  verifierEnvironmentStatus = "installed", statusLabel = "Pinned on the main canvas" }: {
   artifact: LearningArtifact;
   onState: StateHandler;
   sessionId?: string;
   verifierManifests?: LearningApplicationState["verifierManifests"];
   modelAvailable?: boolean;
-  verifierAvailable?: boolean;
+  verifierEnvironmentStatus?: LearningApplicationState["verifierEnvironment"]["status"];
   statusLabel?: string;
 }) {
   const [content, setContent] = useState(artifact.currentRevision.content);
@@ -1909,7 +1909,7 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
           onClick={() => runPortableAction(shareArtifact)}>Share export</button>
       </div>
       <ClaimTrust revision={artifact.currentRevision} revisionId={artifact.currentRevision.id}
-        verifierAvailable={verifierAvailable}
+        verifierEnvironmentStatus={verifierEnvironmentStatus}
         verifierManifests={verifierManifests.filter((manifest) => manifest.target === "learningArtifact"
           && manifest.targetId === artifact.id)}
         onVerify={async (claimId, runId) => onState(await window.quickStudy.verifyClaim(originatingSessionId, {

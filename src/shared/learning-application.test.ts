@@ -659,6 +659,20 @@ describe("Learning Application", () => {
     });
     expect(checkedAgain.verifierManifests[0]).toEqual(historicalManifest);
     expect(verifier.run).toHaveBeenCalledTimes(2);
+
+    vi.mocked(verifier.run).mockResolvedValueOnce({
+      outcome: "versionMismatch",
+      diagnostics: "Installed content differs from the signed payload.",
+      evidenceLocation: join(dataDirectory, "verifier-evidence", "integrity-failure.lean"),
+      command: "lean integrity-failure.lean",
+      environment: BUNDLED_LEAN_ENVIRONMENT
+    });
+    const integrityFailure = await application.runFormalVerification(
+      current.originatingSessionId, { runId: "integrity-failure", ...request }
+    );
+    expect(integrityFailure.verifierEnvironment).toMatchObject({
+      status: "cleanupRequired", error: "Installed content differs from the signed payload."
+    });
   });
 
   it("keeps failed environment operations recoverable without exposing a half-active checker", async () => {

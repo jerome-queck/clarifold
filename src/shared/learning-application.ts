@@ -1420,6 +1420,10 @@ export class LearningApplication {
       createdAt: new Date().toISOString()
     };
     this.state.verifierManifests.push(manifest);
+    if (result.outcome === "versionMismatch") {
+      this.state.verifierEnvironment.status = "cleanupRequired";
+      this.state.verifierEnvironment.error = result.diagnostics;
+    }
     if (result.outcome === "accepted" && formalization) {
       const priorManifestIds = new Set(this.state.verifierManifests
         .filter((candidate) => candidate.id !== manifest.id && candidate.claimRevisionId === revision.id

@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import {
@@ -14,6 +14,7 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
   private readonly environmentPath: string;
   private readonly seedPath: string;
   private readonly removalMarkerPath: string;
+  private trustedSeedDigest: Promise<string> | null = null;
 
   constructor(
     private readonly registryPath: string,
@@ -60,6 +61,9 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     if (!await validEnvironmentIdentity(stagingPath)) {
       throw new Error("The staged Lean environment did not match the supported Default Verification Environment.");
     }
+    if (await treeContentDigest(stagingPath) !== await this.seedDigest()) {
+      throw new Error("The staged Lean environment did not match the signed application payload.");
+    }
     await this.validate(stagingPath);
     await makeTreeReadOnly(this.registryPath, stagingPath);
     const backupPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
@@ -77,14 +81,14 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
   }
 
   async remove(): Promise<{ removedLogicalBytes: number }> {
-    if (!await validInstalledEnvironment(this.environmentPath)) {
+    if (!await this.installedIntegrityIsValid()) {
       throw new Error("The installed Lean environment is missing or invalid; clean it up before retrying.");
     }
     await this.beforeRemove();
     const removedLogicalBytes = await directorySize(this.environmentPath);
     const removalPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
-    await rename(this.environmentPath, removalPath);
     await writeFile(this.removalMarkerPath, `${BUNDLED_LEAN_ENVIRONMENT.id}\n`, "utf8");
+    await rename(this.environmentPath, removalPath);
     await removeWritableTree(this.registryPath, removalPath);
     return { removedLogicalBytes };
   }
@@ -93,12 +97,47 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     for (const name of await directoryEntries(this.registryPath)) {
       if (name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-`)
         || name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-`)
-        || (name === BUNDLED_LEAN_ENVIRONMENT.id && !await validInstalledEnvironment(this.environmentPath))) {
+        || (name === BUNDLED_LEAN_ENVIRONMENT.id && !await this.installedIntegrityIsValid())) {
         await removeWritableTree(this.registryPath, join(this.registryPath, name));
       }
     }
     const inspection = await this.inspect();
     return { installed: inspection.installed, installedBytes: inspection.installedBytes };
+  }
+
+  async assertInstalledIntegrity(signal?: AbortSignal): Promise<void> {
+    if (!await validInstalledEnvironment(this.environmentPath)) {
+      throw new Error("The installed Lean environment does not match the signed application payload.");
+    }
+    const deadline = Date.now() + 60_000;
+    const [installedDigest, trustedDigest] = await Promise.all([
+      treeContentDigest(this.environmentPath, signal, deadline),
+      this.seedDigest(signal, deadline)
+    ]);
+    if (installedDigest !== trustedDigest) {
+      throw new Error("The installed Lean environment does not match the signed application payload.");
+    }
+  }
+
+  primeSeedIntegrity(): void {
+    void this.seedDigest(undefined, Date.now() + 60_000).catch(() => undefined);
+  }
+
+  private async installedIntegrityIsValid(signal?: AbortSignal): Promise<boolean> {
+    try {
+      await this.assertInstalledIntegrity(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private seedDigest(signal?: AbortSignal, deadline = Date.now() + 60_000): Promise<string> {
+    this.trustedSeedDigest ??= treeContentDigest(this.seedPath, signal, deadline).catch((error) => {
+      this.trustedSeedDigest = null;
+      throw error;
+    });
+    return this.trustedSeedDigest;
   }
 }
 
@@ -153,6 +192,38 @@ async function directorySize(path: string): Promise<number> {
   return total;
 }
 
+async function treeContentDigest(root: string, signal?: AbortSignal, deadline = Date.now() + 60_000): Promise<string> {
+  const hash = createHash("sha256");
+  await appendTreeDigest(hash, root, root, signal, deadline);
+  return hash.digest("hex");
+}
+
+async function appendTreeDigest(
+  hash: ReturnType<typeof createHash>, root: string, path: string, signal: AbortSignal | undefined, deadline: number
+): Promise<void> {
+  requireIntegrityScanActive(signal, deadline);
+  const entries = (await readdir(path, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    requireIntegrityScanActive(signal, deadline);
+    const child = join(path, entry.name);
+    const identity = relative(root, child);
+    if (entry.isSymbolicLink()) throw new Error("The Lean environment contains an unsafe filesystem link.");
+    hash.update(entry.isDirectory() ? `directory\0${identity}\0` : `file\0${identity}\0`);
+    if (entry.isDirectory()) await appendTreeDigest(hash, root, child, signal, deadline);
+    else if (entry.isFile()) {
+      for await (const chunk of createReadStream(child, { signal })) {
+        requireIntegrityScanActive(signal, deadline);
+        hash.update(chunk);
+      }
+    } else throw new Error("The Lean environment contains an unsupported filesystem entry.");
+  }
+}
+
+function requireIntegrityScanActive(signal: AbortSignal | undefined, deadline: number): void {
+  if (signal?.aborted) throw new Error("The Lean integrity check was cancelled.");
+  if (Date.now() > deadline) throw new Error("The Lean integrity check exceeded 60 seconds.");
+}
+
 async function copySeedToWritableRegistry(source: string, destination: string): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o700 });
   for (const entry of await readdir(source, { withFileTypes: true })) {
@@ -201,10 +272,7 @@ async function makeTreeWritable(registryPath: string, path: string): Promise<voi
   assertManagedPath(registryPath, path);
   const info = await lstat(path);
   if (info.isSymbolicLink()) return;
-  if (!info.isDirectory()) {
-    await chmod(path, 0o600);
-    return;
-  }
+  if (!info.isDirectory()) return;
   await chmod(path, 0o700);
   for (const entry of await readdir(path, { withFileTypes: true })) {
     await makeTreeWritable(registryPath, join(path, entry.name));

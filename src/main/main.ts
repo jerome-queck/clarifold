@@ -467,7 +467,13 @@ void app.whenReady().then(async () => {
       ? async () => undefined
       : (url) => shell.openExternal(url)),
     null,
-    new LeanVerifierRuntime(process.env.QUICK_STUDY_LEAN_PATH ?? verifierEnvironmentManager.executablePath()),
+    new LeanVerifierRuntime(
+      process.env.QUICK_STUDY_LEAN_PATH ?? verifierEnvironmentManager.executablePath(),
+      undefined,
+      undefined,
+      undefined,
+      (signal) => verifierEnvironmentManager.assertInstalledIntegrity(signal)
+    ),
     verifierEnvironmentManager
   );
   if (installDefaultVerifier) {
@@ -475,6 +481,7 @@ void app.whenReady().then(async () => {
       console.error("The default Lean environment could not be installed:", error);
     });
   }
+  verifierEnvironmentManager.primeSeedIntegrity();
   registerLearningApplicationHandlers();
   createWindow();
 

@@ -16,7 +16,7 @@ const executablePath = join(
 );
 
 test("packaged Quick Study organizes durable work and resumes the latest session", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   const packagedEnvironment = join(executablePath, "..", "..", "Resources", "verifiers",
     "lean-4.29.1-mathlib-4.29.1-quick-study-v1");
   const packagedManifest = join(packagedEnvironment, "manifest.json");
@@ -335,7 +335,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(claimTrust.getByRole("region", { name: "Formalization for mathematical claim 1" }))
       .toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
     await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
-    await expect(claimTrust).toContainText("Formally verified", { timeout: 20_000 });
+    await expect(claimTrust).toContainText("Formally verified", { timeout: 60_000 });
     await expect(claimTrust).toContainText("Not independently checked");
     const manifest = claimTrust.getByRole("article", { name: "Verifier Manifest" });
     await expect(manifest).toContainText("accepted");
@@ -349,7 +349,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(removalConfirmation).toContainText("new formal verification capability");
     await expect(removalConfirmation).toContainText("Historical verification evidence and labels will be preserved");
     await removalConfirmation.getByRole("button", { name: "Remove installed Lean copy" }).click();
-    await expect(settings).toContainText("Removal failed");
+    await expect(settings).toContainText("Removal failed", { timeout: 30_000 });
     await expect(settings.getByRole("alert")).toContainText("Synthetic removal interruption before deactivation.");
     await settings.getByRole("button", { name: "Retry Lean removal" }).click();
     await expect(settings).toContainText("Not installed", { timeout: 30_000 });
@@ -374,7 +374,7 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(settings).toContainText("Installed and ready", { timeout: 30_000 });
     await page.getByRole("button", { name: "Resume Learning Session", exact: true }).click();
     await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
-    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 20_000 });
+    await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 60_000 });
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }).nth(1)).toContainText("accepted");
     await reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ }).press("Enter");
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");

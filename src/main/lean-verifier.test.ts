@@ -97,6 +97,21 @@ describe("LeanVerifierRuntime", () => {
     });
   });
 
+  it("refuses to execute when installed content no longer matches the signed payload", async () => {
+    const verifier = new LeanVerifierRuntime(
+      "/bundle/bin/lean",
+      async () => { throw new Error("Lean must not execute after an integrity failure."); },
+      15_000,
+      async () => installedEnvironment,
+      async () => { throw new Error("Installed content differs from the signed payload."); }
+    );
+
+    expect(await verifier.run(await request())).toMatchObject({
+      outcome: "versionMismatch",
+      diagnostics: "Installed content differs from the signed payload."
+    });
+  });
+
   it("requires the architecture-specific pinned archive digest in the environment identity", () => {
     expect(validVerificationEnvironment({ ...installedEnvironment, sourceSha256: "0".repeat(64) })).toBe(false);
     expect(validVerificationEnvironment(installedEnvironment)).toBe(true);
