@@ -992,6 +992,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
             <button className="primary" disabled={Boolean(session.consolidationDraft)} onClick={() => void beginConsolidation()}>
               {session.consolidationDraft ? "Consolidation review open" : "Finish & consolidate"}
             </button>
+            <ReasoningControls state={state} session={session} onState={onState} />
             <ModelStopConfirmationNotice session={session} onState={onState} onError={setWorkbenchError} />
           </aside>
           <section className="math-canvas">
@@ -1126,6 +1127,70 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
         </div>
       </div>
     </main>
+  );
+}
+
+function ReasoningControls({ state, session, onState }: {
+  state: LearningApplicationState;
+  session: LearningSession;
+  onState: StateHandler;
+}) {
+  const defaultModel = session.runtimeOverride?.model
+    ?? state.runtimeCapabilities.models.find((model) => model.isDefault)?.model
+    ?? state.runtimeCapabilities.models[0]?.model
+    ?? "";
+  const [model, setModel] = useState(defaultModel);
+  const selectedModel = state.runtimeCapabilities.models.find((candidate) => candidate.model === model) ?? null;
+  const defaultEffort = session.runtimeOverride?.model === model
+    ? session.runtimeOverride.reasoningEffort
+    : selectedModel?.supportedReasoningEfforts[0] ?? "medium";
+  const [effort, setEffort] = useState(defaultEffort);
+  const chooseModel = (nextModel: string) => {
+    setModel(nextModel);
+    const capability = state.runtimeCapabilities.models.find((candidate) => candidate.model === nextModel);
+    setEffort(capability?.supportedReasoningEfforts[0] ?? "medium");
+  };
+  return (
+    <section className="reasoning-controls" aria-labelledby="reasoning-controls-title">
+      <h2 id="reasoning-controls-title">Reasoning choices</h2>
+      <fieldset>
+        <legend>Reasoning Preference</legend>
+        {(["faster", "balanced", "deeper"] as const).map((preference) => (
+          <label key={preference}>
+            <input type="radio" name="reasoning-preference" value={preference}
+              checked={session.reasoningPreference === preference}
+              onChange={() => void window.quickStudy.submit({ type: "setReasoningPreference", preference }).then(onState)} />
+            {preference[0].toUpperCase() + preference.slice(1)}
+          </label>
+        ))}
+      </fieldset>
+      <p className="subtle">This biases later automatic Agent Budgets; it does not promise one exact model or effort.</p>
+      {state.runtimeCapabilities.models.length > 0 && <details>
+        <summary>Advanced Runtime Override</summary>
+        <label htmlFor="runtime-model">Runtime model</label>
+        <select id="runtime-model" value={model} onChange={(event) => chooseModel(event.target.value)}>
+          {state.runtimeCapabilities.models.map((capability) => (
+            <option key={capability.model} value={capability.model}>{capability.displayName}</option>
+          ))}
+        </select>
+        <label htmlFor="runtime-reasoning">Runtime reasoning</label>
+        <select id="runtime-reasoning" value={effort} onChange={(event) => setEffort(event.target.value as typeof effort)}>
+          {selectedModel?.supportedReasoningEfforts.map((reasoningEffort) => (
+            <option key={reasoningEffort} value={reasoningEffort}>{reasoningEffort}</option>
+          ))}
+        </select>
+        <div className="teaching-actions">
+          <button className="secondary" disabled={!model || !selectedModel?.supportedReasoningEfforts.includes(effort)}
+            onClick={() => void window.quickStudy.submit({ type: "setRuntimeOverride", override: { model, reasoningEffort: effort } }).then(onState)}>
+            Apply Runtime Override
+          </button>
+          {session.runtimeOverride && <button className="secondary"
+            onClick={() => void window.quickStudy.submit({ type: "setRuntimeOverride", override: null }).then(onState)}>
+            Use automatic routing
+          </button>}
+        </div>
+      </details>}
+    </section>
   );
 }
 
@@ -1908,10 +1973,22 @@ function TeachingCard({ session, modelAvailable, onState }: { session: LearningS
       <div className="teaching-actions">
         {card.status === "streaming" && <button className="secondary" onClick={() => void window.quickStudy.submit({ type: "cancelModelWork" }).then(onState)}>Stop teaching</button>}
         {card.retryable && modelAvailable && <button className="primary" onClick={() => void window.quickStudy.submit({ type: "retryModelWork" }).then(onState)}>Retry Teaching Card</button>}
-        {card.status === "completed" && modelAvailable && !agentTask && <button className="secondary"
-          onClick={() => void window.quickStudy.submit({ type: "requestSpecialistReview" }).then(onState)}>
-          Request Specialist Agent review
-        </button>}
+        {card.status === "completed" && modelAvailable && !agentTask && <fieldset>
+          <legend>Specialist review plan</legend>
+          <p className="subtle">Choose parallel work only for independent perspectives; use sequential review when the second brief needs the first result.</p>
+          <button className="secondary"
+            onClick={() => void window.quickStudy.submit({ type: "requestSpecialistReview", coordination: "single" }).then(onState)}>
+            One bounded review
+          </button>
+          <button className="secondary"
+            onClick={() => void window.quickStudy.submit({ type: "requestSpecialistReview", coordination: "dependent" }).then(onState)}>
+            Sequential review then challenge
+          </button>
+          <button className="secondary"
+            onClick={() => void window.quickStudy.submit({ type: "requestSpecialistReview", coordination: "independent" }).then(onState)}>
+            Two independent perspectives
+          </button>
+        </fieldset>}
       </div>
     </section>
     {agentTask && <AgentTaskStatusCard task={agentTask} modelAvailable={modelAvailable} onState={onState} />}
@@ -1944,7 +2021,15 @@ function AgentTaskStatusCard({ task, modelAvailable, onState }: {
       </details>
       <details>
         <summary>Inspect Agent Budget</summary>
-        <p>{task.budget.agentCount} agent · concurrency {task.budget.concurrency} · {task.budget.reasoningEffort} reasoning · {task.budget.tools.length} tools · {task.budget.maxOutputTokens} output tokens · {task.budget.maxLatencyMs / 1000} seconds</p>
+        <dl>
+          <div><dt>Agent count</dt><dd>{task.budget.agentCount}</dd></div>
+          <div><dt>Concurrency</dt><dd>{task.budget.concurrency}</dd></div>
+          <div><dt>Model</dt><dd>{task.budget.model === "runtimeDefault" ? "Automatic runtime default" : task.budget.model}</dd></div>
+          <div><dt>Reasoning effort</dt><dd>{task.budget.reasoningEffort}</dd></div>
+          <div><dt>Tool access</dt><dd>{task.budget.tools.join(", ") || "None"}</dd></div>
+          <div><dt>Token use limit</dt><dd>{task.budget.maxTokens} total input, output, and reasoning tokens</dd></div>
+          <div><dt>Latency limit</dt><dd>{task.budget.maxLatencyMs / 1000} seconds</dd></div>
+        </dl>
       </details>
       {(task.integratedTeachingCard.content || task.status === "complete") && <div className="teaching-section">
         <h3>{task.integratedTeachingCard.title}</h3>

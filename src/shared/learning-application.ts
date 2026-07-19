@@ -9,7 +9,9 @@ import {
   type AuthenticationState,
   type ModelAccessCause,
   type ModelRuntime,
+  type ModelRuntimeCapabilities,
   type ModelRuntimeEvent,
+  type ReasoningEffort,
   type RuntimeAccessDecision,
   type RuntimeAccessRequest,
   type TeachingRequest,
@@ -21,12 +23,19 @@ import {
 import { annotationPurposeLabel, type AnnotationPurpose, type SourceAnnotation } from "./annotations";
 export type { AnnotationPurpose, SourceAnnotation } from "./annotations";
 import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-access";
+import { coordinateAgentTasks } from "./agent-task-coordinator";
 export type { SessionAccessPolicy } from "./session-access";
 
 const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
+// Preserve issue #22's shipped numeric safety bounds while the broader supported-macOS benchmark work
+// in parent issue #2 remains pending. #23 applies the token number to runtime-reported total use, making
+// the inherited bound deliberately conservative instead of presenting it as an empirical universal threshold.
+const BOUNDED_SPECIALIST_BUDGET_V1 = Object.freeze({ maxTokens: 512, maxLatencyMs: 120_000 });
 
 export type SessionStatus = "active" | "paused" | "consolidated";
 export type TargetDisposition = "addressed" | "deferred" | "unresolved";
+export type ReasoningPreference = "faster" | "balanced" | "deeper";
+export interface RuntimeOverride { model: string; reasoningEffort: ReasoningEffort }
 
 export interface SessionAccessScope {
   policy: SessionAccessPolicy;
@@ -291,6 +300,12 @@ export interface AgentWorkLogEvidence {
 }
 
 export type AgentTaskStatus = "working" | "waiting" | "failed" | "stopped" | "complete";
+export const AGENT_TASK_COORDINATIONS = ["single", "dependent", "independent"] as const;
+export type AgentTaskCoordination = typeof AGENT_TASK_COORDINATIONS[number];
+
+export function isAgentTaskCoordination(value: unknown): value is AgentTaskCoordination {
+  return AGENT_TASK_COORDINATIONS.includes(value as AgentTaskCoordination);
+}
 
 export interface AgentTask {
   id: string;
@@ -303,6 +318,8 @@ export interface AgentTask {
     description: string;
   };
   brief: AgentBrief;
+  specialistBriefs: AgentBrief[];
+  coordination: AgentTaskCoordination;
   budget: AgentBudget;
   integratedTeachingCard: TeachingCardState & { title: string };
   agentWorkLogReference: TeachingCardRevision["agentWorkLogReference"];
@@ -642,6 +659,8 @@ export interface LearningSession {
   prerequisiteBranch: PrerequisiteBranch | null;
   agentTasks: AgentTask[];
   activeAgentTaskId: string | null;
+  reasoningPreference: ReasoningPreference;
+  runtimeOverride: RuntimeOverride | null;
 }
 
 export interface LearningApplicationState {
@@ -671,6 +690,7 @@ export interface LearningApplicationState {
   };
   intakeError: string | null;
   runtimeAvailable: boolean;
+  runtimeCapabilities: ModelRuntimeCapabilities;
   modelAccess: ModelAccessState;
   accessConfirmationPreference: {
     confirmFullAccess: boolean;
@@ -687,8 +707,10 @@ export type LearnerAction =
   | { type: "cancelModelWork" }
   | { type: "cancelSessionModelWork"; sessionId: string }
   | { type: "retryModelWork" }
-  | { type: "requestSpecialistReview" }
+  | { type: "requestSpecialistReview"; coordination?: AgentTaskCoordination }
   | { type: "retryAgentTask"; taskId: string }
+  | { type: "setReasoningPreference"; preference: ReasoningPreference }
+  | { type: "setRuntimeOverride"; override: RuntimeOverride | null }
   | { type: "startChatGptLogin" }
   | { type: "loginWithApiKey"; apiKey: string }
   | { type: "refreshAuthentication" }
@@ -864,6 +886,15 @@ export class LearningApplication {
       } catch (error) {
         application.state.authentication = failedAuthentication(null, error);
         application.applyModelAccessFailure(error);
+      }
+      try {
+        application.state.runtimeCapabilities = validatedRuntimeCapabilities(await modelRuntime.getCapabilities());
+        clearUnsupportedRuntimeOverrides(application.state.sessions, application.state.runtimeCapabilities);
+      } catch (error) {
+        application.applyModelAccessFailure(new ModelAccessError(
+          "runtime",
+          `Codex Runtime could not report supported model choices. ${usefulRuntimeError(error)}`
+        ));
       }
     } else {
       application.state.runtimeAvailable = false;
@@ -1244,6 +1275,15 @@ export class LearningApplication {
     } catch (error) {
       this.state.authentication = failedAuthentication(null, error);
       this.applyModelAccessFailure(error);
+    }
+    try {
+      this.state.runtimeCapabilities = validatedRuntimeCapabilities(await modelRuntime.getCapabilities());
+      clearUnsupportedRuntimeOverrides(this.state.sessions, this.state.runtimeCapabilities);
+    } catch (error) {
+      this.applyModelAccessFailure(new ModelAccessError(
+        "runtime",
+        `Codex Runtime could not report supported model choices. ${usefulRuntimeError(error)}`
+      ));
     }
     return this.publishAndPersist();
   }
@@ -2186,7 +2226,15 @@ export class LearningApplication {
         if (session.agentTasks.length > 0) {
           throw new Error("This Learning Session already has its bounded Specialist Agent review.");
         }
-        const task = createSpecialistReviewTask(session);
+        const coordination = action.coordination ?? "single";
+        if (!isAgentTaskCoordination(coordination)) {
+          throw new Error("Choose single, dependent, or independent Specialist Agent coordination.");
+        }
+        const task = createSpecialistReviewTask(
+          session,
+          selectAgentBudget(session, coordination, this.state.runtimeCapabilities),
+          coordination
+        );
         session.agentTasks.push(task);
         session.activeAgentTaskId = task.id;
         this.beginSpecialistAgentTask(session, task);
@@ -2200,6 +2248,27 @@ export class LearningApplication {
         if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model work before retrying this Agent Task.");
         session.activeAgentTaskId = task.id;
         this.beginSpecialistAgentTask(session, task);
+        break;
+      }
+      case "setReasoningPreference": {
+        const session = this.requireActiveSession();
+        if (!isReasoningPreference(action.preference)) throw new Error("Choose Faster, Balanced, or Deeper reasoning.");
+        session.reasoningPreference = action.preference;
+        break;
+      }
+      case "setRuntimeOverride": {
+        const session = this.requireActiveSession();
+        const runtimeOverride = action.override;
+        if (runtimeOverride === null) {
+          session.runtimeOverride = null;
+          break;
+        }
+        const model = this.state.runtimeCapabilities.models.find((candidate) => candidate.model === runtimeOverride.model);
+        if (!model) throw new Error("Choose a model offered by the active Codex Runtime.");
+        if (!model.supportedReasoningEfforts.includes(runtimeOverride.reasoningEffort)) {
+          throw new Error(`${model.displayName} does not support ${runtimeOverride.reasoningEffort} reasoning.`);
+        }
+        session.runtimeOverride = structuredClone(runtimeOverride);
         break;
       }
       case "startChatGptLogin": {
@@ -2942,47 +3011,87 @@ export class LearningApplication {
       fromSequence: log.length + 1,
       toSequence: log.length + 1
     };
-    const promise = runtime.runSpecialistAgent({
-      sessionId: session.id,
-      purpose: task.purpose,
-      brief: structuredClone(task.brief),
-      budget: structuredClone(task.budget),
-      signal: controller.signal,
-      onStatus: (status, message) => {
-        if (controller.signal.aborted) return;
-        task.status = status;
-        task.statusMessage = message;
-        this.emitState();
-        this.queuePersistence();
-      },
-      onPartialResult: (content) => {
-        if (controller.signal.aborted || !content) return;
-        task.integratedTeachingCard.content = retainedCheckpoint && !content.startsWith(retainedCheckpoint)
-          ? `${retainedCheckpoint}\n\nRetry checkpoint:\n${content}`
-          : content;
-        this.emitState();
-        this.queuePersistence();
-      },
-      onRuntimeEvent: (event) => {
-        if (controller.signal.aborted) return;
-        log.push({ ...event, sequence: log.length + 1 });
-        if (task.agentWorkLogReference) task.agentWorkLogReference.toSequence = log.length;
-        this.queuePersistence();
+    const specialistResults: Array<SpecialistAgentResult | null> = task.specialistBriefs.map(() => null);
+    const specialistPartials = task.specialistBriefs.map(() => "");
+    const specialistStatuses = task.specialistBriefs.map(() => "working" as "working" | "waiting" | "complete");
+    const coordinated = task.specialistBriefs.map((storedBrief, index) => ({
+      id: `${task.id}:${index}`,
+      dependsOnTaskIds: task.coordination === "dependent" && index > 0 ? [`${task.id}:${index - 1}`] : [],
+      run: async () => {
+        const brief = structuredClone(storedBrief);
+        if (task.coordination === "dependent" && index > 0) {
+          const prior = specialistResults[index - 1];
+          if (!prior) throw new Error("Dependent Specialist Agent work is missing its prerequisite result.");
+          brief.constraints.push(`Earlier Specialist Agent conclusion: ${prior.content}`);
+        }
+        const perAgentBudget: AgentBudget = {
+          ...structuredClone(task.budget),
+          agentCount: 1,
+          concurrency: 1,
+          maxTokens: Math.floor(task.budget.maxTokens / task.budget.agentCount),
+          maxLatencyMs: task.coordination === "dependent"
+            ? Math.floor(task.budget.maxLatencyMs / task.budget.agentCount)
+            : task.budget.maxLatencyMs
+        };
+        specialistResults[index] = await runtime.runSpecialistAgent({
+          sessionId: session.id,
+          purpose: index === 0 ? task.purpose : "Stress-test the current Teaching Card for a counterexample or boundary case",
+          brief,
+          budget: perAgentBudget,
+          signal: controller.signal,
+          onStatus: (status, message) => {
+            if (controller.signal.aborted) return;
+            specialistStatuses[index] = status;
+            task.status = specialistStatuses.every((candidate) => candidate === "waiting") ? "waiting" : "working";
+            task.statusMessage = message;
+            this.emitState();
+            this.queuePersistence();
+          },
+          onPartialResult: (content) => {
+            if (controller.signal.aborted || !content) return;
+            specialistPartials[index] = content;
+            const combined = specialistPartials.filter(Boolean).join("\n\n");
+            task.integratedTeachingCard.content = retainedCheckpoint && !combined.startsWith(retainedCheckpoint)
+              ? `${retainedCheckpoint}\n\nRetry checkpoint:\n${combined}`
+              : combined;
+            this.emitState();
+            this.queuePersistence();
+          },
+          onRuntimeEvent: (event) => {
+            if (controller.signal.aborted) return;
+            log.push({ ...event, sequence: log.length + 1 });
+            if (task.agentWorkLogReference) task.agentWorkLogReference.toSequence = log.length;
+            this.queuePersistence();
+          }
+        });
+        specialistStatuses[index] = "complete";
       }
-    }).then((result) => {
+    }));
+    const promise = coordinateAgentTasks(coordinated, task.budget.concurrency).then(() => {
       if (controller.signal.aborted) return;
-      const integrated = validatedSpecialistAgentResult(result, task.budget);
+      const integrated = specialistResults.map(validatedSpecialistAgentResult);
       task.status = "complete";
       task.statusMessage = null;
       Object.assign(task.integratedTeachingCard, {
-        title: integrated.title,
+        title: integrated.length === 1 ? integrated[0].title : "Coordinated Specialist review",
         status: "completed",
-        content: integrated.content,
+        content: integrated.length === 1
+          ? integrated[0].content
+          : integrated.map((result) => `${result.title}\n${result.content}`).join("\n\n"),
         error: null,
         retryable: false
       });
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
+      const limitMessage = agentBudgetLimitMessage(error, Boolean(task.integratedTeachingCard.content.trim()));
+      if (limitMessage) {
+        task.status = "stopped";
+        task.statusMessage = limitMessage;
+        Object.assign(task.integratedTeachingCard, {
+          status: "stopped", error: limitMessage, retryable: true
+        });
+        return;
+      }
       task.status = "failed";
       task.statusMessage = usefulRuntimeError(error);
       Object.assign(task.integratedTeachingCard, {
@@ -3034,6 +3143,7 @@ export class LearningApplication {
     const stage = roadmap?.stages.find((candidate) => candidate.id === session.learningSlice?.stageId) ?? null;
     const promise = runtime.streamTeaching({
       sessionId: session.id,
+      runtimeSelection: selectTeachingRuntime(session, this.state.runtimeCapabilities),
       mathematics,
       learningGoal: session.learningGoal,
       scope: session.proposal.scope,
@@ -3761,6 +3871,20 @@ export class LearningApplication {
   }
 }
 
+function agentBudgetLimitMessage(error: unknown, preservedPartialOutput: boolean): string | null {
+  const message = error instanceof Error ? error.message.toLocaleLowerCase() : "";
+  const preservation = preservedPartialOutput
+    ? " Useful partial output was preserved."
+    : " No useful partial output was available to preserve.";
+  if (message.includes("token budget")) {
+    return `Agent Task stopped at its token limit.${preservation}`;
+  }
+  if (message.includes("timed out") || message.includes("latency")) {
+    return `Agent Task stopped at its latency limit.${preservation}`;
+  }
+  return null;
+}
+
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
@@ -3807,10 +3931,9 @@ function validatedArtifactSynthesisResult(
   };
 }
 
-function validatedSpecialistAgentResult(value: unknown, budget: AgentBudget): SpecialistAgentResult {
+function validatedSpecialistAgentResult(value: unknown): SpecialistAgentResult {
   if (!isRecord(value) || typeof value.title !== "string" || !value.title.trim()
-    || typeof value.content !== "string" || !value.content.trim()
-    || new TextEncoder().encode(value.content).byteLength > budget.maxOutputTokens) {
+    || typeof value.content !== "string" || !value.content.trim()) {
     throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
   }
   return { title: value.title, content: value.content };
@@ -3914,6 +4037,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
+    current.runtimeCapabilities = { models: [] };
     current.modelAccess ??= {
       status: "unavailable",
       cause: "runtime",
@@ -3955,7 +4079,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       prerequisiteBranchProposals: migratePrerequisiteBranchProposals(session.prerequisiteBranchProposals),
       prerequisiteBranch: migratePrerequisiteBranch(session.prerequisiteBranch),
       agentTasks: migrateAgentTasks(session.agentTasks),
-      activeAgentTaskId: typeof session.activeAgentTaskId === "string" ? session.activeAgentTaskId : null
+      activeAgentTaskId: typeof session.activeAgentTaskId === "string" ? session.activeAgentTaskId : null,
+      reasoningPreference: migrateReasoningPreference(session.reasoningPreference),
+      runtimeOverride: migrateRuntimeOverride(session.runtimeOverride)
     }));
     addLegacyUnresolvedReanchoringDecisions(current);
     attachManagedSourcesToLegacySessions(current);
@@ -4010,7 +4136,9 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       prerequisiteBranchProposals: [],
       prerequisiteBranch: null,
       agentTasks: [],
-      activeAgentTaskId: null
+      activeAgentTaskId: null,
+      reasoningPreference: "balanced",
+      runtimeOverride: null
     };
     migrated.sessions.push(session);
     attachManagedSourcesToLegacySessions(migrated);
@@ -4045,11 +4173,14 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
     const need = candidate.identifiedNeed;
     const brief = candidate.brief;
     const budget = candidate.budget;
+    const coordination = candidate.coordination ?? "single";
+    const specialistBriefs = candidate.specialistBriefs ?? [brief];
     const card = candidate.integratedTeachingCard;
     const reference = candidate.agentWorkLogReference;
     const priorReferences = candidate.priorAgentWorkLogReferences ?? [];
     if (need.kind !== "hiddenAssumptionReview" || need.requestedBy !== "learner"
       || typeof need.description !== "string" || !need.description.trim()
+      || !["single", "dependent", "independent"].includes(String(coordination))
       || typeof brief.learningGoal !== "string" || !brief.learningGoal.trim()
       || !Array.isArray(brief.sourceAnchors) || !brief.sourceAnchors.every((anchor) => isRecord(anchor)
         && typeof anchor.sourceAnchorId === "string" && typeof anchor.sourceId === "string"
@@ -4057,11 +4188,16 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
       || !isNonEmptyStringArray(brief.constraints) || !isStringArray(brief.learnerEvidence)
       || typeof brief.expectedOutput !== "string" || !brief.expectedOutput.trim()
       || !isNonEmptyStringArray(brief.verificationNeeds)
-      || budget.agentCount !== 1 || budget.concurrency !== 1 || budget.model !== "runtimeDefault"
-      || budget.reasoningEffort !== "medium" || !Array.isArray(budget.tools)
+      || !Number.isInteger(budget.agentCount) || (budget.agentCount as number) < 1
+      || !Number.isInteger(budget.concurrency) || (budget.concurrency as number) < 1
+      || (budget.concurrency as number) > (budget.agentCount as number)
+      || typeof budget.model !== "string" || !budget.model.trim()
+      || !isReasoningEffort(budget.reasoningEffort) || !Array.isArray(budget.tools)
       || budget.tools.length !== 1 || budget.tools[0] !== "checkpointSpecialistResult"
-      || !Number.isInteger(budget.maxOutputTokens) || (budget.maxOutputTokens as number) < 1
+      || !Number.isInteger(budget.maxTokens) || (budget.maxTokens as number) < 1
       || !Number.isInteger(budget.maxLatencyMs) || (budget.maxLatencyMs as number) < 1
+      || !Array.isArray(specialistBriefs) || specialistBriefs.length !== budget.agentCount
+      || !specialistBriefs.every(validStoredAgentBrief)
       || typeof card.title !== "string" || !card.title.trim()
       || !["idle", "streaming", "completed", "stopped", "failed"].includes(String(card.status))
       || typeof card.content !== "string" || !(card.error === null || typeof card.error === "string")
@@ -4072,8 +4208,23 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
       || !(priorReferences as unknown[]).every(validAgentWorkLogReference)) {
       throw new Error("Stored Agent Tasks are invalid.");
     }
-    return { ...candidate, priorAgentWorkLogReferences: priorReferences } as unknown as AgentTask;
+    return {
+      ...candidate,
+      coordination,
+      specialistBriefs,
+      priorAgentWorkLogReferences: priorReferences
+    } as unknown as AgentTask;
   });
+}
+
+function validStoredAgentBrief(value: unknown): value is AgentBrief {
+  return isRecord(value) && typeof value.learningGoal === "string" && Boolean(value.learningGoal.trim())
+    && Array.isArray(value.sourceAnchors) && value.sourceAnchors.every((anchor) => isRecord(anchor)
+      && typeof anchor.sourceAnchorId === "string" && typeof anchor.sourceId === "string"
+      && isSourceAnchorSelection(anchor.selection))
+    && isNonEmptyStringArray(value.constraints) && isStringArray(value.learnerEvidence)
+    && typeof value.expectedOutput === "string" && Boolean(value.expectedOutput.trim())
+    && isNonEmptyStringArray(value.verificationNeeds);
 }
 
 function validAgentWorkLogReference(value: unknown): value is NonNullable<TeachingCardRevision["agentWorkLogReference"]> {
@@ -4094,7 +4245,7 @@ function validateAgentTaskReferences(session: LearningSession): void {
     if (task.priorAgentWorkLogReferences.some((reference) => reference.sessionId !== session.id)) {
       throw new Error("Stored Agent Task references are invalid.");
     }
-    for (const briefAnchor of task.brief.sourceAnchors) {
+    for (const briefAnchor of task.specialistBriefs.flatMap((brief) => brief.sourceAnchors)) {
       const anchor = session.sourceAnchors.find((candidate) => candidate.id === briefAnchor.sourceAnchorId);
       if (!anchor || anchor.sourceId !== briefAnchor.sourceId
         || JSON.stringify(anchor.selection) !== JSON.stringify(briefAnchor.selection)) {
@@ -4668,13 +4819,50 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     prerequisiteBranchProposals: [],
     prerequisiteBranch: details.prerequisiteBranch ?? null,
     agentTasks: [],
-    activeAgentTaskId: null
+    activeAgentTaskId: null,
+    reasoningPreference: "balanced",
+    runtimeOverride: null
   };
 }
 
-function createSpecialistReviewTask(session: LearningSession): AgentTask {
+function createSpecialistReviewTask(
+  session: LearningSession,
+  budget: AgentBudget,
+  coordination: AgentTaskCoordination
+): AgentTask {
   const target = specialistReviewTarget(session);
   if (!target) throw new Error("Complete a Teaching Card before requesting a Specialist Agent review.");
+  const brief: AgentBrief = {
+    learningGoal: session.learningGoal,
+    sourceAnchors: target.sourceAnchor ? [{
+      sourceAnchorId: target.sourceAnchor.id,
+      sourceId: target.sourceAnchor.sourceId,
+      selection: structuredClone(target.sourceAnchor.selection)
+    }] : [],
+    constraints: [
+      "Review only the current learner-facing Teaching Card.",
+      "Do not inspect other Learning Session history or local files.",
+      `Current Teaching Card: ${target.content}`
+    ],
+    learnerEvidence: session.trailDraft.items
+      .filter((item) => item.origin === "learner" && item.kind === "evidence"
+        && (target.sourceAnchor && item.links.sourceAnchorIds.includes(target.sourceAnchor.id)
+          || target.teachingCardId && item.links.teachingCardIds.includes(target.teachingCardId)
+          || !target.sourceAnchor && !target.teachingCardId && isSessionLevelTrailItem(item)))
+      .map((item) => item.content),
+    expectedOutput: "One concise correction or confirmation integrated as a Teaching Card.",
+    verificationNeeds: [
+      "Identify any hidden mathematical assumption and explain whether the argument depends on it."
+    ]
+  };
+  const specialistBriefs = coordination === "single" ? [brief] : [brief, {
+    ...structuredClone(brief),
+    constraints: [...brief.constraints, coordination === "dependent"
+      ? "Stress-test the earlier Specialist Agent conclusion supplied when this work becomes eligible."
+      : "Independently search for a counterexample without relying on another Specialist Agent result."],
+    expectedOutput: "One concise stress test integrated into the same learner-facing Teaching Card.",
+    verificationNeeds: ["Search for a counterexample or boundary case that changes the conclusion."]
+  }];
   return {
     id: crypto.randomUUID(),
     purpose: "Review the current Teaching Card for a hidden mathematical assumption",
@@ -4685,38 +4873,10 @@ function createSpecialistReviewTask(session: LearningSession): AgentTask {
       requestedBy: "learner",
       description: "The learner requested a focused check for a hidden mathematical assumption in the current Teaching Card."
     },
-    brief: {
-      learningGoal: session.learningGoal,
-      sourceAnchors: target.sourceAnchor ? [{
-        sourceAnchorId: target.sourceAnchor.id,
-        sourceId: target.sourceAnchor.sourceId,
-        selection: structuredClone(target.sourceAnchor.selection)
-      }] : [],
-      constraints: [
-        "Review only the current learner-facing Teaching Card.",
-        "Do not inspect other Learning Session history or local files.",
-        `Current Teaching Card: ${target.content}`
-      ],
-      learnerEvidence: session.trailDraft.items
-        .filter((item) => item.origin === "learner" && item.kind === "evidence"
-          && (target.sourceAnchor && item.links.sourceAnchorIds.includes(target.sourceAnchor.id)
-            || target.teachingCardId && item.links.teachingCardIds.includes(target.teachingCardId)
-            || !target.sourceAnchor && !target.teachingCardId && isSessionLevelTrailItem(item)))
-        .map((item) => item.content),
-      expectedOutput: "One concise correction or confirmation integrated as a Teaching Card.",
-      verificationNeeds: [
-        "Identify any hidden mathematical assumption and explain whether the argument depends on it."
-      ]
-    },
-    budget: {
-      agentCount: 1,
-      concurrency: 1,
-      model: "runtimeDefault",
-      reasoningEffort: "medium",
-      tools: ["checkpointSpecialistResult"],
-      maxOutputTokens: 512,
-      maxLatencyMs: 120_000
-    },
+    brief,
+    specialistBriefs,
+    coordination,
+    budget,
     integratedTeachingCard: {
       title: "Specialist review",
       status: "streaming",
@@ -5810,6 +5970,7 @@ function initialState(): LearningApplicationState {
     authentication: signedOutAuthentication(),
     intakeError: null,
     runtimeAvailable: false,
+    runtimeCapabilities: { models: [] },
     modelAccess: {
       status: "unavailable",
       cause: "runtime",
@@ -5818,6 +5979,94 @@ function initialState(): LearningApplicationState {
     accessConfirmationPreference: { confirmFullAccess: true },
     personalNoteSynthesisPreference: { includePersonalNotes: true }
   };
+}
+
+function isReasoningPreference(value: unknown): value is ReasoningPreference {
+  return value === "faster" || value === "balanced" || value === "deeper";
+}
+
+function migrateReasoningPreference(value: unknown): ReasoningPreference {
+  if (value === undefined) return "balanced";
+  if (!isReasoningPreference(value)) throw new Error("Stored Reasoning Preference is invalid.");
+  return value;
+}
+
+function migrateRuntimeOverride(value: unknown): RuntimeOverride | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.model !== "string" || !value.model.trim()
+    || !isReasoningEffort(value.reasoningEffort)) {
+    throw new Error("Stored Runtime Override is invalid.");
+  }
+  return { model: value.model, reasoningEffort: value.reasoningEffort };
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(value));
+}
+
+function validatedRuntimeCapabilities(value: unknown): ModelRuntimeCapabilities {
+  if (!isRecord(value) || !Array.isArray(value.models) || !value.models.every((model) => isRecord(model)
+    && typeof model.model === "string" && Boolean(model.model.trim())
+    && typeof model.displayName === "string" && Boolean(model.displayName.trim())
+    && typeof model.isDefault === "boolean"
+    && Array.isArray(model.supportedReasoningEfforts)
+    && model.supportedReasoningEfforts.length > 0
+    && model.supportedReasoningEfforts.every(isReasoningEffort))) {
+    throw new Error("Codex Runtime returned invalid model capabilities.");
+  }
+  return structuredClone(value) as unknown as ModelRuntimeCapabilities;
+}
+
+function selectAgentBudget(
+  session: LearningSession,
+  coordination: AgentTaskCoordination,
+  capabilities: ModelRuntimeCapabilities
+): AgentBudget {
+  const runtimeSelection = selectTeachingRuntime(session, capabilities);
+  const agentCount = coordination === "single" ? 1 : 2;
+  return {
+    agentCount,
+    concurrency: coordination === "independent" ? agentCount : 1,
+    model: runtimeSelection.model,
+    reasoningEffort: runtimeSelection.reasoningEffort,
+    tools: ["checkpointSpecialistResult"],
+    maxTokens: BOUNDED_SPECIALIST_BUDGET_V1.maxTokens,
+    maxLatencyMs: BOUNDED_SPECIALIST_BUDGET_V1.maxLatencyMs
+  };
+}
+
+function clearUnsupportedRuntimeOverrides(
+  sessions: LearningSession[],
+  capabilities: ModelRuntimeCapabilities
+): void {
+  for (const session of sessions) {
+    const override = session.runtimeOverride;
+    if (!override) continue;
+    const model = capabilities.models.find((candidate) => candidate.model === override.model);
+    if (!model?.supportedReasoningEfforts.includes(override.reasoningEffort)) session.runtimeOverride = null;
+  }
+}
+
+function selectTeachingRuntime(
+  session: LearningSession,
+  capabilities: ModelRuntimeCapabilities
+): TeachingRequest["runtimeSelection"] {
+  if (session.runtimeOverride) return structuredClone(session.runtimeOverride);
+  const automaticEffort = ({ faster: "low", balanced: "medium", deeper: "high" } as const)[session.reasoningPreference];
+  const defaultModel = capabilities.models.find((model) => model.isDefault);
+  if (!defaultModel) throw new Error("Codex Runtime did not advertise one default model.");
+  const safeEfforts: ReasoningEffort[] = [
+    automaticEffort,
+    ...(["medium", "low", "high", "minimal", "none", "xhigh"] as const).filter((effort) => effort !== automaticEffort)
+  ];
+  for (const effort of safeEfforts) {
+    if (defaultModel.supportedReasoningEfforts.includes(effort)) {
+      return { model: "runtimeDefault", reasoningEffort: effort };
+    }
+    const supportingModel = capabilities.models.find((model) => model.supportedReasoningEfforts.includes(effort));
+    if (supportingModel) return { model: supportingModel.model, reasoningEffort: effort };
+  }
+  throw new Error("Codex Runtime advertises only maximum reasoning choices; choose an advanced Runtime Override explicitly.");
 }
 
 function unavailableModelAccess(error: unknown): Extract<ModelAccessState, { status: "unavailable" }> {

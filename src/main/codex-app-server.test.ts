@@ -1,7 +1,61 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CodexAppServerRuntime, type AppServerTransport } from "./codex-app-server";
 
 describe("Codex app-server contract", () => {
+  it("discovers only models and reasoning efforts advertised by the active runtime", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "model/list") {
+        transport.respond(message.id, {
+          data: [{
+            id: "codex-deep", model: "codex-deep", displayName: "Codex Deep", description: "Deep review",
+            isDefault: true, hidden: false, defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "medium", description: "Balanced" },
+              { reasoningEffort: "high", description: "Deep" }
+            ]
+          }],
+          nextCursor: null
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    await expect(runtime.getCapabilities()).resolves.toEqual({
+      models: [{
+        model: "codex-deep", displayName: "Codex Deep", isDefault: true,
+        supportedReasoningEfforts: ["medium", "high"]
+      }]
+    });
+    expect(transport.messages).toContainEqual(expect.objectContaining({
+      method: "model/list", params: { cursor: null, includeHidden: false, limit: 100 }
+    }));
+  });
+
+  it("rejects duplicate or ambiguous runtime model catalogs", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "model/list") {
+        const model = {
+          model: "duplicate", displayName: "Duplicate", isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }]
+        };
+        transport.respond(message.id, { data: [model, model], nextCursor: null });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    await expect(runtime.getCapabilities()).rejects.toThrow("ambiguous model catalog");
+  });
+
   it("initializes once and supports both Codex-owned authentication paths", async () => {
     let account: null | { type: "chatgpt"; email: string; planType: string } | { type: "apiKey" } = null;
     const transport = new ScriptedTransport((message) => {
@@ -421,8 +475,8 @@ describe("Codex app-server contract", () => {
         verificationNeeds: ["Identify hidden assumptions."]
       },
       budget: {
-        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
-        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+        agentCount: 1, concurrency: 1, model: "codex-deep", reasoningEffort: "high",
+        tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
       },
       signal: new AbortController().signal,
       onStatus: (status) => statuses.push(status),
@@ -437,13 +491,14 @@ describe("Codex app-server contract", () => {
     expect(threadStart).toMatchObject({
       params: {
         sandbox: "read-only",
+        model: "codex-deep",
         dynamicTools: [expect.objectContaining({ name: "checkpoint_specialist_result" })],
         config: { features: { apps: false, multi_agent: false, shell_tool: false, unified_exec: false } }
       }
     });
     expect(JSON.stringify(threadStart.params)).toContain("Use only the supplied Agent Brief");
     const turnStart = transport.messages.find((message) => message.method === "turn/start")!;
-    expect(turnStart).toMatchObject({ params: { effort: "medium" } });
+    expect(turnStart).toMatchObject({ params: { effort: "high" } });
     expect(JSON.stringify(turnStart.params)).toContain("Choose disjoint neighbourhoods.");
     expect(JSON.stringify(turnStart.params)).not.toContain("/workspace");
     expect(events).toContain("specialist:turnCompleted");
@@ -498,7 +553,7 @@ describe("Codex app-server contract", () => {
       },
       budget: {
         agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
-        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+        tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
       },
       signal: new AbortController().signal,
       onStatus: () => undefined,
@@ -512,7 +567,7 @@ describe("Codex app-server contract", () => {
     ]);
   });
 
-  it("interrupts Specialist Agent output at its conservative token ceiling", async () => {
+  it("interrupts Specialist Agent work when Codex reports total token use beyond its limit", async () => {
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;
       if (message.method === "initialize") {
@@ -523,11 +578,14 @@ describe("Codex app-server contract", () => {
       if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "budget-thread" } });
       if (message.method === "turn/start") {
         transport.respond(message.id, { turn: { id: "budget-turn" } });
-        transport.request(703, "item/tool/call", {
-          threadId: "budget-thread", turnId: "budget-turn", callId: "oversized-checkpoint",
-          namespace: null, tool: "checkpoint_specialist_result",
-          arguments: { title: "x".repeat(513), content: "Useful conclusion." }
-        });
+        queueMicrotask(() => transport.notify("thread/tokenUsage/updated", {
+          threadId: "budget-thread", turnId: "budget-turn",
+          tokenUsage: {
+            total: { inputTokens: 300, cachedInputTokens: 0, outputTokens: 120, reasoningOutputTokens: 100, totalTokens: 520 },
+            last: { inputTokens: 300, cachedInputTokens: 0, outputTokens: 120, reasoningOutputTokens: 100, totalTokens: 520 },
+            modelContextWindow: 100_000
+          }
+        }));
       }
       if (message.method === "turn/interrupt") transport.respond(message.id, {});
     });
@@ -541,13 +599,133 @@ describe("Codex app-server contract", () => {
       },
       budget: {
         agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
-        tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+        tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
       },
       signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined
     })).rejects.toThrow("exceeded its token budget");
     expect(transport.messages).toContainEqual(expect.objectContaining({
       method: "turn/interrupt", params: { threadId: "budget-thread", turnId: "budget-turn" }
     }));
+  });
+
+  it("interrupts every concurrent Specialist Agent turn owned by one Learning Session", async () => {
+    let nextThread = 0;
+    let nextTurn = 0;
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") {
+        nextThread += 1;
+        const id = `parallel-thread-${nextThread}`;
+        transport.respond(message.id, { thread: { id } });
+      }
+      if (message.method === "turn/start") {
+        nextTurn += 1;
+        transport.respond(message.id, { turn: { id: `parallel-turn-${nextTurn}` } });
+      }
+      if (message.method === "turn/interrupt") {
+        transport.respond(message.id, {});
+        const params = message.params as { threadId: string; turnId: string };
+        queueMicrotask(() => transport.notify("turn/completed", {
+          threadId: params.threadId,
+          turn: { id: params.turnId, status: "interrupted", error: null }
+        }));
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const specialistRequest = () => runtime.runSpecialistAgent({
+      sessionId: "parallel-session", purpose: "Independent bounded review",
+      brief: {
+        learningGoal: "Check the proof", sourceAnchors: [], constraints: ["Review independently."],
+        learnerEvidence: [], expectedOutput: "One concise card.", verificationNeeds: ["Identify assumptions."]
+      },
+      budget: {
+        agentCount: 2, concurrency: 2, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined
+    });
+    const reviews = Promise.allSettled([specialistRequest(), specialistRequest()]);
+    await vi.waitFor(() => expect(transport.messages.filter((message) => message.method === "turn/start")).toHaveLength(2));
+
+    await runtime.cancelTeaching("parallel-session");
+    await reviews;
+
+    expect(transport.messages.filter((message) => message.method === "turn/interrupt").map((message) => message.params))
+      .toEqual(expect.arrayContaining([
+        { threadId: "parallel-thread-1", turnId: "parallel-turn-1" },
+        { threadId: "parallel-thread-2", turnId: "parallel-turn-2" }
+      ]));
+  });
+
+  it("interrupts a concurrent Specialist Agent that finishes starting after cancellation begins", async () => {
+    let nextThread = 0;
+    let handledTurnStarts = 0;
+    let delayedTurnRequestId: number | null = null;
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") {
+        nextThread += 1;
+        transport.respond(message.id, { thread: { id: `startup-thread-${nextThread}` } });
+      }
+      if (message.method === "turn/start") {
+        handledTurnStarts += 1;
+        if (handledTurnStarts === 1) transport.respond(message.id, { turn: { id: "startup-turn-1" } });
+        else delayedTurnRequestId = message.id;
+      }
+      if (message.method === "turn/interrupt") {
+        transport.respond(message.id, {});
+        const params = message.params as { threadId: string; turnId: string };
+        queueMicrotask(() => transport.notify("turn/completed", {
+          threadId: params.threadId,
+          turn: { id: params.turnId, status: "interrupted", error: null }
+        }));
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const controller = new AbortController();
+    const startedTurnIds: string[] = [];
+    const specialistRequest = () => runtime.runSpecialistAgent({
+      sessionId: "startup-session", purpose: "Independent bounded review",
+      brief: {
+        learningGoal: "Check the proof", sourceAnchors: [], constraints: ["Review independently."],
+        learnerEvidence: [], expectedOutput: "One concise card.", verificationNeeds: ["Identify assumptions."]
+      },
+      budget: {
+        agentCount: 2, concurrency: 2, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: controller.signal, onStatus: () => undefined, onPartialResult: () => undefined,
+      onRuntimeEvent: (event) => {
+        if (event.type === "turnStarted" && event.turnId) startedTurnIds.push(event.turnId);
+      }
+    });
+    const reviews = Promise.allSettled([specialistRequest(), specialistRequest()]);
+    await vi.waitFor(() => {
+      expect(delayedTurnRequestId).not.toBeNull();
+      expect(startedTurnIds).toContain("startup-turn-1");
+    });
+
+    controller.abort();
+    const cancellation = runtime.cancelTeaching("startup-session");
+    transport.respond(delayedTurnRequestId!, { turn: { id: "startup-turn-2" } });
+    await cancellation;
+    await reviews;
+
+    expect(transport.messages.filter((message) => message.method === "turn/interrupt").map((message) => message.params))
+      .toEqual(expect.arrayContaining([
+        { threadId: "startup-thread-1", turnId: "startup-turn-1" },
+        { threadId: "startup-thread-2", turnId: "startup-turn-2" }
+      ]));
   });
 
   it("interrupts active teaching and shuts down the stdio transport", async () => {

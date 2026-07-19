@@ -815,7 +815,7 @@ describe("Learning Application", () => {
       requiresConfirmation: false,
       confirmationReason: null
     }, true);
-    const { application } = await launchWithRuntime(runtime);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
     const started = await application.submit({
       type: "submitSessionIntake",
       mathematics: "Show that every compact subset of a Hausdorff space is closed."
@@ -3109,7 +3109,7 @@ describe("Learning Application", () => {
         identifiedNeed: expect.objectContaining({ kind: "hiddenAssumptionReview", requestedBy: "learner" }),
         budget: {
           agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
-          tools: ["checkpointSpecialistResult"], maxOutputTokens: 512, maxLatencyMs: 120_000
+          tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
         },
         integratedTeachingCard: expect.objectContaining({ status: "streaming", content: "" })
       })
@@ -3134,6 +3134,186 @@ describe("Learning Application", () => {
     const relaunched = await LearningApplication.launch(dataDirectory);
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].agentTasks[0]).toEqual(complete);
+  });
+
+  it("uses each Reasoning Preference to select an inspectable automatic Agent Budget", async () => {
+    const expected = {
+      faster: { model: "runtimeDefault", reasoningEffort: "low", maxTokens: 512, maxLatencyMs: 120_000 },
+      balanced: { model: "runtimeDefault", reasoningEffort: "medium", maxTokens: 512, maxLatencyMs: 120_000 },
+      deeper: { model: "codex-deep", reasoningEffort: "high", maxTokens: 512, maxLatencyMs: 120_000 }
+    } as const;
+    for (const preference of ["faster", "balanced", "deeper"] as const) {
+      const runtime = new DeterministicModelRuntime({
+        learningGoal: "Understand why compact subsets are closed",
+        scope: "Find the hidden separation assumption",
+        initialTeachingDirection: "Inspect the complement argument",
+        requiresConfirmation: false, confirmationReason: null
+      }, true);
+      const { application } = await launchWithRuntime(runtime);
+      await application.submit({ type: "submitSessionIntake", mathematics: "Prove compact subsets are closed." });
+      runtime.emitTeaching("Choose disjoint neighbourhoods and use compactness.");
+      runtime.completeTeaching();
+      await application.waitForModelWork();
+      expect(application.getState().sessions[0]).toMatchObject({ reasoningPreference: "balanced", runtimeOverride: null });
+      await application.submit({ type: "setReasoningPreference", preference });
+      await application.submit({ type: "submitQuestion", text: "Which assumption controls the separation step?" });
+      expect(runtime.teachingRequests.at(-1)?.runtimeSelection).toEqual({
+        model: expected[preference].model, reasoningEffort: expected[preference].reasoningEffort
+      });
+      expect(runtime.teachingRequests.at(-1)?.runtimeSelection.reasoningEffort).not.toBe("max");
+      runtime.completeTeaching();
+      await application.waitForModelWork();
+      const state = await application.submit({ type: "requestSpecialistReview" });
+      expect(state.sessions[0].agentTasks[0].budget).toMatchObject(expected[preference]);
+      expect(state.sessions[0].agentTasks[0].budget.reasoningEffort).not.toBe("max");
+      runtime.completeSpecialist({ title: "Review", content: "The Hausdorff assumption is required." });
+      await application.waitForModelWork();
+    }
+  });
+
+  it("validates an advanced Runtime Override against active Codex Runtime capabilities", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the claim", scope: "One inference",
+      initialTeachingDirection: "Start from the definition", requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application, dataDirectory } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Explain the claim." });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    await expect(application.submit({
+      type: "setRuntimeOverride", override: { model: "codex-fast", reasoningEffort: "high" }
+    })).rejects.toThrow("does not support high reasoning");
+    const state = await application.submit({
+      type: "setRuntimeOverride", override: { model: "codex-deep", reasoningEffort: "high" }
+    });
+    expect(state.sessions[0].runtimeOverride).toEqual({ model: "codex-deep", reasoningEffort: "high" });
+    expect(state.runtimeCapabilities.models).toEqual(runtime.capabilities.models);
+    await application.submit({ type: "submitQuestion", text: "Check this inference." });
+    expect(runtime.teachingRequests.at(-1)?.runtimeSelection).toEqual({ model: "codex-deep", reasoningEffort: "high" });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const relaunched = await LearningApplication.launch(dataDirectory, runtime);
+    applications.push(relaunched);
+    expect(relaunched.getState().sessions[0]).toMatchObject({
+      reasoningPreference: "balanced",
+      runtimeOverride: { model: "codex-deep", reasoningEffort: "high" }
+    });
+
+    const replacementRuntime = new DeterministicModelRuntime({
+      learningGoal: "Unused", scope: "Unused", initialTeachingDirection: "Unused",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    replacementRuntime.capabilities.models.splice(0, replacementRuntime.capabilities.models.length, {
+      model: "codex-fast", displayName: "Codex Fast", isDefault: true, supportedReasoningEfforts: ["low", "medium"]
+    });
+    const restored = await relaunched.restoreModelRuntime(replacementRuntime);
+    expect(restored.sessions[0]).toMatchObject({ reasoningPreference: "balanced", runtimeOverride: null });
+  });
+
+  it("routes automatic teaching to a safe effort on another advertised model before requiring an override", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the claim", scope: "One inference",
+      initialTeachingDirection: "Start from the definition", requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    runtime.capabilities.models.splice(0, runtime.capabilities.models.length,
+      { model: "maximum-only", displayName: "Maximum Only", isDefault: true, supportedReasoningEfforts: ["max", "ultra"] },
+      { model: "safe-model", displayName: "Safe Model", isDefault: false, supportedReasoningEfforts: ["medium"] }
+    );
+    const { application } = await launchWithRuntime(runtime);
+
+    await application.submit({ type: "submitSessionIntake", mathematics: "Explain the claim." });
+
+    expect(runtime.teachingRequests.at(-1)?.runtimeSelection).toEqual({
+      model: "safe-model", reasoningEffort: "medium"
+    });
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+  });
+
+  it("keeps confirmed authentication distinct from a runtime capability discovery failure", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the claim", scope: "One inference", initialTeachingDirection: "Start",
+      requiresConfirmation: false, confirmationReason: null
+    });
+    runtime.capabilitiesError = new Error("model catalog unavailable");
+    const { application } = await launchWithRuntime(runtime);
+    expect(application.getState()).toMatchObject({
+      authentication: { status: "signedIn", accountLabel: "learner@example.com" },
+      runtimeAvailable: false,
+      modelAccess: { status: "unavailable", cause: "runtime" }
+    });
+  });
+
+  it("sequences dependent Specialist Agents and supplies the first result to the next Agent Brief", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check the proof", scope: "Inspect assumptions", initialTeachingDirection: "Read the step",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Review this proof." });
+    runtime.emitTeaching("The proof chooses disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const state = await application.submit({ type: "requestSpecialistReview", coordination: "dependent" });
+    expect(state.sessions[0].agentTasks[0].budget).toMatchObject({ agentCount: 2, concurrency: 1 });
+    expect(runtime.specialistRequests).toHaveLength(1);
+    runtime.completeSpecialistRequest(runtime.specialistRequests[0], {
+      title: "Assumption review", content: "The step requires Hausdorff separation."
+    });
+    await vi.waitFor(() => expect(runtime.specialistRequests).toHaveLength(2));
+    expect(runtime.specialistRequests[1].brief.constraints).toContain(
+      "Earlier Specialist Agent conclusion: The step requires Hausdorff separation."
+    );
+    runtime.completeSpecialistRequest(runtime.specialistRequests[1], {
+      title: "Boundary review", content: "Without Hausdorff separation the claim can fail."
+    });
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].agentTasks[0]).toMatchObject({
+      status: "complete",
+      integratedTeachingCard: { status: "completed", content: expect.stringContaining("Without Hausdorff separation") }
+    });
+  });
+
+  it("rejects an unrecognized Specialist Agent coordination value at the application boundary", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check the proof", scope: "Inspect assumptions", initialTeachingDirection: "Read the step",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Review this proof." });
+    runtime.emitTeaching("The proof chooses disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+
+    await expect(application.submit({
+      type: "requestSpecialistReview", coordination: "unbounded-swarm"
+    } as never)).rejects.toThrow("Choose single, dependent, or independent");
+    expect(application.getState().sessions[0].agentTasks).toEqual([]);
+  });
+
+  it("starts genuinely independent Specialist Agents concurrently within the Agent Budget", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Compare checks", scope: "Inspect assumptions", initialTeachingDirection: "Read the step",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Review this proof independently." });
+    runtime.emitTeaching("The proof chooses disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    const state = await application.submit({ type: "requestSpecialistReview", coordination: "independent" });
+    expect(state.sessions[0].agentTasks[0].budget).toMatchObject({ agentCount: 2, concurrency: 2 });
+    expect(runtime.specialistRequests).toHaveLength(2);
+    expect(runtime.specialistRequests[1].brief.constraints).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("Earlier Specialist Agent conclusion")
+    ]));
+    runtime.completeSpecialistRequest(runtime.specialistRequests[0], { title: "Review A", content: "Assumption A." });
+    runtime.completeSpecialistRequest(runtime.specialistRequests[1], { title: "Review B", content: "Boundary B." });
+    await application.waitForModelWork();
+    expect(application.getState().sessions[0].agentTasks[0].status).toBe("complete");
   });
 
   it("includes the relevant Source Anchor when the learner requests review of an anchored Teaching Card", async () => {
@@ -3212,6 +3392,53 @@ describe("Learning Application", () => {
         error: "The specialist could not finish the final review.",
         retryable: true
       }
+    });
+  });
+
+  it("stops honestly at a budget limit while preserving useful partial output", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check a compactness argument", scope: "Inspect one assumption",
+      initialTeachingDirection: "Read the current explanation", requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Review this compactness proof." });
+    runtime.emitTeaching("The proof chooses disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    await application.submit({ type: "requestSpecialistReview" });
+    runtime.emitSpecialistPartial("The step uses Hausdorff separation.");
+    runtime.failSpecialist(new Error("Specialist Agent output exceeded its token budget."));
+    await application.waitForModelWork();
+
+    expect(application.getState().sessions[0].agentTasks[0]).toMatchObject({
+      status: "stopped",
+      statusMessage: "Agent Task stopped at its token limit. Useful partial output was preserved.",
+      integratedTeachingCard: {
+        status: "stopped", content: "The step uses Hausdorff separation.", retryable: true
+      }
+    });
+  });
+
+  it("does not claim partial output was preserved when a budget limit is reached before a checkpoint", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Check a compactness argument", scope: "Inspect one assumption",
+      initialTeachingDirection: "Read the current explanation", requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    await application.submit({ type: "submitSessionIntake", mathematics: "Review this compactness proof." });
+    runtime.emitTeaching("The proof chooses disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    await application.submit({ type: "requestSpecialistReview" });
+    runtime.failSpecialist(new Error("Specialist Agent exceeded its token budget."));
+    await application.waitForModelWork();
+
+    expect(application.getState().sessions[0].agentTasks[0]).toMatchObject({
+      status: "stopped",
+      statusMessage: "Agent Task stopped at its token limit. No useful partial output was available to preserve.",
+      integratedTeachingCard: { status: "stopped", content: "", retryable: true }
     });
   });
 
@@ -3609,7 +3836,11 @@ describe("Learning Application", () => {
 
     state = await application.restoreModelRuntime(runtime);
 
-    expect(state).toMatchObject({ runtimeAvailable: true, modelAccess: { status: "available" } });
+    expect(state).toMatchObject({
+      runtimeAvailable: true,
+      modelAccess: { status: "available" },
+      runtimeCapabilities: runtime.capabilities
+    });
     expect(state.sessions[0].pendingQuestion).toMatchObject({ text: "Where is finiteness used?" });
     expect(runtime.teachingRequests).toHaveLength(0);
   });
@@ -4419,17 +4650,24 @@ class DeterministicModelRuntime implements ModelRuntime {
   readonly canceledSessionIds: string[] = [];
   private readonly teachingCompletions = new Map<TeachingRequest, () => void>();
   private readonly teachingFailures = new Map<TeachingRequest, (error: Error) => void>();
-  private specialistCompletion: ((result: SpecialistAgentResult) => void) | null = null;
-  private specialistFailure: ((error: Error) => void) | null = null;
+  private readonly specialistCompletions = new Map<SpecialistAgentRequest, (result: SpecialistAgentResult) => void>();
+  private readonly specialistFailures = new Map<SpecialistAgentRequest, (error: Error) => void>();
   authentication: Awaited<ReturnType<ModelRuntime["getAuthentication"]>> = {
     status: "signedIn",
     method: "chatgpt",
     accountLabel: "learner@example.com"
   };
+  readonly capabilities: Awaited<ReturnType<ModelRuntime["getCapabilities"]>> = {
+    models: [
+      { model: "codex-fast", displayName: "Codex Fast", isDefault: true, supportedReasoningEfforts: ["low", "medium"] },
+      { model: "codex-deep", displayName: "Codex Deep", isDefault: false, supportedReasoningEfforts: ["medium", "high", "max"] }
+    ]
+  };
   chatGptLoginStarts = 0;
   readonly receivedApiKeys: string[] = [];
   proposalError: Error | null = null;
   authenticationError: Error | null = null;
+  capabilitiesError: Error | null = null;
   cancelError: Error | null = null;
   artifactSynthesisError: Error | null = null;
   completeTeachingOnCancel = true;
@@ -4438,6 +4676,11 @@ class DeterministicModelRuntime implements ModelRuntime {
   holdArtifactSynthesis = false;
 
   constructor(private readonly proposal: SessionProposal, private readonly holdTeaching = false) {}
+
+  async getCapabilities() {
+    if (this.capabilitiesError) throw this.capabilitiesError;
+    return structuredClone(this.capabilities);
+  }
 
   async getAuthentication() {
     if (this.authenticationError) throw this.authenticationError;
@@ -4500,8 +4743,8 @@ class DeterministicModelRuntime implements ModelRuntime {
     request.onRuntimeEvent?.({ type: "turnStarted", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: "Specialist turn started." });
     request.onRuntimeEvent?.({ type: "inputSubmitted", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: JSON.stringify(request.brief) });
     return new Promise<SpecialistAgentResult>((resolve, reject) => {
-      this.specialistCompletion = resolve;
-      this.specialistFailure = reject;
+      this.specialistCompletions.set(request, resolve);
+      this.specialistFailures.set(request, reject);
     });
   }
 
@@ -4563,10 +4806,15 @@ class DeterministicModelRuntime implements ModelRuntime {
   }
 
   completeSpecialist(result: SpecialistAgentResult) {
-    this.specialistRequests.at(-1)?.onRuntimeEvent?.({
+    const request = this.specialistRequests.at(-1);
+    if (request) this.completeSpecialistRequest(request, result);
+  }
+
+  completeSpecialistRequest(request: SpecialistAgentRequest, result: SpecialistAgentResult) {
+    request.onRuntimeEvent?.({
       type: "turnCompleted", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: "Specialist turn completed."
     });
-    this.specialistCompletion?.(result);
+    this.specialistCompletions.get(request)?.(result);
   }
 
   waitSpecialist(message: string) {
@@ -4583,14 +4831,17 @@ class DeterministicModelRuntime implements ModelRuntime {
     this.specialistRequests.at(-1)?.onRuntimeEvent?.({
       type: "turnFailed", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: error.message
     });
-    this.specialistFailure?.(error);
+    const request = this.specialistRequests.at(-1);
+    if (request) this.specialistFailures.get(request)?.(error);
   }
 
   async cancelTeaching(sessionId: string) {
     this.canceledSessionIds.push(sessionId);
     if (this.cancelError) throw this.cancelError;
     if (this.completeTeachingOnCancel) this.completeTeaching(sessionId);
-    this.specialistCompletion?.({ title: "Stopped", content: "Stopped" });
+    for (const [request, complete] of this.specialistCompletions) {
+      if (request.sessionId === sessionId) complete({ title: "Stopped", content: "Stopped" });
+    }
   }
 
   async shutdown() {}
