@@ -70,6 +70,7 @@ export interface ResearchAction {
   accessPolicy: SessionAccessPolicy;
   query: DerivedResearchQuery;
   queryOrigin: "learnerAuthored" | "automaticCorroboration";
+  researchDepth: "lightweight" | "deep";
   informedBySourceIds: string[];
   destination: string;
   excerpts: ResearchExcerpt[];
@@ -97,7 +98,7 @@ export interface CorroborationPass {
   errataCheck: "noneFound" | "found" | "unchecked";
   independentSupport: "sufficient" | "weakOnly" | "conflicting" | "missing";
   proofApproachResearch: "notRequired" | "established" | "incomplete";
-  deeperResearch: { required: boolean; reason: string | null };
+  deeperResearch: { required: boolean; performed: boolean; reason: string | null };
   evidence: CorroborationResearchEvidence[];
   sourceDiscrepancies: SourceDiscrepancy[];
   message: string;
@@ -703,6 +704,7 @@ export interface LearningSession {
   researchEgressPermission: { status: "notGranted" | "granted" | "revoked" };
   researchActions: ResearchAction[];
   corroborationPass: CorroborationPass | null;
+  corroborationPassHistory: CorroborationPass[];
   sourceAnchors: SourceAnchor[];
   sourceAnchorRequests: SourceAnchorRequest[];
   annotations: SourceAnnotation[];
@@ -1522,9 +1524,11 @@ export class LearningApplication {
   }
 
   async waitForModelWork(): Promise<void> {
-    await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
-    await Promise.all([...this.researchWorks.values()].map((work) => work.promise));
-    await this.persistence;
+    do {
+      await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
+      await Promise.all([...this.researchWorks.values()].map((work) => work.promise));
+      await this.persistence;
+    } while (this.modelWorks.size > 0 || this.researchWorks.size > 0);
   }
 
   async shutdown(): Promise<void> {
@@ -2178,7 +2182,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
-        void this.beginAutomaticCorroboration(session);
+        await this.beginAutomaticCorroboration(session);
         break;
       }
       case "submitSessionIntake": {
@@ -2266,7 +2270,6 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
-        await this.beginAutomaticCorroboration(session);
         if (!proposal.requiresConfirmation) await this.beginTeaching(session);
         break;
       }
@@ -2552,6 +2555,7 @@ export class LearningApplication {
           accessPolicy: session.accessPolicy,
           query,
           queryOrigin: "learnerAuthored",
+          researchDepth: "lightweight",
           informedBySourceIds: [],
           destination,
           excerpts: [],
@@ -3401,6 +3405,14 @@ export class LearningApplication {
     questionContext?: QuestionContextItem[],
     questionRevision?: TeachingRequest["questionRevision"]
   ): Promise<void> {
+    const corroborationMathematics = focus
+      ? [session.learningGoal, session.sessionTarget, focus.instruction, mathematics].join("\n")
+      : mathematics;
+    const corroborationPass = await this.beginAutomaticCorroboration(
+      session,
+      corroborationMathematics,
+      focus ? [focus.sourceId] : []
+    );
     const sourceContext = await this.buildTeachingSourceContext(session, undefined, questionContext);
     const log = this.agentWorkLogs[session.id] ??= [];
     target.start(sourceContext, log.length + 1);
@@ -3417,7 +3429,7 @@ export class LearningApplication {
       learningGoal: session.learningGoal,
       scope: session.proposal.scope,
       initialTeachingDirection: session.proposal.initialTeachingDirection,
-      corroboration: teachingCorroborationContext(session.corroborationPass),
+      corroboration: teachingCorroborationContext(corroborationPass),
       ...(roadmap && stage && session.learningSlice ? {
         learningSlice: {
           roadmapTitle: roadmap.title,
@@ -3742,41 +3754,63 @@ export class LearningApplication {
     }
   }
 
-  private async beginAutomaticCorroboration(session: LearningSession): Promise<void> {
-    if (session.corroborationPass) return;
-    const query = automaticCorroborationQuery(session.mathematics);
-    if (!query) return;
-    const baselinePresent = suppliedPedagogicalBaselinePresent(session.mathematics);
-    session.corroborationPass = {
+  private async beginAutomaticCorroboration(
+    session: LearningSession,
+    mathematics = session.mathematics,
+    informedSourceIds: string[] = []
+  ): Promise<CorroborationPass | null> {
+    const query = automaticCorroborationQuery(mathematics);
+    if (!query) return null;
+    const existing = [session.corroborationPass, ...session.corroborationPassHistory]
+      .find((pass) => pass?.currentUse.conclusion === mathematics) ?? null;
+    if (existing) {
+      if (session.corroborationPass?.id !== existing.id) {
+        if (session.corroborationPass) session.corroborationPassHistory.push(structuredClone(session.corroborationPass));
+        session.corroborationPassHistory = session.corroborationPassHistory.filter((pass) => pass.id !== existing.id);
+        session.corroborationPass = structuredClone(existing);
+      }
+      if (existing.status === "running" && existing.researchActionId) {
+        await this.researchWorks.get(existing.researchActionId)?.promise;
+      }
+      return session.corroborationPass;
+    }
+    if (session.corroborationPass) session.corroborationPassHistory.push(structuredClone(session.corroborationPass));
+    const baselinePresent = suppliedPedagogicalBaselinePresent(mathematics);
+    const pass: CorroborationPass = {
       id: crypto.randomUUID(),
       researchActionId: null,
       status: "running",
-      relevantResult: query.theoremNames[0] ?? query.text,
-      currentUse: { assumptions: [...query.assumptions], conclusion: session.mathematics },
+      relevantResult: query.theoremNames[0] ?? (query.keywords[0] === "mathematical proof" ? "Current proof claim" : query.text),
+      currentUse: { assumptions: [...query.assumptions], conclusion: mathematics },
       pedagogicalBaselinePresent: baselinePresent,
       assumptionComparison: "unchecked",
       conclusionComparison: "unchecked",
       errataCheck: "unchecked",
       independentSupport: "missing",
       proofApproachResearch: baselinePresent ? "notRequired" : "incomplete",
-      deeperResearch: { required: false, reason: null },
+      deeperResearch: { required: false, performed: false, reason: null },
       evidence: [],
       sourceDiscrepancies: [],
       message: "Corroboration is checking the result, its assumptions and conclusion, known errata, and independent support."
     };
+    session.corroborationPass = pass;
     if (!this.externalResearch) {
-      completeUnavailableCorroboration(session.corroborationPass);
-      return;
+      completeUnavailableCorroboration(pass);
+      return pass;
     }
     const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
     const intakeSource = this.state.sources.find((source) => source.kind === "managedAsset"
-      && session.sourceIds.includes(source.id) && managedAssetLearnerContent(source) === session.mathematics);
-    const informedBySourceIds = intakeSource && authorizedSourceIds.has(intakeSource.id) ? [intakeSource.id] : [];
+      && session.sourceIds.includes(source.id) && managedAssetLearnerContent(source) === mathematics);
+    const informedBySourceIds = [...new Set([
+      ...(intakeSource ? [intakeSource.id] : []),
+      ...informedSourceIds
+    ])].filter((sourceId) => authorizedSourceIds.has(sourceId));
     const research: ResearchAction = {
       id: crypto.randomUUID(),
       accessPolicy: session.accessPolicy,
       query,
       queryOrigin: "automaticCorroboration",
+      researchDepth: "lightweight",
       informedBySourceIds,
       destination: researchDestination(query),
       excerpts: [],
@@ -3784,10 +3818,36 @@ export class LearningApplication {
       result: null,
       error: null
     };
-    session.corroborationPass.researchActionId = research.id;
+    pass.researchActionId = research.id;
     session.researchActions.push(research);
+    const lightweightWork = this.beginExternalResearch(research);
     await this.publishAndPersist();
-    await this.beginExternalResearch(research);
+    await lightweightWork;
+    if (pass.deeperResearch.required) {
+      const deepQuery = deeperCorroborationQuery(query, pass);
+      const deeperResearch: ResearchAction = {
+        id: crypto.randomUUID(),
+        accessPolicy: session.accessPolicy,
+        query: deepQuery,
+        queryOrigin: "automaticCorroboration",
+        researchDepth: "deep",
+        informedBySourceIds,
+        destination: researchDestination(deepQuery),
+        excerpts: [],
+        status: "running",
+        result: null,
+        error: null
+      };
+      pass.researchActionId = deeperResearch.id;
+      pass.status = "running";
+      pass.deeperResearch.performed = true;
+      pass.message = "Deeper corroboration is investigating missing, weak, disputed, or conflicting evidence before teaching proceeds.";
+      session.researchActions.push(deeperResearch);
+      const deepWork = this.beginExternalResearch(deeperResearch);
+      await this.publishAndPersist();
+      await deepWork;
+    }
+    return pass;
   }
 
   private beginExternalResearch(research: ResearchAction): Promise<void> {
@@ -3799,6 +3859,7 @@ export class LearningApplication {
           this.externalResearch!.research({
             query: research.query,
             queryOrigin: research.queryOrigin,
+            researchDepth: research.researchDepth,
             informedBySourceIds: [...research.informedBySourceIds],
             destination: research.destination,
             excerpts: structuredClone(research.excerpts),
@@ -4413,8 +4474,24 @@ function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery 
     .map((term) => term.toLocaleLowerCase())
     .filter((term, index, terms) => allowedKeywords.has(term) && !assumptionTerms.has(term) && terms.indexOf(term) === index)
     .slice(0, 5);
-  if (assumptions.length === 0 && keywords.length === 0) return null;
-  return buildDerivedResearchQuery({ theoremNames: [], assumptions, keywords });
+  return buildDerivedResearchQuery({
+    theoremNames: [],
+    assumptions,
+    keywords: assumptions.length === 0 && keywords.length === 0 ? ["mathematical proof"] : keywords
+  });
+}
+
+function deeperCorroborationQuery(query: DerivedResearchQuery, pass: CorroborationPass): DerivedResearchQuery {
+  const escalationTerms = [
+    "published errata",
+    "authoritative proof approach",
+    ...(pass.independentSupport === "conflicting" ? ["counterexample"] : [])
+  ];
+  return buildDerivedResearchQuery({
+    theoremNames: query.theoremNames,
+    assumptions: query.assumptions,
+    keywords: [...query.keywords, ...escalationTerms].slice(0, 8)
+  });
 }
 
 function suppliedPedagogicalBaselinePresent(mathematics: string): boolean {
@@ -4424,7 +4501,11 @@ function suppliedPedagogicalBaselinePresent(mathematics: string): boolean {
 
 function completeUnavailableCorroboration(pass: CorroborationPass): void {
   pass.status = "incomplete";
-  pass.deeperResearch = { required: true, reason: "Independent evidence is missing because external research is unavailable." };
+  pass.deeperResearch = {
+    required: true,
+    performed: pass.deeperResearch.performed,
+    reason: "Independent evidence is missing because external research is unavailable."
+  };
   pass.message = "Corroboration is incomplete: independent evidence and errata could not be checked. The affected claim is not presented as settled.";
 }
 
@@ -4474,7 +4555,11 @@ function completeCorroborationPass(pass: CorroborationPass, research: ResearchAc
       ? ["No Pedagogical Baseline or established proof approach is available."] : []),
     ...(corroboration.proposedApproachDeparture ? ["The proposed teaching route substantially departs from established approaches."] : [])
   ];
-  pass.deeperResearch = { required: deeperReasons.length > 0, reason: deeperReasons.join(" ") || null };
+  pass.deeperResearch = {
+    required: deeperReasons.length > 0,
+    performed: pass.deeperResearch.performed,
+    reason: deeperReasons.join(" ") || null
+  };
   pass.status = conflicts.length > 0
     ? "disputed"
     : matchingSupport && pass.errataCheck !== "unchecked"
@@ -4623,6 +4708,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       researchEgressPermission: migrateResearchEgressPermission(session.researchEgressPermission),
       researchActions: migrateResearchActions(session.researchActions),
       corroborationPass: migrateCorroborationPass(session.corroborationPass),
+      corroborationPassHistory: migrateCorroborationPassHistory(session.corroborationPassHistory),
       sourceAnchors: migrateSourceAnchors(session.sourceAnchors, current.sources, current.sourceRevisions),
       sourceAnchorRequests: migrateSourceAnchorRequests(session.sourceAnchorRequests),
       annotations: migrateAnnotations(session.annotations),
@@ -4686,6 +4772,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       researchEgressPermission: { status: "notGranted" },
       researchActions: [],
       corroborationPass: null,
+      corroborationPassHistory: [],
       sourceAnchors: [],
       sourceAnchorRequests: [],
       annotations: [],
@@ -5044,6 +5131,7 @@ function migrateResearchActions(value: unknown): ResearchAction[] {
       || !["focused", "workspace", "full"].includes(String(candidate.accessPolicy))
       || typeof candidate.destination !== "string" || !researchDestinationIsAllowed(candidate.destination)
       || !["learnerAuthored", "automaticCorroboration"].includes(String(candidate.queryOrigin))
+      || !(candidate.researchDepth === undefined || ["lightweight", "deep"].includes(String(candidate.researchDepth)))
       || !Array.isArray(candidate.informedBySourceIds)
       || !candidate.informedBySourceIds.every((sourceId) => typeof sourceId === "string")
       || !["running", "completed", "denied", "timedOut", "failed", "stopped"].includes(String(candidate.status))
@@ -5078,6 +5166,7 @@ function migrateResearchActions(value: unknown): ResearchAction[] {
       accessPolicy: candidate.accessPolicy as SessionAccessPolicy,
       query,
       queryOrigin: candidate.queryOrigin as ResearchAction["queryOrigin"],
+      researchDepth: candidate.researchDepth === "deep" ? "deep" : "lightweight",
       informedBySourceIds: candidate.informedBySourceIds as string[],
       destination: candidate.destination,
       excerpts,
@@ -5104,6 +5193,7 @@ function migrateCorroborationPass(value: unknown): CorroborationPass | null {
     || !["sufficient", "weakOnly", "conflicting", "missing"].includes(String(value.independentSupport))
     || !["notRequired", "established", "incomplete"].includes(String(value.proofApproachResearch))
     || !isRecord(value.deeperResearch) || typeof value.deeperResearch.required !== "boolean"
+    || !(value.deeperResearch.performed === undefined || typeof value.deeperResearch.performed === "boolean")
     || !(value.deeperResearch.reason === null || typeof value.deeperResearch.reason === "string")
     || !Array.isArray(value.evidence) || !Array.isArray(value.sourceDiscrepancies)
     || typeof value.message !== "string" || !value.message.trim()) {
@@ -5149,11 +5239,25 @@ function migrateCorroborationPass(value: unknown): CorroborationPass | null {
     errataCheck: value.errataCheck as CorroborationPass["errataCheck"],
     independentSupport: value.independentSupport as CorroborationPass["independentSupport"],
     proofApproachResearch: value.proofApproachResearch as CorroborationPass["proofApproachResearch"],
-    deeperResearch: value.deeperResearch as CorroborationPass["deeperResearch"],
+    deeperResearch: {
+      required: value.deeperResearch.required,
+      performed: value.deeperResearch.performed === true,
+      reason: value.deeperResearch.reason as string | null
+    },
     evidence,
     sourceDiscrepancies,
     message: value.message
   };
+}
+
+function migrateCorroborationPassHistory(value: unknown): CorroborationPass[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored Corroboration Pass history is invalid.");
+  return value.map((pass) => {
+    const migrated = migrateCorroborationPass(pass);
+    if (!migrated) throw new Error("Stored Corroboration Pass history is invalid.");
+    return migrated;
+  });
 }
 
 function migratePendingQuestion(value: unknown): PendingQuestion | null {
@@ -5551,6 +5655,7 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     researchEgressPermission: { status: "notGranted" },
     researchActions: [],
     corroborationPass: null,
+    corroborationPassHistory: [],
     sourceAnchors: details.sourceAnchors ?? [],
     sourceAnchorRequests: [],
     annotations: [],

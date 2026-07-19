@@ -1994,8 +1994,9 @@ function CorroborationPassPanel({ session }: { session: LearningSession }) {
         <div><dt>Independent support</dt><dd>{corroborationSupportLabel(pass.independentSupport)}</dd></div>
         <div><dt>Established proof approaches</dt><dd>{pass.proofApproachResearch === "established"
           ? "Researched" : pass.proofApproachResearch === "notRequired" ? "Pedagogical Baseline available" : "Incomplete"}</dd></div>
-        <div><dt>Deeper research</dt><dd>{pass.deeperResearch.required
-          ? `Required · ${pass.deeperResearch.reason}` : "Not triggered"}</dd></div>
+        <div><dt>Deeper research</dt><dd>{pass.deeperResearch.performed
+          ? `Performed · ${pass.deeperResearch.reason ?? "No remaining escalation condition"}`
+          : pass.deeperResearch.required ? `Required · ${pass.deeperResearch.reason}` : "Not triggered"}</dd></div>
       </dl>
       {pass.evidence.length > 0 && <section aria-label="Weighted corroboration evidence">
         <h3>Weighted evidence</h3>
@@ -2015,6 +2016,16 @@ function CorroborationPassPanel({ session }: { session: LearningSession }) {
           <strong>{evidence.sourceTitle}</strong>: {evidence.detail}
         </li>)}</ul>
       </section>)}
+      {session.corroborationPassHistory.length > 0 && <details>
+        <summary>Previous Corroboration Passes ({session.corroborationPassHistory.length})</summary>
+        <ul>{session.corroborationPassHistory.map((previous) => <li key={previous.id}>
+          <strong>{previous.relevantResult}</strong> · {corroborationStatusLabel(previous.status)}
+          <span>{previous.message}</span>
+          {previous.sourceDiscrepancies.map((discrepancy) => <span key={discrepancy.id}>
+            Source Discrepancy: {discrepancy.summary}
+          </span>)}
+        </li>)}</ul>
+      </details>}
     </section>
   );
 }
@@ -2023,11 +2034,11 @@ function corroborationStatusLabel(status: NonNullable<LearningSession["corrobora
   return { running: "Checking evidence", completed: "Corroborated", incomplete: "Incomplete", disputed: "Disputed" }[status];
 }
 
-function corroborationComparisonLabel(comparison: "matches" | "mismatch" | "unchecked"): string {
+function corroborationComparisonLabel(comparison: NonNullable<LearningSession["corroborationPass"]>["assumptionComparison"]): string {
   return { matches: "matches", mismatch: "mismatch", unchecked: "not independently checked" }[comparison];
 }
 
-function corroborationErrataLabel(check: "noneFound" | "found" | "unchecked"): string {
+function corroborationErrataLabel(check: NonNullable<LearningSession["corroborationPass"]>["errataCheck"]): string {
   return { noneFound: "none found", found: "found", unchecked: "not checked" }[check];
 }
 
@@ -2122,6 +2133,7 @@ function ExternalResearchPanel({ state, session, onState }: {
               <strong>{research.query.text}</strong>
               <dl>
                 <div><dt>Query origin</dt><dd>{research.queryOrigin === "automaticCorroboration" ? "Automatic Source Corroboration" : "Learner-authored terms"}</dd></div>
+                <div><dt>Research depth</dt><dd>{research.researchDepth === "deep" ? "Deeper research" : "Lightweight pass"}</dd></div>
                 <div><dt>Local sources informing query</dt><dd>{research.informedBySourceIds.length}</dd></div>
                 <div><dt>Destination used</dt><dd><code>{research.destination}</code></dd></div>
                 <div><dt>Source Excerpts sent</dt><dd>{research.excerpts.length}</dd></div>

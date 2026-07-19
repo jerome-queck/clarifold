@@ -19,6 +19,7 @@ export interface ResearchExcerpt {
 export interface ExternalResearchRequest {
   query: DerivedResearchQuery;
   queryOrigin: "learnerAuthored" | "automaticCorroboration";
+  researchDepth: "lightweight" | "deep";
   informedBySourceIds: string[];
   destination: string;
   excerpts: ResearchExcerpt[];

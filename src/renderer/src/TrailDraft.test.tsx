@@ -94,6 +94,7 @@ function trailSession(): LearningSession {
     accessPolicy: "focused", accessRequests: [], pendingFullAccessConfirmation: false,
     researchEgressPermission: { status: "notGranted" }, researchActions: [],
     corroborationPass: null,
+    corroborationPassHistory: [],
     sourceAnchors: [{
       id: "anchor-1", sourceId: "source-1",
       sourceRevisionId: null,

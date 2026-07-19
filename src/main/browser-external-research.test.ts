@@ -10,6 +10,7 @@ describe("Browser External Research", () => {
     const result = await research.research({
       query: buildDerivedResearchQuery({ theoremNames: ["Orbit-stabilizer theorem"], assumptions: [], keywords: [] }),
       queryOrigin: "learnerAuthored",
+      researchDepth: "lightweight",
       informedBySourceIds: [],
       destination,
       excerpts: [],
@@ -27,7 +28,7 @@ describe("Browser External Research", () => {
     const query = buildDerivedResearchQuery({ theoremNames: ["Cauchy's theorem"], assumptions: [], keywords: [] });
     for (const destination of ["https://example.com/search", "http://duckduckgo.com/?q=cauchy"]) {
       await expect(research.research({
-        query, queryOrigin: "learnerAuthored", informedBySourceIds: [], destination, excerpts: [],
+        query, queryOrigin: "learnerAuthored", researchDepth: "lightweight", informedBySourceIds: [], destination, excerpts: [],
         signal: new AbortController().signal
       }))
         .rejects.toThrow("destination is not allowed");
@@ -40,6 +41,7 @@ describe("Browser External Research", () => {
     const pending = research.research({
       query: buildDerivedResearchQuery({ theoremNames: ["Sylow theorems"], assumptions: [], keywords: [] }),
       queryOrigin: "learnerAuthored",
+      researchDepth: "lightweight",
       informedBySourceIds: [],
       destination: "https://duckduckgo.com/?q=sylow",
       excerpts: [], signal: controller.signal

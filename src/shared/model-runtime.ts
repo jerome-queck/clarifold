@@ -1,4 +1,4 @@
-import type { QuestionContextItem, SessionAccessScope, SourceAnchorSelection } from "./learning-application";
+import type { CorroborationPass, QuestionContextItem, SessionAccessScope, SourceAnchorSelection } from "./learning-application";
 
 export type AuthenticationMethod = "chatgpt" | "apiKey";
 export type ModelAccessCause = "network" | "authentication" | "subscriptionCapacity" | "quota" | "runtime";
@@ -76,15 +76,7 @@ export interface TeachingRequest {
   learningGoal: string;
   scope: string;
   initialTeachingDirection: string;
-  corroboration: null | {
-    status: "completed" | "incomplete" | "disputed";
-    relevantResult: string;
-    assumptionComparison: "matches" | "mismatch" | "unchecked";
-    conclusionComparison: "matches" | "mismatch" | "unchecked";
-    errataCheck: "noneFound" | "found" | "unchecked";
-    independentSupport: "sufficient" | "weakOnly" | "conflicting" | "missing";
-    message: string;
-  };
+  corroboration: TeachingCorroborationContext | null;
   learningSlice?: {
     roadmapTitle: string;
     stageTitle: string;
@@ -111,6 +103,10 @@ export interface TeachingRequest {
   onRuntimeEvent?(event: ModelRuntimeEvent): void;
   signal: AbortSignal;
 }
+
+export type TeachingCorroborationContext = Pick<CorroborationPass,
+  | "relevantResult" | "assumptionComparison" | "conclusionComparison" | "errataCheck" | "independentSupport" | "message"
+> & { status: Exclude<CorroborationPass["status"], "running"> };
 
 export interface ConceptPeekRequest {
   sessionId: string;

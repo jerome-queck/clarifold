@@ -22,6 +22,7 @@ describe("anchored teaching workbench", () => {
         theoremNames: ["Heine-Borel theorem"], assumptions: [], keywords: ["compact subset"]
       },
       queryOrigin: "learnerAuthored",
+      researchDepth: "lightweight",
       informedBySourceIds: [],
       destination: "https://duckduckgo.com/?q=Heine-Borel+theorem%3B+compact+subset",
       excerpts: [], status: "completed", error: null,
@@ -102,7 +103,7 @@ describe("anchored teaching workbench", () => {
       pedagogicalBaselinePresent: true,
       assumptionComparison: "mismatch", conclusionComparison: "mismatch", errataCheck: "found",
       independentSupport: "conflicting", proofApproachResearch: "notRequired",
-      deeperResearch: { required: true, reason: "Authoritative evidence is disputed or conflicting." },
+      deeperResearch: { required: true, performed: true, reason: "Authoritative evidence is disputed or conflicting." },
       evidence: [supporting, conflicting],
       sourceDiscrepancies: [{
         id: "discrepancy-1", relevantResult: "Closed subset theorem",
@@ -929,6 +930,7 @@ function workbenchState(): LearningApplicationState {
       researchEgressPermission: { status: "notGranted" },
       researchActions: [],
       corroborationPass: null,
+      corroborationPassHistory: [],
       sourceAnchors: [anchor],
       sourceAnchorRequests: [{ id: "request-1", sourceAnchorId: "anchor-1", action: "explain" }],
       annotations: [],

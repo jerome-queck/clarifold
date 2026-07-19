@@ -158,6 +158,7 @@ function questionSession(): LearningSession {
     questionCards: [], activeQuestionCardId: null, accessPolicy: "workspace", accessRequests: [], pendingFullAccessConfirmation: false,
     researchEgressPermission: { status: "notGranted" }, researchActions: [],
     corroborationPass: null,
+    corroborationPassHistory: [],
     sourceAnchors: [], sourceAnchorRequests: [], annotations: [], activeSourceAnchorId: "anchor-1", anchoredTeachingCards: [], activeTeachingCardId: null,
     trailDraft: { items: [] },
     consolidationDraft: null, consolidatedOutcome: null, continuationOf: null, modelStopConfirmation: null,
