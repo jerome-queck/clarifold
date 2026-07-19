@@ -9363,25 +9363,27 @@ function validateAdaptiveTeachingReferences(session: LearningSession): void {
 
 function validateLearnerModelReuseReferences(state: LearningApplicationState, session: LearningSession): void {
   const entries = new Map(state.learnerModel.entries.map((entry) => [entry.id, entry]));
-  const recordMatchesEntry = (record: LearnerModelReuseRecord) => {
-    const entry = entries.get(record.learnerModelEntryId);
-    return entry !== undefined && record.sourceSessionId === entry.sourceEvidence.sessionId
+  const recordMatchesEntry = (record: LearnerModelReuseRecord, entry: LearnerModelLedgerEntry) => {
+    return record.sourceSessionId === entry.sourceEvidence.sessionId
       && record.sourceRecordId === entry.sourceEvidence.sourceRecordId;
   };
   const transfersAreValid = session.evidenceTransfers.every((record) => {
     const entry = entries.get(record.learnerModelEntryId);
-    return entry?.kind === "understandingEvidence" && recordMatchesEntry(record)
+    if (!entry) return true;
+    return entry.kind === "understandingEvidence" && recordMatchesEntry(record, entry)
       && (entry.scope.workspaceId !== session.workspaceId || entry.scope.missionId !== session.missionId);
   });
   const priorEvidenceIsValid = session.priorUnderstandingEvidence.every((record) => {
     const entry = entries.get(record.learnerModelEntryId);
-    return entry?.kind === "understandingEvidence" && recordMatchesEntry(record)
+    if (!entry) return true;
+    return entry.kind === "understandingEvidence" && recordMatchesEntry(record, entry)
       && entry.scope.sessionId !== session.id && entry.scope.workspaceId === session.workspaceId
       && entry.scope.missionId === session.missionId;
   });
   const preferencesAreValid = session.interactionPreferenceReuses.every((record) => {
     const entry = entries.get(record.learnerModelEntryId);
-    return entry?.kind === "interactionPreference" && recordMatchesEntry(record)
+    if (!entry) return true;
+    return entry.kind === "interactionPreference" && recordMatchesEntry(record, entry)
       && entry.scope.sessionId !== session.id;
   });
   if (!transfersAreValid || !priorEvidenceIsValid || !preferencesAreValid) {

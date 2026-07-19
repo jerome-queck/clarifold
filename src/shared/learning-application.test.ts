@@ -356,6 +356,37 @@ describe("Learning Application", () => {
     expect(resumedRuntime.teachingRequests.at(-1)?.learnerModelGuidance).toBeUndefined();
     resumedRuntime.completeTeaching();
     await relaunched.waitForModelWork();
+
+    const deletedEntryId = relaunched.getState().learnerModel.entries[0].id;
+    const historicalTransfers = structuredClone(restoredTarget.evidenceTransfers);
+    const historicalPreferences = structuredClone(restoredTarget.interactionPreferenceReuses);
+    await relaunched.submit({ type: "deleteLearnerModelInference", entryId: deletedEntryId });
+    await relaunched.shutdown();
+
+    const afterDeleteRuntime = new DeterministicModelRuntime({
+      learningGoal: "Unused", scope: "Unused", initialTeachingDirection: "Unused",
+      requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const afterDelete = await LearningApplication.launch(dataDirectory, afterDeleteRuntime);
+    applications.push(afterDelete);
+    const targetAfterDelete = afterDelete.getState().sessions.find((session) => session.id === targetSessionId)!;
+    expect(afterDelete.getState().learnerModel.entries.some((entry) => entry.id === deletedEntryId)).toBe(false);
+    expect(targetAfterDelete.evidenceTransfers).toEqual(historicalTransfers);
+    expect(targetAfterDelete.interactionPreferenceReuses).toEqual(historicalPreferences);
+    await afterDelete.submit({ type: "resumeSession", sessionId: targetSessionId });
+    await afterDelete.submit({ type: "submitQuestion", text: "Confirm deleted evidence stays inactive after reload." });
+    expect(afterDeleteRuntime.teachingRequests.at(-1)?.learnerModelGuidance).toBeUndefined();
+    afterDeleteRuntime.completeTeaching();
+    await afterDelete.waitForModelWork();
+
+    await afterDelete.submit({ type: "resetLearnerModel" });
+    await afterDelete.shutdown();
+    const afterReset = await LearningApplication.launch(dataDirectory);
+    applications.push(afterReset);
+    const targetAfterReset = afterReset.getState().sessions.find((session) => session.id === targetSessionId)!;
+    expect(afterReset.getState().learnerModel.entries).toEqual([]);
+    expect(targetAfterReset.evidenceTransfers).toEqual(historicalTransfers);
+    expect(targetAfterReset.interactionPreferenceReuses).toEqual(historicalPreferences);
   });
 
   it("migrates existing Understanding Evidence into a conservative Learner Model Ledger", async () => {
