@@ -323,37 +323,31 @@ export class CodexAppServerRuntime implements ModelRuntime {
   }
 
   async createConceptPeek(request: ConceptPeekRequest): Promise<string> {
-    let resolveStart!: () => void;
-    const start = new Promise<void>((resolve) => {
-      resolveStart = resolve;
+    return this.withTeachingStartSignal(request.sessionId, async () => {
+      try {
+        if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
+        const content = await this.runTurn(
+          [
+            "Write one compact Concept Peek explaining the named prerequisite at the supplied Source Anchor.",
+            "Use two to four learner-facing sentences. State the relevant definition, lemma, or technique and connect it directly to the anchored mathematics. Do not branch into a full lesson, claim verification, or mention internal tools.",
+            `Learning Goal: ${request.learningGoal}`,
+            `Prerequisite: ${request.prerequisite}`,
+            `Source Anchor: ${JSON.stringify(request.selection)}`,
+            "Session mathematics:",
+            request.mathematics
+          ].join("\n\n"),
+          undefined,
+          undefined,
+          request.sessionId,
+          request.onRuntimeEvent
+        );
+        if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
+        return content;
+      } catch (error) {
+        request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+        throw error;
+      }
     });
-    this.teachingStartSignals.set(request.sessionId, { promise: start, resolve: resolveStart });
-    try {
-      if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
-      const content = await this.runTurn(
-        [
-          "Write one compact Concept Peek explaining the named prerequisite at the supplied Source Anchor.",
-          "Use two to four learner-facing sentences. State the relevant definition, lemma, or technique and connect it directly to the anchored mathematics. Do not branch into a full lesson, claim verification, or mention internal tools.",
-          `Learning Goal: ${request.learningGoal}`,
-          `Prerequisite: ${request.prerequisite}`,
-          `Source Anchor: ${JSON.stringify(request.selection)}`,
-          "Session mathematics:",
-          request.mathematics
-        ].join("\n\n"),
-        undefined,
-        undefined,
-        request.sessionId,
-        request.onRuntimeEvent
-      );
-      if (request.signal.aborted) throw new Error("Concept Peek generation was stopped.");
-      return content;
-    } catch (error) {
-      resolveStart();
-      request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
-      throw error;
-    } finally {
-      this.teachingStartSignals.delete(request.sessionId);
-    }
   }
 
   async synthesizeArtifact(request: ArtifactSynthesisRequest): Promise<ArtifactSynthesisResult> {
@@ -386,72 +380,90 @@ export class CodexAppServerRuntime implements ModelRuntime {
   }
 
   async runSpecialistAgent(request: SpecialistAgentRequest): Promise<SpecialistAgentResult> {
-    let resolveStart!: () => void;
-    const start = new Promise<void>((resolve) => {
-      resolveStart = resolve;
+    return this.withTeachingStartSignal(request.sessionId, async () => {
+      try {
+        if (request.signal.aborted) throw new Error("Specialist Agent work was stopped.");
+        request.onStatus("waiting", "Waiting for Codex to start the bounded review.");
+        let streamed = "";
+        let checkpointed = "";
+        const content = await this.runTurn(
+          [
+            "Act as one task-scoped mathematical review Specialist Agent.",
+            `Return only the requested JSON in at most ${request.budget.maxOutputTokens} output tokens. Identify a hidden assumption in the supplied evidence, or confirm concisely that none is needed for the stated step. Do not claim independent or formal verification.`,
+            `Purpose: ${request.purpose}`,
+            `Agent Brief: ${JSON.stringify(request.brief)}`,
+            `Agent Budget: ${JSON.stringify(request.budget)}`
+          ].join("\n\n"),
+          SPECIALIST_AGENT_RESULT_SCHEMA,
+          (delta) => {
+            streamed += delta;
+            const partial = tryParseSpecialistAgentResult(streamed, request.budget.maxOutputTokens);
+            if (partial && partial.content !== checkpointed) {
+              checkpointed = partial.content;
+              request.onPartialResult(partial.content);
+            }
+          },
+          request.sessionId,
+          (event) => {
+            if (event.type === "turnStarted") request.onStatus("working", null);
+            request.onRuntimeEvent?.({ ...event, workKind: "specialist" });
+          },
+          undefined,
+          "You are one bounded Specialist Agent using the runtime-default model with balanced reasoning. Use only the supplied Agent Brief. Do not inspect local files, session history, apps, tools, or the network. Return one structured result for the Teaching Orchestrator to integrate; never produce an agent transcript.",
+          request.budget.maxLatencyMs
+        );
+        if (request.signal.aborted) throw new Error("Specialist Agent work was stopped.");
+        return parseSpecialistAgentResult(content, request.budget.maxOutputTokens);
+      } catch (error) {
+        request.onRuntimeEvent?.({ type: "turnFailed", workKind: "specialist", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+        throw error;
+      }
     });
-    this.teachingStartSignals.set(request.sessionId, { promise: start, resolve: resolveStart });
-    try {
-      if (request.signal.aborted) throw new Error("Specialist Agent work was stopped.");
-      request.onStatus("working", null);
-      const content = await this.runTurn(
-        [
-          "Act as one task-scoped mathematical review Specialist Agent.",
-          "Return only the requested JSON. Identify a hidden assumption in the supplied learner evidence, or confirm concisely that none is needed for the stated step. Do not claim independent or formal verification.",
-          `Purpose: ${request.purpose}`,
-          `Agent Brief: ${JSON.stringify(request.brief)}`
-        ].join("\n\n"),
-        SPECIALIST_AGENT_RESULT_SCHEMA,
-        undefined,
-        request.sessionId,
-        (event) => request.onRuntimeEvent?.({ ...event, workKind: "specialist" }),
-        undefined,
-        "You are one bounded Specialist Agent. Use only the supplied Agent Brief. Do not inspect local files, session history, apps, tools, or the network. Return one structured result for the Teaching Orchestrator to integrate; never produce an agent transcript."
-      );
-      if (request.signal.aborted) throw new Error("Specialist Agent work was stopped.");
-      return parseSpecialistAgentResult(content);
-    } catch (error) {
-      resolveStart();
-      request.onRuntimeEvent?.({ type: "turnFailed", workKind: "specialist", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
-      throw error;
-    } finally {
-      this.teachingStartSignals.delete(request.sessionId);
-    }
   }
 
   async streamTeaching(request: TeachingRequest): Promise<void> {
+    return this.withTeachingStartSignal(request.sessionId, async () => {
+      try {
+        await this.runTurn(
+          [
+            "Create one learner-facing Teaching Card, not a chat transcript.",
+            teachingSessionContext(request),
+            `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
+            authorizedSourceContext(request),
+            questionContext(request),
+            questionRevision(request),
+            tutorFeedbackContext(request),
+            teachingFocus(request),
+            "Mathematics:",
+            request.mathematics,
+            "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
+          ].join("\n\n"),
+          undefined,
+          request.onDelta,
+          request.sessionId,
+          request.onRuntimeEvent,
+          request
+        );
+      } catch (error) {
+        request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+        throw error;
+      }
+    });
+  }
+
+  private async withTeachingStartSignal<Result>(sessionId: string, work: () => Promise<Result>): Promise<Result> {
     let resolveStart!: () => void;
     const start = new Promise<void>((resolve) => {
       resolveStart = resolve;
     });
-    this.teachingStartSignals.set(request.sessionId, { promise: start, resolve: resolveStart });
+    this.teachingStartSignals.set(sessionId, { promise: start, resolve: resolveStart });
     try {
-      await this.runTurn(
-        [
-          "Create one learner-facing Teaching Card, not a chat transcript.",
-          teachingSessionContext(request),
-          `Session Access Policy: ${sessionAccessPolicyLabel(request.accessScope.policy)}. Use only the context supplied within this authorized scope. Source modification and deletion are prohibited.`,
-          authorizedSourceContext(request),
-          questionContext(request),
-          questionRevision(request),
-          tutorFeedbackContext(request),
-          teachingFocus(request),
-          "Mathematics:",
-          request.mathematics,
-          "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
-        ].join("\n\n"),
-        undefined,
-        request.onDelta,
-        request.sessionId,
-        request.onRuntimeEvent,
-        request
-      );
+      return await work();
     } catch (error) {
       resolveStart();
-      request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
       throw error;
     } finally {
-      this.teachingStartSignals.delete(request.sessionId);
+      this.teachingStartSignals.delete(sessionId);
     }
   }
 
@@ -475,7 +487,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
     sessionId?: string,
     onRuntimeEvent?: (event: ModelRuntimeEvent) => void,
     teachingRequest?: TeachingRequest,
-    baseInstructionsOverride?: string
+    baseInstructionsOverride?: string,
+    turnTimeoutMs = this.turnTimeoutMs
   ): Promise<string> {
     const accessPolicy = teachingRequest?.accessScope.policy ?? "focused";
     const anchoredFocus = Boolean(teachingRequest?.focus);
@@ -542,7 +555,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
         onDelta,
         resolve,
         reject,
-        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), this.turnTimeoutMs),
+        timeout: createUnrefTimer(() => this.expireTurn(turnResponse.turn.id), turnTimeoutMs),
         onRuntimeEvent,
         onAccessRequest: teachingRequest?.onAccessRequest
       });
@@ -993,7 +1006,7 @@ function parseArtifactSynthesis(content: string): ArtifactSynthesisResult {
   return value as unknown as ArtifactSynthesisResult;
 }
 
-function parseSpecialistAgentResult(content: string): SpecialistAgentResult {
+function parseSpecialistAgentResult(content: string, maxOutputTokens: number): SpecialistAgentResult {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -1001,10 +1014,19 @@ function parseSpecialistAgentResult(content: string): SpecialistAgentResult {
     throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
   }
   if (!isRecord(value) || typeof value.title !== "string" || !value.title.trim()
-    || typeof value.content !== "string" || !value.content.trim()) {
+    || typeof value.content !== "string" || !value.content.trim()
+    || value.content.length > maxOutputTokens * 4) {
     throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
   }
   return value as unknown as SpecialistAgentResult;
+}
+
+function tryParseSpecialistAgentResult(content: string, maxOutputTokens: number): SpecialistAgentResult | null {
+  try {
+    return parseSpecialistAgentResult(content, maxOutputTokens);
+  } catch {
+    return null;
+  }
 }
 
 function validArgumentRoadmapProposal(value: unknown): boolean {

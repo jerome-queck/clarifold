@@ -1920,6 +1920,7 @@ function AgentTaskStatusCard({ task, modelAvailable, onState }: {
       <details>
         <summary>Inspect Agent Brief</summary>
         <dl>
+          <div><dt>Identified need</dt><dd>{task.identifiedNeed.description}</dd></div>
           <div><dt>Learning Goal</dt><dd>{task.brief.learningGoal}</dd></div>
           <div><dt>Source Anchors</dt><dd>{task.brief.sourceAnchors.length}</dd></div>
           <div><dt>Constraints</dt><dd>{task.brief.constraints.join(" ")}</dd></div>
@@ -1927,6 +1928,10 @@ function AgentTaskStatusCard({ task, modelAvailable, onState }: {
           <div><dt>Expected output</dt><dd>{task.brief.expectedOutput}</dd></div>
           <div><dt>Verification needs</dt><dd>{task.brief.verificationNeeds.join(" ")}</dd></div>
         </dl>
+      </details>
+      <details>
+        <summary>Inspect Agent Budget</summary>
+        <p>{task.budget.agentCount} agent · concurrency {task.budget.concurrency} · {task.budget.reasoningEffort} reasoning · {task.budget.tools.length} tools · {task.budget.maxOutputTokens} output tokens · {task.budget.maxLatencyMs / 1000} seconds</p>
       </details>
       {(task.integratedTeachingCard.content || task.status === "complete") && <div className="teaching-section">
         <h3>{task.integratedTeachingCard.title}</h3>

@@ -3089,8 +3089,12 @@ describe("Learning Application", () => {
     expect(runtime.specialistRequests[0].brief).toEqual({
       learningGoal: "Understand why compact subsets are closed",
       sourceAnchors: [],
-      constraints: ["Review only the current learner-facing Teaching Card.", "Do not inspect other Learning Session history or local files."],
-      learnerEvidence: ["For each exterior point, choose disjoint neighbourhoods from every point of the compact set."],
+      constraints: [
+        "Review only the current learner-facing Teaching Card.",
+        "Do not inspect other Learning Session history or local files.",
+        "Current Teaching Card: For each exterior point, choose disjoint neighbourhoods from every point of the compact set."
+      ],
+      learnerEvidence: [],
       expectedOutput: "One concise correction or confirmation integrated as a Teaching Card.",
       verificationNeeds: ["Identify any hidden mathematical assumption and explain whether the argument depends on it."]
     });
@@ -3099,6 +3103,11 @@ describe("Learning Application", () => {
       expect.objectContaining({
         purpose: "Review the current Teaching Card for a hidden mathematical assumption",
         status: "working",
+        identifiedNeed: expect.objectContaining({ kind: "hiddenAssumptionReview", requestedBy: "learner" }),
+        budget: {
+          agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "balanced",
+          tools: [], maxOutputTokens: 512, maxLatencyMs: 120_000
+        },
         integratedTeachingCard: expect.objectContaining({ status: "streaming", content: "" })
       })
     ]);
@@ -3122,6 +3131,45 @@ describe("Learning Application", () => {
     const relaunched = await LearningApplication.launch(dataDirectory);
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].agentTasks[0]).toEqual(complete);
+  });
+
+  it("includes the relevant Source Anchor when the learner requests review of an anchored Teaching Card", async () => {
+    const mathematics = "Every compact subset of a Hausdorff space is closed.";
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand the closed-subset proof", scope: "Inspect the separation step",
+      initialTeachingDirection: "Start from an exterior point", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    let state = await application.submit({ type: "submitSessionIntake", mathematics });
+    runtime.emitTeaching("Begin with an exterior point.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    state = await application.submit({
+      type: "createSourceAnchor",
+      sourceId: state.sessions[0].sourceIds[0],
+      selection: {
+        kind: "text", startOffset: 6, endOffset: 20, exactText: "compact subset",
+        prefix: "Every ", suffix: " of a Hausdorff space is closed."
+      },
+      paletteAction: "explain"
+    });
+    runtime.emitTeaching("Use Hausdorff separation to choose disjoint neighbourhoods.");
+    runtime.completeTeaching();
+    await application.waitForModelWork();
+    await application.submit({ type: "requestSpecialistReview" });
+
+    const anchor = state.sessions[0].sourceAnchors[0];
+    expect(runtime.specialistRequests.at(-1)?.brief.sourceAnchors).toEqual([{
+      sourceAnchorId: anchor.id,
+      sourceId: anchor.sourceId,
+      selection: anchor.selection
+    }]);
+    expect(runtime.specialistRequests.at(-1)?.brief.learnerEvidence).toEqual([]);
+    expect(runtime.specialistRequests.at(-1)?.brief.constraints).toContain(
+      "Current Teaching Card: Use Hausdorff separation to choose disjoint neighbourhoods."
+    );
+    runtime.completeSpecialist({ title: "Specialist review", content: "Hausdorff separation is the required assumption." });
+    await application.waitForModelWork();
   });
 
   it("keeps useful partial Specialist Agent output when later work waits and fails", async () => {

@@ -407,6 +407,7 @@ describe("Codex app-server contract", () => {
     });
     const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
     const events: string[] = [];
+    const statuses: string[] = [];
 
     await expect(runtime.runSpecialistAgent({
       sessionId: "session-1",
@@ -419,8 +420,12 @@ describe("Codex app-server contract", () => {
         expectedOutput: "One concise integrated Teaching Card.",
         verificationNeeds: ["Identify hidden assumptions."]
       },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "balanced",
+        tools: [], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
       signal: new AbortController().signal,
-      onStatus: () => undefined,
+      onStatus: (status) => statuses.push(status),
       onPartialResult: () => undefined,
       onRuntimeEvent: (event) => events.push(`${event.workKind}:${event.type}`)
     })).resolves.toEqual({
@@ -441,6 +446,53 @@ describe("Codex app-server contract", () => {
     expect(JSON.stringify(turnStart.params)).toContain("Choose disjoint neighbourhoods.");
     expect(JSON.stringify(turnStart.params)).not.toContain("/workspace");
     expect(events).toContain("specialist:turnCompleted");
+    expect(statuses).toEqual(["waiting", "working"]);
+  });
+
+  it("checkpoints a valid structured Specialist Agent result before a later turn failure", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "partial-thread" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "partial-turn" } });
+        queueMicrotask(() => {
+          transport.notify("item/agentMessage/delta", {
+            threadId: "partial-thread", turnId: "partial-turn", itemId: "specialist-result",
+            delta: JSON.stringify({ title: "Partial review", content: "The step needs Hausdorff separation." })
+          });
+          transport.notify("turn/completed", {
+            threadId: "partial-thread",
+            turn: { id: "partial-turn", status: "failed", error: { message: "transport closed after output" } }
+          });
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    const partials: string[] = [];
+    const request = runtime.runSpecialistAgent({
+      sessionId: "session-1",
+      purpose: "Review one hidden assumption",
+      brief: {
+        learningGoal: "Understand compactness", sourceAnchors: [],
+        constraints: ["Current Teaching Card: choose disjoint neighbourhoods."], learnerEvidence: [],
+        expectedOutput: "One concise integrated Teaching Card.", verificationNeeds: ["Identify hidden assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "balanced",
+        tools: [], maxOutputTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal,
+      onStatus: () => undefined,
+      onPartialResult: (content) => partials.push(content)
+    });
+
+    await expect(request).rejects.toThrow("Codex could not complete this request");
+    expect(partials).toEqual(["The step needs Hausdorff separation."]);
   });
 
   it("interrupts active teaching and shuts down the stdio transport", async () => {

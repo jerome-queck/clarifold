@@ -146,10 +146,21 @@ export interface AgentBrief {
   verificationNeeds: string[];
 }
 
+export interface AgentBudget {
+  agentCount: 1;
+  concurrency: 1;
+  model: "runtimeDefault";
+  reasoningEffort: "balanced";
+  tools: [];
+  maxOutputTokens: number;
+  maxLatencyMs: number;
+}
+
 export interface SpecialistAgentRequest {
   sessionId: string;
   purpose: string;
   brief: AgentBrief;
+  budget: AgentBudget;
   signal: AbortSignal;
   onStatus(status: "working" | "waiting", message: string | null): void;
   onPartialResult(content: string): void;

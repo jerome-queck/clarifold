@@ -5,6 +5,7 @@ import {
   ModelAccessError,
   type ArtifactSynthesisResult,
   type AgentBrief,
+  type AgentBudget,
   type AuthenticationState,
   type ModelAccessCause,
   type ModelRuntime,
@@ -296,7 +297,13 @@ export interface AgentTask {
   purpose: string;
   status: AgentTaskStatus;
   statusMessage: string | null;
+  identifiedNeed: {
+    kind: "hiddenAssumptionReview";
+    requestedBy: "learner";
+    description: string;
+  };
   brief: AgentBrief;
+  budget: AgentBudget;
   integratedTeachingCard: TeachingCardState & { title: string };
   agentWorkLogReference: TeachingCardRevision["agentWorkLogReference"];
 }
@@ -2169,7 +2176,7 @@ export class LearningApplication {
       case "requestSpecialistReview": {
         const session = this.requireActiveSession();
         this.requireModelAccess();
-        if (session.teachingCard.status !== "completed" || !session.teachingCard.content.trim()) {
+        if (!specialistReviewTarget(session)) {
           throw new Error("Complete a Teaching Card before requesting a Specialist Agent review.");
         }
         if (this.modelWorks.has(session.id)) {
@@ -2934,6 +2941,7 @@ export class LearningApplication {
       sessionId: session.id,
       purpose: task.purpose,
       brief: structuredClone(task.brief),
+      budget: structuredClone(task.budget),
       signal: controller.signal,
       onStatus: (status, message) => {
         if (controller.signal.aborted) return;
@@ -2944,7 +2952,7 @@ export class LearningApplication {
       },
       onPartialResult: (content) => {
         if (controller.signal.aborted || !content) return;
-        task.integratedTeachingCard.content += content;
+        task.integratedTeachingCard.content = content;
         this.emitState();
         this.queuePersistence();
       },
@@ -2956,7 +2964,7 @@ export class LearningApplication {
       }
     }).then((result) => {
       if (controller.signal.aborted) return;
-      const integrated = validatedSpecialistAgentResult(result);
+      const integrated = validatedSpecialistAgentResult(result, task.budget);
       task.status = "complete";
       task.statusMessage = null;
       Object.assign(task.integratedTeachingCard, {
@@ -3792,9 +3800,10 @@ function validatedArtifactSynthesisResult(
   };
 }
 
-function validatedSpecialistAgentResult(value: unknown): SpecialistAgentResult {
+function validatedSpecialistAgentResult(value: unknown, budget: AgentBudget): SpecialistAgentResult {
   if (!isRecord(value) || typeof value.title !== "string" || !value.title.trim()
-    || typeof value.content !== "string" || !value.content.trim()) {
+    || typeof value.content !== "string" || !value.content.trim()
+    || value.content.length > budget.maxOutputTokens * 4) {
     throw new Error("Codex returned a malformed Specialist Agent result. Retry to request a fresh review.");
   }
   return { title: value.title, content: value.content };
@@ -4019,19 +4028,28 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.purpose !== "string" || !candidate.purpose.trim()
       || !["working", "waiting", "failed", "stopped", "complete"].includes(String(candidate.status))
       || !(candidate.statusMessage === null || typeof candidate.statusMessage === "string")
-      || !isRecord(candidate.brief) || !isRecord(candidate.integratedTeachingCard)) {
+      || !isRecord(candidate.identifiedNeed) || !isRecord(candidate.brief)
+      || !isRecord(candidate.budget) || !isRecord(candidate.integratedTeachingCard)) {
       throw new Error("Stored Agent Tasks are invalid.");
     }
+    const need = candidate.identifiedNeed;
     const brief = candidate.brief;
+    const budget = candidate.budget;
     const card = candidate.integratedTeachingCard;
     const reference = candidate.agentWorkLogReference;
-    if (typeof brief.learningGoal !== "string" || !brief.learningGoal.trim()
+    if (need.kind !== "hiddenAssumptionReview" || need.requestedBy !== "learner"
+      || typeof need.description !== "string" || !need.description.trim()
+      || typeof brief.learningGoal !== "string" || !brief.learningGoal.trim()
       || !Array.isArray(brief.sourceAnchors) || !brief.sourceAnchors.every((anchor) => isRecord(anchor)
         && typeof anchor.sourceAnchorId === "string" && typeof anchor.sourceId === "string"
         && isSourceAnchorSelection(anchor.selection))
       || !isNonEmptyStringArray(brief.constraints) || !isStringArray(brief.learnerEvidence)
       || typeof brief.expectedOutput !== "string" || !brief.expectedOutput.trim()
       || !isNonEmptyStringArray(brief.verificationNeeds)
+      || budget.agentCount !== 1 || budget.concurrency !== 1 || budget.model !== "runtimeDefault"
+      || budget.reasoningEffort !== "balanced" || !Array.isArray(budget.tools) || budget.tools.length !== 0
+      || !Number.isInteger(budget.maxOutputTokens) || (budget.maxOutputTokens as number) < 1
+      || !Number.isInteger(budget.maxLatencyMs) || (budget.maxLatencyMs as number) < 1
       || typeof card.title !== "string" || !card.title.trim()
       || !["idle", "streaming", "completed", "stopped", "failed"].includes(String(card.status))
       || typeof card.content !== "string" || !(card.error === null || typeof card.error === "string")
@@ -4633,23 +4651,46 @@ function createLearningSession(details: NewLearningSession): LearningSession {
 }
 
 function createSpecialistReviewTask(session: LearningSession): AgentTask {
+  const target = specialistReviewTarget(session);
+  if (!target) throw new Error("Complete a Teaching Card before requesting a Specialist Agent review.");
   return {
     id: crypto.randomUUID(),
     purpose: "Review the current Teaching Card for a hidden mathematical assumption",
     status: "working",
     statusMessage: null,
+    identifiedNeed: {
+      kind: "hiddenAssumptionReview",
+      requestedBy: "learner",
+      description: "The learner requested a focused check for a hidden mathematical assumption in the current Teaching Card."
+    },
     brief: {
       learningGoal: session.learningGoal,
-      sourceAnchors: [],
+      sourceAnchors: target.sourceAnchor ? [{
+        sourceAnchorId: target.sourceAnchor.id,
+        sourceId: target.sourceAnchor.sourceId,
+        selection: structuredClone(target.sourceAnchor.selection)
+      }] : [],
       constraints: [
         "Review only the current learner-facing Teaching Card.",
-        "Do not inspect other Learning Session history or local files."
+        "Do not inspect other Learning Session history or local files.",
+        `Current Teaching Card: ${target.content}`
       ],
-      learnerEvidence: [session.teachingCard.content],
+      learnerEvidence: session.trailDraft.items
+        .filter((item) => item.origin === "learner" && item.kind === "evidence")
+        .map((item) => item.content),
       expectedOutput: "One concise correction or confirmation integrated as a Teaching Card.",
       verificationNeeds: [
         "Identify any hidden mathematical assumption and explain whether the argument depends on it."
       ]
+    },
+    budget: {
+      agentCount: 1,
+      concurrency: 1,
+      model: "runtimeDefault",
+      reasoningEffort: "balanced",
+      tools: [],
+      maxOutputTokens: 512,
+      maxLatencyMs: 120_000
     },
     integratedTeachingCard: {
       title: "Specialist review",
@@ -4660,6 +4701,18 @@ function createSpecialistReviewTask(session: LearningSession): AgentTask {
     },
     agentWorkLogReference: null
   };
+}
+
+function specialistReviewTarget(session: LearningSession): { content: string; sourceAnchor: SourceAnchor | null } | null {
+  const anchoredCard = session.anchoredTeachingCards.find((card) => card.id === session.activeTeachingCardId);
+  if (anchoredCard?.currentRevision.status === "completed" && anchoredCard.currentRevision.content.trim()) {
+    return {
+      content: anchoredCard.currentRevision.content,
+      sourceAnchor: session.sourceAnchors.find((anchor) => anchor.id === anchoredCard.sourceAnchorId) ?? null
+    };
+  }
+  if (session.teachingCard.status !== "completed" || !session.teachingCard.content.trim()) return null;
+  return { content: session.teachingCard.content, sourceAnchor: null };
 }
 
 function emptySessionLifecycle(): Pick<LearningSession,
