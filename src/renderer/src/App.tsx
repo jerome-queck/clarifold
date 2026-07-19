@@ -633,6 +633,7 @@ function ResumeCard({ state, session, onState }: {
   const [backgroundError, setBackgroundError] = useState<string | null>(null);
   const workspace = state.workspaces.find((candidate) => candidate.id === session.workspaceId)!;
   const mission = state.missions.find((candidate) => candidate.id === session.missionId)!;
+  const checkpointedTask = checkpointedAgentTask(session);
   return (
     <section className="resume-card" aria-labelledby="resume-card-title">
       <div className="card-heading">
@@ -655,6 +656,17 @@ function ResumeCard({ state, session, onState }: {
           }).then(onState).catch((cause: unknown) => setBackgroundError(
             cause instanceof Error ? cause.message : "The model work could not be stopped."
           ))}>{backgroundModelWorkStopLabel(session)}</button>
+        </div>
+      )}
+      {checkpointedTask && (
+        <div className="background-work" role="status" aria-label="Checkpointed Agent Task">
+          <span>Useful partial output is saved. Resume only when you are ready to use the model again.</span>
+          <button className="primary" disabled={state.modelAccess.status !== "available"}
+            onClick={() => void window.quickStudy.submit({
+              type: "resumeAgentTask", taskId: checkpointedTask.id
+            }).then(onState).catch((cause: unknown) => setBackgroundError(
+              cause instanceof Error ? cause.message : "The checkpointed Agent Task could not be resumed."
+            ))}>Resume Agent Task</button>
         </div>
       )}
       {backgroundError && <p className="failure-message" role="alert">{backgroundError}</p>}
@@ -875,6 +887,7 @@ function MissionHistory({ workspace, mission, state, onState }: {
             <li key={session.id}>
               <div><strong>{session.learningGoal}</strong><small>{session.sessionTarget}</small>
                 {hasBackgroundModelWork(session) && <small>{backgroundModelWorkLabel(session)}</small>}
+                {checkpointedAgentTask(session) && <small>Agent Task checkpoint ready</small>}
               </div>
               <div className="session-actions">
                 {hasBackgroundModelWork(session) && <button className="secondary" onClick={() => void window.quickStudy.submit({
@@ -882,6 +895,14 @@ function MissionHistory({ workspace, mission, state, onState }: {
                 }).then(onState).catch((cause: unknown) => setModelWorkError(
                   cause instanceof Error ? cause.message : "The model work could not be stopped."
                 ))}>{backgroundModelWorkStopLabel(session)}</button>}
+                {checkpointedAgentTask(session) && <button className="secondary"
+                  disabled={state.modelAccess.status !== "available"}
+                  aria-label={`Resume checkpointed Agent Task for ${session.learningGoal}`}
+                  onClick={() => void window.quickStudy.submit({
+                    type: "resumeAgentTask", taskId: checkpointedAgentTask(session)!.id
+                  }).then(onState).catch((cause: unknown) => setModelWorkError(
+                    cause instanceof Error ? cause.message : "The checkpointed Agent Task could not be resumed."
+                  ))}>Resume Agent Task</button>}
                 {session.status === "consolidated" ? (
                   <button className="primary" aria-label={`Continue this work from ${session.learningGoal}`} onClick={() => void window.quickStudy.submit({
                     type: "continueSession", sessionId: session.id
@@ -1470,6 +1491,10 @@ function hasBackgroundModelWork(session: LearningSession): boolean {
     || Boolean(agentTask && (agentTask.status === "working" || agentTask.status === "waiting"));
 }
 
+function checkpointedAgentTask(session: LearningSession) {
+  return session.agentTasks.find((task) => task.id === session.activeAgentTaskId && task.resumeAvailable) ?? null;
+}
+
 function backgroundModelWorkLabel(session: LearningSession): string {
   const agentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId);
   if (agentTask?.status === "working" || agentTask?.status === "waiting") {
@@ -2045,6 +2070,10 @@ function AgentTaskStatusCard({ task, modelAvailable, onState }: {
         {task.integratedTeachingCard.retryable && modelAvailable && <button className="primary"
           onClick={() => void window.quickStudy.submit({ type: "retryAgentTask", taskId: task.id }).then(onState)}>
           Retry Agent Task
+        </button>}
+        {task.resumeAvailable && <button className="primary" disabled={!modelAvailable}
+          onClick={() => void window.quickStudy.submit({ type: "resumeAgentTask", taskId: task.id }).then(onState)}>
+          Resume Agent Task
         </button>}
       </div>
     </section>

@@ -303,6 +303,14 @@ export type AgentTaskStatus = "working" | "waiting" | "failed" | "stopped" | "co
 export const AGENT_TASK_COORDINATIONS = ["single", "dependent", "independent"] as const;
 export type AgentTaskCoordination = typeof AGENT_TASK_COORDINATIONS[number];
 
+export interface AgentTaskSpecialistProgress {
+  status: "pending" | "working" | "waiting" | "complete" | "retained";
+  checkpoint: string;
+  result: SpecialistAgentResult | null;
+  usedTokens: number;
+  usedLatencyMs: number;
+}
+
 export function isAgentTaskCoordination(value: unknown): value is AgentTaskCoordination {
   return AGENT_TASK_COORDINATIONS.includes(value as AgentTaskCoordination);
 }
@@ -312,6 +320,7 @@ export interface AgentTask {
   purpose: string;
   status: AgentTaskStatus;
   statusMessage: string | null;
+  resumeAvailable: boolean;
   identifiedNeed: {
     kind: "hiddenAssumptionReview";
     requestedBy: "learner";
@@ -319,6 +328,7 @@ export interface AgentTask {
   };
   brief: AgentBrief;
   specialistBriefs: AgentBrief[];
+  specialistProgress: AgentTaskSpecialistProgress[];
   coordination: AgentTaskCoordination;
   budget: AgentBudget;
   integratedTeachingCard: TeachingCardState & { title: string };
@@ -709,6 +719,7 @@ export type LearnerAction =
   | { type: "retryModelWork" }
   | { type: "requestSpecialistReview"; coordination?: AgentTaskCoordination }
   | { type: "retryAgentTask"; taskId: string }
+  | { type: "resumeAgentTask"; taskId: string }
   | { type: "setReasoningPreference"; preference: ReasoningPreference }
   | { type: "setRuntimeOverride"; override: RuntimeOverride | null }
   | { type: "startChatGptLogin" }
@@ -813,6 +824,7 @@ export class LearningApplication {
     controller: AbortController;
     promise: Promise<unknown>;
     stop(): void;
+    checkpointForShutdown?(): void;
     markUnconfirmed(): void;
     restart(): Promise<void>;
   }>();
@@ -863,11 +875,7 @@ export class LearningApplication {
         if (activeQuestionCard) interruptCardRevision(activeQuestionCard.currentRevision);
         const activeAgentTask = session.agentTasks.find((task) => task.id === session.activeAgentTaskId);
         if (activeAgentTask && (activeAgentTask.status === "working" || activeAgentTask.status === "waiting")) {
-          activeAgentTask.status = "stopped";
-          activeAgentTask.statusMessage = "Specialist work stopped when the application closed. Retry when ready.";
-          Object.assign(activeAgentTask.integratedTeachingCard, {
-            status: "stopped", error: activeAgentTask.statusMessage, retryable: true
-          });
+          checkpointAgentTaskForRelaunch(activeAgentTask);
         }
         refreshAskBarContext(persisted, session);
       }
@@ -1452,7 +1460,7 @@ export class LearningApplication {
     }
     const activeWorks = [...this.modelWorks.entries()];
     for (const [, work] of activeWorks) {
-      work.stop();
+      (work.checkpointForShutdown ?? work.stop)();
       work.controller.abort();
     }
     if (activeWorks.length > 0) {
@@ -2250,6 +2258,28 @@ export class LearningApplication {
         this.beginSpecialistAgentTask(session, task);
         break;
       }
+      case "resumeAgentTask": {
+        const session = this.state.sessions.find((candidate) => candidate.agentTasks.some(
+          (task) => task.id === action.taskId
+        ));
+        const task = session?.agentTasks.find((candidate) => candidate.id === action.taskId);
+        if (!session || !task) throw new Error("Choose a checkpointed Agent Task.");
+        if (!task.resumeAvailable) throw new Error("This Agent Task has no checkpoint ready to resume.");
+        if (session.status === "consolidated") throw new Error("A consolidated Learning Session cannot resume model work.");
+        if (this.modelWorks.has(session.id)) throw new Error("Wait for the current model work before resuming this Agent Task.");
+        this.requireModelAccess();
+        this.pauseActiveSession();
+        session.status = "active";
+        session.activityOrder = this.nextActivityOrder();
+        session.activeAgentTaskId = task.id;
+        this.state.activeSessionId = session.id;
+        this.state.resumeSessionId = session.id;
+        this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
+        this.state.screen = "workbench";
+        refreshAskBarContext(this.state, session);
+        this.beginSpecialistAgentTask(session, task, true);
+        break;
+      }
       case "setReasoningPreference": {
         const session = this.requireActiveSession();
         if (!isReasoningPreference(action.preference)) throw new Error("Choose Faster, Balanced, or Deeper reasoning.");
@@ -2988,13 +3018,14 @@ export class LearningApplication {
     }, () => this.beginQuestionTeaching(session, card, previous), context, previous);
   }
 
-  private beginSpecialistAgentTask(session: LearningSession, task: AgentTask): void {
+  private beginSpecialistAgentTask(session: LearningSession, task: AgentTask, resumeFromCheckpoint = false): void {
     this.requireModelAccess();
     const log = this.agentWorkLogs[session.id] ??= [];
     const controller = new AbortController();
     const runtime = this.modelRuntime!;
     task.status = "working";
     task.statusMessage = null;
+    task.resumeAvailable = false;
     const retainedCheckpoint = task.integratedTeachingCard.content;
     if (task.agentWorkLogReference) {
       task.priorAgentWorkLogReferences.push(structuredClone(task.agentWorkLogReference));
@@ -3011,73 +3042,125 @@ export class LearningApplication {
       fromSequence: log.length + 1,
       toSequence: log.length + 1
     };
-    const specialistResults: Array<SpecialistAgentResult | null> = task.specialistBriefs.map(() => null);
-    const specialistPartials = task.specialistBriefs.map(() => "");
-    const specialistStatuses = task.specialistBriefs.map(() => "working" as "working" | "waiting" | "complete");
+    const activeUsageAccounts = new Set<() => void>();
     const coordinated = task.specialistBriefs.map((storedBrief, index) => ({
       id: `${task.id}:${index}`,
       dependsOnTaskIds: task.coordination === "dependent" && index > 0 ? [`${task.id}:${index - 1}`] : [],
       run: async () => {
+        const progress = task.specialistProgress[index];
+        if (progress.status === "complete" || progress.status === "retained") return;
+        const retainedSpecialistCheckpoint = progress.checkpoint;
         const brief = structuredClone(storedBrief);
+        if (retainedSpecialistCheckpoint) {
+          brief.constraints.push(
+            `Continue from this retained checkpoint without repeating it: ${retainedSpecialistCheckpoint}`
+          );
+        }
         if (task.coordination === "dependent" && index > 0) {
-          const prior = specialistResults[index - 1];
+          const prior = task.specialistProgress[index - 1].result;
           if (!prior) throw new Error("Dependent Specialist Agent work is missing its prerequisite result.");
           brief.constraints.push(`Earlier Specialist Agent conclusion: ${prior.content}`);
         }
+        const totalTokenBudget = specialistTokenBudget(task);
+        const totalLatencyBudget = specialistLatencyBudget(task);
+        const remainingTokens = totalTokenBudget - progress.usedTokens;
+        const remainingLatencyMs = totalLatencyBudget - progress.usedLatencyMs;
+        if (remainingTokens < 1) throw new Error("Specialist Agent reached its token budget before resumption.");
+        if (remainingLatencyMs < 1) throw new Error("Specialist Agent reached its latency budget before resumption.");
         const perAgentBudget: AgentBudget = {
           ...structuredClone(task.budget),
           agentCount: 1,
           concurrency: 1,
-          maxTokens: Math.floor(task.budget.maxTokens / task.budget.agentCount),
-          maxLatencyMs: task.coordination === "dependent"
-            ? Math.floor(task.budget.maxLatencyMs / task.budget.agentCount)
-            : task.budget.maxLatencyMs
+          maxTokens: remainingTokens,
+          maxLatencyMs: remainingLatencyMs
         };
-        specialistResults[index] = await runtime.runSpecialistAgent({
-          sessionId: session.id,
-          purpose: index === 0 ? task.purpose : "Stress-test the current Teaching Card for a counterexample or boundary case",
-          brief,
-          budget: perAgentBudget,
-          signal: controller.signal,
-          onStatus: (status, message) => {
-            if (controller.signal.aborted) return;
-            specialistStatuses[index] = status;
-            task.status = specialistStatuses.every((candidate) => candidate === "waiting") ? "waiting" : "working";
-            task.statusMessage = message;
-            this.emitState();
-            this.queuePersistence();
-          },
-          onPartialResult: (content) => {
-            if (controller.signal.aborted || !content) return;
-            specialistPartials[index] = content;
-            const combined = specialistPartials.filter(Boolean).join("\n\n");
-            task.integratedTeachingCard.content = retainedCheckpoint && !combined.startsWith(retainedCheckpoint)
-              ? `${retainedCheckpoint}\n\nRetry checkpoint:\n${combined}`
-              : combined;
-            this.emitState();
-            this.queuePersistence();
-          },
-          onRuntimeEvent: (event) => {
-            if (controller.signal.aborted) return;
-            log.push({ ...event, sequence: log.length + 1 });
-            if (task.agentWorkLogReference) task.agentWorkLogReference.toSequence = log.length;
-            this.queuePersistence();
-          }
-        });
-        specialistStatuses[index] = "complete";
+        progress.status = "working";
+        const tokenUsageAtStart = progress.usedTokens;
+        let lastAccountedAt = Date.now();
+        const accountLatency = () => {
+          const now = Date.now();
+          progress.usedLatencyMs += Math.max(0, now - lastAccountedAt);
+          lastAccountedAt = now;
+        };
+        activeUsageAccounts.add(accountLatency);
+        let result: SpecialistAgentResult;
+        try {
+          result = await runtime.runSpecialistAgent({
+            sessionId: session.id,
+            purpose: index === 0 ? task.purpose : "Stress-test the current Teaching Card for a counterexample or boundary case",
+            brief,
+            budget: perAgentBudget,
+            signal: controller.signal,
+            onStatus: (status, message) => {
+              if (controller.signal.aborted) return;
+              accountLatency();
+              progress.status = status;
+              const unfinished = task.specialistProgress.filter((candidate) =>
+                candidate.status !== "complete" && candidate.status !== "retained");
+              task.status = unfinished.length > 0 && unfinished.every((candidate) => candidate.status === "waiting")
+                ? "waiting"
+                : "working";
+              task.statusMessage = message;
+              this.emitState();
+              this.queuePersistence();
+            },
+            onPartialResult: (content) => {
+              if (controller.signal.aborted || !content) return;
+              accountLatency();
+              progress.checkpoint = mergeSpecialistCheckpoint(
+                retainedSpecialistCheckpoint,
+                content,
+                resumeFromCheckpoint ? "Resumed checkpoint" : "Retry checkpoint"
+              );
+              task.integratedTeachingCard.content = combinedSpecialistCheckpoints(task.specialistProgress);
+              this.emitState();
+              this.queuePersistence();
+            },
+            onTokenUsage: (totalTokens) => {
+              if (controller.signal.aborted || !Number.isInteger(totalTokens) || totalTokens < 0) return;
+              accountLatency();
+              progress.usedTokens = Math.max(progress.usedTokens, tokenUsageAtStart + totalTokens);
+              this.queuePersistence();
+            },
+            onRuntimeEvent: (event) => {
+              if (controller.signal.aborted) return;
+              accountLatency();
+              log.push({ ...event, sequence: log.length + 1 });
+              if (task.agentWorkLogReference) task.agentWorkLogReference.toSequence = log.length;
+              this.queuePersistence();
+            }
+          });
+        } finally {
+          accountLatency();
+          activeUsageAccounts.delete(accountLatency);
+        }
+        if (controller.signal.aborted) return;
+        const validated = validatedSpecialistAgentResult(result);
+        const completedContent = mergeSpecialistCheckpoint(
+          retainedSpecialistCheckpoint,
+          validated.content,
+          resumeFromCheckpoint ? "Resumed checkpoint" : "Retry checkpoint"
+        );
+        progress.status = "complete";
+        progress.checkpoint = completedContent;
+        progress.result = { ...validated, content: completedContent };
+        task.integratedTeachingCard.content = combinedSpecialistCheckpoints(task.specialistProgress);
+        this.emitState();
+        this.queuePersistence();
       }
     }));
     const promise = coordinateAgentTasks(coordinated, task.budget.concurrency).then(() => {
       if (controller.signal.aborted) return;
-      const integrated = specialistResults.map(validatedSpecialistAgentResult);
+      const integrated = task.specialistProgress.map((progress) => validatedSpecialistAgentResult(progress.result));
+      const integratedContent = integrated.length === 1
+        ? integrated[0].content
+        : integrated.map((result) => `${result.title}\n${result.content}`).join("\n\n");
       task.status = "complete";
       task.statusMessage = null;
       Object.assign(task.integratedTeachingCard, {
         title: integrated.length === 1 ? integrated[0].title : "Coordinated Specialist review",
         status: "completed",
-        content: integrated.length === 1
-          ? integrated[0].content
-          : integrated.map((result) => `${result.title}\n${result.content}`).join("\n\n"),
+        content: integratedContent,
         error: null,
         retryable: false
       });
@@ -3085,10 +3168,13 @@ export class LearningApplication {
       if (controller.signal.aborted) return;
       const limitMessage = agentBudgetLimitMessage(error, Boolean(task.integratedTeachingCard.content.trim()));
       if (limitMessage) {
+        const retryable = agentTaskHasRemainingBudget(task);
         task.status = "stopped";
-        task.statusMessage = limitMessage;
+        task.statusMessage = retryable
+          ? limitMessage
+          : `${limitMessage} No Agent Budget remains; start a new Learning Session to approve fresh model work.`;
         Object.assign(task.integratedTeachingCard, {
-          status: "stopped", error: limitMessage, retryable: true
+          status: "stopped", error: task.statusMessage, retryable
         });
         return;
       }
@@ -3109,11 +3195,17 @@ export class LearningApplication {
       controller,
       promise,
       stop: () => {
+        for (const accountUsage of activeUsageAccounts) accountUsage();
+        task.resumeAvailable = false;
         task.status = "stopped";
         task.statusMessage = "Specialist work stopped. Retry when ready.";
         Object.assign(task.integratedTeachingCard, {
           status: "stopped", error: task.statusMessage, retryable: true
         });
+      },
+      checkpointForShutdown: () => {
+        for (const accountUsage of activeUsageAccounts) accountUsage();
+        checkpointAgentTaskForRelaunch(task);
       },
       markUnconfirmed: () => {
         task.statusMessage = "Specialist work is stopped locally, but Codex did not confirm interruption. Restart Codex before retrying.";
@@ -3871,6 +3963,24 @@ export class LearningApplication {
   }
 }
 
+function mergeSpecialistCheckpoint(retained: string, current: string, label: string): string {
+  if (!retained || current.includes(retained)) return current;
+  return `${retained}\n\n${label}:\n${current}`;
+}
+
+function combinedSpecialistCheckpoints(progress: AgentTaskSpecialistProgress[]): string {
+  return progress.map((specialist) => specialist.checkpoint).filter(Boolean).join("\n\n");
+}
+
+function checkpointAgentTaskForRelaunch(task: AgentTask): void {
+  task.status = "stopped";
+  task.statusMessage = "Agent Task checkpointed when the application closed. Resume when ready.";
+  task.resumeAvailable = true;
+  Object.assign(task.integratedTeachingCard, {
+    status: "stopped", error: task.statusMessage, retryable: false
+  });
+}
+
 function agentBudgetLimitMessage(error: unknown, preservedPartialOutput: boolean): string | null {
   const message = error instanceof Error ? error.message.toLocaleLowerCase() : "";
   const preservation = preservedPartialOutput
@@ -3883,6 +3993,24 @@ function agentBudgetLimitMessage(error: unknown, preservedPartialOutput: boolean
     return `Agent Task stopped at its latency limit.${preservation}`;
   }
   return null;
+}
+
+function specialistTokenBudget(task: AgentTask): number {
+  return Math.floor(task.budget.maxTokens / task.budget.agentCount);
+}
+
+function specialistLatencyBudget(task: AgentTask): number {
+  return task.coordination === "dependent"
+    ? Math.floor(task.budget.maxLatencyMs / task.budget.agentCount)
+    : task.budget.maxLatencyMs;
+}
+
+function agentTaskHasRemainingBudget(task: AgentTask): boolean {
+  const unfinished = task.specialistProgress.filter((progress) =>
+    progress.status !== "complete" && progress.status !== "retained");
+  return unfinished.length > 0 && unfinished.every((progress) =>
+    progress.usedTokens < specialistTokenBudget(task)
+    && progress.usedLatencyMs < specialistLatencyBudget(task));
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -4165,6 +4293,7 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.purpose !== "string" || !candidate.purpose.trim()
       || !["working", "waiting", "failed", "stopped", "complete"].includes(String(candidate.status))
       || !(candidate.statusMessage === null || typeof candidate.statusMessage === "string")
+      || !(candidate.resumeAvailable === undefined || typeof candidate.resumeAvailable === "boolean")
       || !isRecord(candidate.identifiedNeed) || !isRecord(candidate.brief)
       || !isRecord(candidate.budget) || !isRecord(candidate.integratedTeachingCard)
       || !(candidate.priorAgentWorkLogReferences === undefined || Array.isArray(candidate.priorAgentWorkLogReferences))) {
@@ -4176,6 +4305,14 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
     const coordination = candidate.coordination ?? "single";
     const specialistBriefs = candidate.specialistBriefs ?? [brief];
     const card = candidate.integratedTeachingCard;
+    const specialistProgress = candidate.specialistProgress ?? (Array.isArray(specialistBriefs) ? specialistBriefs : []).map(() => ({
+      status: candidate.status === "complete" ? "retained" : "pending",
+      checkpoint: "", result: null, usedTokens: 0, usedLatencyMs: 0
+    }));
+    if (candidate.specialistProgress === undefined && Array.isArray(specialistProgress)
+      && specialistProgress.length > 0 && isRecord(card) && typeof card.content === "string") {
+      specialistProgress[0].checkpoint = card.content;
+    }
     const reference = candidate.agentWorkLogReference;
     const priorReferences = candidate.priorAgentWorkLogReferences ?? [];
     if (need.kind !== "hiddenAssumptionReview" || need.requestedBy !== "learner"
@@ -4198,6 +4335,8 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
       || !Number.isInteger(budget.maxLatencyMs) || (budget.maxLatencyMs as number) < 1
       || !Array.isArray(specialistBriefs) || specialistBriefs.length !== budget.agentCount
       || !specialistBriefs.every(validStoredAgentBrief)
+      || !Array.isArray(specialistProgress) || specialistProgress.length !== specialistBriefs.length
+      || !specialistProgress.every(validStoredSpecialistProgress)
       || typeof card.title !== "string" || !card.title.trim()
       || !["idle", "streaming", "completed", "stopped", "failed"].includes(String(card.status))
       || typeof card.content !== "string" || !(card.error === null || typeof card.error === "string")
@@ -4208,13 +4347,38 @@ function migrateAgentTasks(value: unknown): AgentTask[] {
       || !(priorReferences as unknown[]).every(validAgentWorkLogReference)) {
       throw new Error("Stored Agent Tasks are invalid.");
     }
+    const unsafeLegacyCoordination = candidate.specialistProgress === undefined
+      && specialistBriefs.length > 1 && candidate.status !== "complete";
+    const legacyStatusMessage = "This coordinated Agent Task predates resumable specialist checkpoints. Its partial output is retained, but resuming could duplicate model work. Start a new Learning Session for a fresh Agent Task.";
     return {
       ...candidate,
+      status: unsafeLegacyCoordination ? "stopped" : candidate.status,
+      statusMessage: unsafeLegacyCoordination ? legacyStatusMessage : candidate.statusMessage,
+      resumeAvailable: unsafeLegacyCoordination ? false : candidate.resumeAvailable ?? false,
       coordination,
       specialistBriefs,
+      specialistProgress,
+      integratedTeachingCard: unsafeLegacyCoordination ? {
+        ...card,
+        status: "stopped",
+        error: legacyStatusMessage,
+        retryable: false
+      } : card,
       priorAgentWorkLogReferences: priorReferences
     } as unknown as AgentTask;
   });
+}
+
+function validStoredSpecialistProgress(value: unknown): value is AgentTaskSpecialistProgress {
+  if (!isRecord(value) || !["pending", "working", "waiting", "complete", "retained"].includes(String(value.status))
+    || typeof value.checkpoint !== "string"
+    || !Number.isInteger(value.usedTokens) || (value.usedTokens as number) < 0
+    || !Number.isInteger(value.usedLatencyMs) || (value.usedLatencyMs as number) < 0) return false;
+  if (value.result === null) return value.status !== "complete";
+  return value.status === "complete" && isRecord(value.result)
+    && typeof value.result.title === "string" && Boolean(value.result.title.trim())
+    && typeof value.result.content === "string" && Boolean(value.result.content.trim())
+    && value.checkpoint === value.result.content;
 }
 
 function validStoredAgentBrief(value: unknown): value is AgentBrief {
@@ -4239,6 +4403,11 @@ function validateAgentTaskReferences(session: LearningSession): void {
     throw new Error("Stored Agent Task references are invalid.");
   }
   for (const task of session.agentTasks) {
+    if (task.resumeAvailable && (task.status !== "stopped"
+      || task.integratedTeachingCard.status !== "stopped"
+      || task.integratedTeachingCard.retryable)) {
+      throw new Error("Stored Agent Task references are invalid.");
+    }
     if (task.agentWorkLogReference?.sessionId !== undefined && task.agentWorkLogReference.sessionId !== session.id) {
       throw new Error("Stored Agent Task references are invalid.");
     }
@@ -4875,6 +5044,9 @@ function createSpecialistReviewTask(
     },
     brief,
     specialistBriefs,
+    specialistProgress: specialistBriefs.map(() => ({
+      status: "pending", checkpoint: "", result: null, usedTokens: 0, usedLatencyMs: 0
+    })),
     coordination,
     budget,
     integratedTeachingCard: {
@@ -4884,6 +5056,7 @@ function createSpecialistReviewTask(
       error: null,
       retryable: false
     },
+    resumeAvailable: false,
     agentWorkLogReference: null,
     priorAgentWorkLogReferences: []
   };

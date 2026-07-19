@@ -181,6 +181,7 @@ export interface SpecialistAgentRequest {
   signal: AbortSignal;
   onStatus(status: "working" | "waiting", message: string | null): void;
   onPartialResult(content: string): void;
+  onTokenUsage?(totalTokens: number): void;
   onRuntimeEvent?(event: ModelRuntimeEvent): void;
 }
 

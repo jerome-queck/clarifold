@@ -8,6 +8,7 @@ let threadNumber = 0;
 let turnNumber = 0;
 let serverRequestNumber = 1_000;
 const threadPolicies = new Map();
+const threadKinds = new Map();
 const pendingAccessRequests = new Map();
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -97,6 +98,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       break;
     case "thread/start":
       threadNumber += 1;
+      threadKinds.set(
+        `fake-thread-${threadNumber}`,
+        message.params.dynamicTools?.some((tool) => tool.name === "checkpoint_specialist_result")
+          ? "specialist"
+          : "teaching"
+      );
       threadPolicies.set(
         `fake-thread-${threadNumber}`,
         message.params.baseInstructions.includes("Full Access permits") ? "full" : "bounded"
@@ -108,7 +115,48 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const turnId = `fake-turn-${turnNumber}`;
       send({ id: message.id, result: { turn: { id: turnId } } });
       queueMicrotask(() => {
-        if (message.params.outputSchema) {
+        if (threadKinds.get(message.params.threadId) === "specialist") {
+          const checkpoint = "The retained checkpoint identifies Hausdorff separation.";
+          send({
+            id: serverRequestNumber++,
+            method: "item/tool/call",
+            params: {
+              threadId: message.params.threadId,
+              turnId,
+              callId: `checkpoint-${turnId}`,
+              namespace: null,
+              tool: "checkpoint_specialist_result",
+              arguments: { title: "Specialist review", content: checkpoint }
+            }
+          });
+          if (accessState().specialist === "hold") return;
+          if (accessState().specialist === "fail") {
+            send({
+              method: "turn/completed",
+              params: {
+                threadId: message.params.threadId,
+                turn: {
+                  id: turnId,
+                  status: "failed",
+                  error: { message: "Specialist review failed in packaged test." }
+                }
+              }
+            });
+            return;
+          }
+          send({
+            method: "item/agentMessage/delta",
+            params: {
+              threadId: message.params.threadId,
+              turnId,
+              itemId: "specialist-result",
+              delta: JSON.stringify({
+                title: "Specialist review",
+                content: `${checkpoint} Compactness supplies the finite reduction.`
+              })
+            }
+          });
+        } else if (message.params.outputSchema) {
           const prompt = message.params.input[0].text;
           const artifactSynthesis = Boolean(message.params.outputSchema.properties?.noteInterpretations);
           const annotationId = prompt.match(/"annotationId":"([^"]+)"/)?.[1];
@@ -188,6 +236,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     case "turn/interrupt":
       send({ id: message.id, result: {} });
+      queueMicrotask(() => send({
+        method: "turn/completed",
+        params: {
+          threadId: message.params.threadId,
+          turn: { id: message.params.turnId, status: "interrupted", error: null }
+        }
+      }));
       break;
   }
 });

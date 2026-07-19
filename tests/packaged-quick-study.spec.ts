@@ -339,6 +339,118 @@ test("packaged Quick Study organizes durable work and resumes the latest session
   }
 });
 
+test("packaged Quick Study checkpoints Background Agent Tasks and resumes them explicitly", async () => {
+  test.setTimeout(60_000);
+  const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-agent-task-smoke-"));
+  const accessStatePath = join(dataDirectory, "fake-codex-access.json");
+  let launched: { browser: Browser; page: Page; process: ChildProcess } | undefined;
+
+  const launch = async () => {
+    const port = await availablePort();
+    const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
+      env: {
+        ...process.env,
+        ELECTRON_ENABLE_LOGGING: "1",
+        QUICK_STUDY_DATA_DIR: dataDirectory,
+        QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs")
+      },
+      stdio: "pipe"
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+    child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
+    await waitForDebugger(port, child, () => output);
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const page = await waitForPage(browser, child, () => output);
+    launched = { browser, page, process: child };
+    return page;
+  };
+
+  const quit = async () => {
+    if (!launched) return;
+    const current = launched;
+    launched = undefined;
+    await current.page.close();
+    const exitedNormally = await waitForExit(current.process, 5_000);
+    await current.browser.close().catch(() => undefined);
+    if (!exitedNormally) {
+      current.process.kill("SIGTERM");
+      throw new Error("Packaged Quick Study did not checkpoint Agent Tasks before exiting.");
+    }
+  };
+
+  try {
+    await writeFile(accessStatePath, JSON.stringify({ status: "available", specialist: "hold" }), "utf8");
+    let page = await launch();
+    await page.getByLabel("Typed mathematics").fill("Check the hidden assumption in this compactness proof.");
+    await page.getByRole("button", { name: "Propose Learning Session" }).press("Enter");
+    await expect(page.getByRole("region", { name: "Current Teaching Card" })).toContainText(
+      "Start from the key definition",
+      { timeout: 15_000 }
+    );
+    await page.getByRole("button", { name: "One bounded review" }).press("Enter");
+    await expect(page.getByRole("region", { name: "Agent Task Status" })).toContainText(
+      "The retained checkpoint identifies Hausdorff separation.",
+      { timeout: 15_000 }
+    );
+
+    await page.getByRole("button", { name: "Leave session" }).press("Enter");
+    await expect(page.getByRole("status").filter({
+      hasText: "Specialist Agent is working in the background"
+    })).toBeVisible();
+    await quit();
+
+    await writeFile(accessStatePath, JSON.stringify({ status: "available", specialist: "complete" }), "utf8");
+    page = await launch();
+    const checkpoint = page.getByRole("status", { name: "Checkpointed Agent Task" });
+    await expect(checkpoint).toContainText("Useful partial output is saved");
+    const resume = checkpoint.getByRole("button", { name: "Resume Agent Task" });
+    await resume.press("Enter");
+    await expect(page.getByRole("region", { name: "Agent Task Status" })).toContainText(
+      "Compactness supplies the finite reduction.",
+      { timeout: 15_000 }
+    );
+
+    await page.getByRole("button", { name: "Leave session" }).press("Enter");
+    await writeFile(accessStatePath, JSON.stringify({ status: "available", specialist: "hold" }), "utf8");
+    await page.getByLabel("Typed mathematics").fill("Cancel a bounded review without losing its checkpoint.");
+    await page.getByRole("button", { name: "Propose Learning Session" }).press("Enter");
+    await expect(page.getByRole("region", { name: "Current Teaching Card" })).toContainText(
+      "Start from the key definition",
+      { timeout: 15_000 }
+    );
+    await page.getByRole("button", { name: "One bounded review" }).press("Enter");
+    let agentTask = page.getByRole("region", { name: "Agent Task Status" });
+    await expect(agentTask).toContainText("The retained checkpoint identifies Hausdorff separation.");
+    await agentTask.getByRole("button", { name: "Stop Agent Task" }).press("Enter");
+    await expect(agentTask.getByText("Stopped", { exact: true })).toBeVisible();
+    await expect(agentTask).toContainText("The retained checkpoint identifies Hausdorff separation.");
+
+    await page.getByRole("button", { name: "Leave session" }).press("Enter");
+    await writeFile(accessStatePath, JSON.stringify({ status: "available", specialist: "fail" }), "utf8");
+    await page.getByLabel("Typed mathematics").fill("Recover a bounded review after a runtime failure.");
+    await page.getByRole("button", { name: "Propose Learning Session" }).press("Enter");
+    await expect(page.getByRole("region", { name: "Current Teaching Card" })).toContainText(
+      "Start from the key definition",
+      { timeout: 15_000 }
+    );
+    await page.getByRole("button", { name: "One bounded review" }).press("Enter");
+    agentTask = page.getByRole("region", { name: "Agent Task Status" });
+    await expect(agentTask).toContainText(
+      "Codex could not complete this request. Retry when the runtime is available.",
+      { timeout: 15_000 }
+    );
+    const retry = agentTask.getByRole("button", { name: "Retry Agent Task" });
+    await expect(retry).toBeVisible();
+    await writeFile(accessStatePath, JSON.stringify({ status: "available", specialist: "complete" }), "utf8");
+    await retry.press("Enter");
+    await expect(agentTask).toContainText("Compactness supplies the finite reduction.", { timeout: 15_000 });
+  } finally {
+    await quit();
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
+});
+
 async function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();

@@ -236,6 +236,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     onRuntimeEvent?: (event: ModelRuntimeEvent) => void;
     onAccessRequest?: TeachingRequest["onAccessRequest"];
     onSpecialistCheckpoint?: SpecialistAgentRequest["onPartialResult"];
+    onSpecialistTokenUsage?: SpecialistAgentRequest["onTokenUsage"];
     specialistMaxTokens?: number;
     lastSpecialistCheckpoint: string;
     budgetExceeded: boolean;
@@ -606,6 +607,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
         onRuntimeEvent,
         onAccessRequest: teachingRequest?.onAccessRequest,
         onSpecialistCheckpoint: specialistRequest?.onPartialResult,
+        onSpecialistTokenUsage: specialistRequest?.onTokenUsage,
         specialistMaxTokens: specialistRequest?.budget.maxTokens,
         lastSpecialistCheckpoint: "",
         budgetExceeded: false,
@@ -721,6 +723,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
         this.bufferEarlyTurnNotification(usage.turnId, message);
         return;
       }
+      turn.onSpecialistTokenUsage?.(usage.totalTokens);
       this.enforceSpecialistTokenBudget(usage.turnId, turn, usage.totalTokens);
       return;
     }
