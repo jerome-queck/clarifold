@@ -34,6 +34,7 @@ export interface Formalization {
 export interface VerifierRunRequest extends Formalization {
   runId: string;
   evidenceDirectory: string;
+  environmentId?: string;
 }
 
 export type VerifierCommandOutcome = "accepted" | "rejected" | "timedOut" | "cancelled"
@@ -55,13 +56,21 @@ export interface VerifierEnvironmentInspection {
   installed: boolean;
   installedBytes: number;
   cleanupRequired: boolean;
+  environments?: VerifierEnvironmentInstallation[];
+  activeEnvironmentId?: string | null;
+}
+
+export interface VerifierEnvironmentInstallation {
+  environment: Readonly<VerificationEnvironment>;
+  installedBytes: number;
 }
 
 export interface VerifierEnvironmentManager {
   inspect(): Promise<VerifierEnvironmentInspection>;
-  remove(): Promise<{ removedLogicalBytes: number }>;
-  install(): Promise<{ installedBytes: number }>;
-  cleanup(): Promise<{ installed: boolean; installedBytes: number }>;
+  remove(environmentId?: string): Promise<{ removedLogicalBytes: number }>;
+  install(): Promise<{ installedBytes: number; environment?: Readonly<VerificationEnvironment> }>;
+  activate?(environmentId: string): Promise<void>;
+  cleanup(environmentIds?: string[]): Promise<{ installed: boolean; installedBytes: number }>;
 }
 
 const KNOWN_CLAIM = "For every natural number n, n + 0 = n.";
@@ -96,4 +105,13 @@ export function validVerificationEnvironment(value: unknown): value is Verificat
     && environment.mathlibModules.length === bundledEnvironment.mathlibModules.length
     && environment.mathlibModules.every((module, index) => module === bundledEnvironment.mathlibModules[index])
     && environment.runtimeFormat === bundledEnvironment.runtimeFormat;
+}
+
+export function validRecordedVerificationEnvironment(value: unknown): value is VerificationEnvironment {
+  if (!value || typeof value !== "object") return false;
+  const environment = value as Record<string, unknown>;
+  return ["id", "checker", "leanVersion", "mathlibVersion", "mathlibCommit", "platform", "architecture", "sourceArchive",
+    "sourceSha256", "supportProfile"].every((key) => typeof environment[key] === "string" && Boolean(String(environment[key]).trim()))
+    && Array.isArray(environment.mathlibModules) && environment.mathlibModules.every((module) => typeof module === "string")
+    && typeof environment.runtimeFormat === "number" && Number.isFinite(environment.runtimeFormat);
 }
