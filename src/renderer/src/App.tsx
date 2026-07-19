@@ -141,6 +141,8 @@ function SourcesPanel({ workspace, state, onState }: {
       setSourceError(error instanceof Error ? error.message : "Quick Study could not open this source.");
     }
   };
+  const locate = (sourceId: string) => runSourceAction(() => window.quickStudy.locateLinkedSource(sourceId));
+  const preserveSnapshot = (sourceId: string) => runSourceAction(() => window.quickStudy.preserveSourceSnapshot(sourceId));
 
   return (
     <section className="sources-card" aria-labelledby="sources-title">
@@ -169,12 +171,20 @@ function SourcesPanel({ workspace, state, onState }: {
         empty="No Primary Folder linked."
         sources={primaryFolder ? [primaryFolder] : []}
         onOpen={open}
+        revisions={state.sourceRevisions}
+        assets={managedAssets}
+        onLocate={locate}
+        onPreserveSnapshot={preserveSnapshot}
       />
       <SourceGroup
         title="External Attachments"
         empty="No individual files linked outside the Primary Folder."
         sources={attachments}
         onOpen={open}
+        revisions={state.sourceRevisions}
+        assets={managedAssets}
+        onLocate={locate}
+        onPreserveSnapshot={preserveSnapshot}
       />
       <div className="source-group">
         <h3>Managed Assets</h3>
@@ -182,8 +192,12 @@ function SourcesPanel({ workspace, state, onState }: {
           <ul className="source-list">
             {managedAssets.map((asset) => (
               <li key={asset.id}>
-                <div><strong>{asset.name}</strong><span className="source-badge managed">Managed Asset</span></div>
-                <p>{asset.content}</p>
+                <div><strong>{asset.name}</strong><span className="source-badge managed">
+                  {asset.sourceSnapshot ? "Source Snapshot" : "Managed Asset"}
+                </span></div>
+                {asset.sourceSnapshot ? <p>Preserves Source Revision {asset.sourceSnapshot.sourceRevisionId} of Linked Source {
+                  linkedSources.find((source) => source.id === asset.sourceSnapshot?.linkedSourceId)?.name ?? asset.sourceSnapshot.linkedSourceId
+                }.</p> : <p>{asset.content}</p>}
               </li>
             ))}
           </ul>
@@ -354,11 +368,15 @@ function SourceIndexPanel({ workspace, state, onState }: {
   );
 }
 
-function SourceGroup({ title, empty, sources, onOpen }: {
+function SourceGroup({ title, empty, sources, revisions, assets, onOpen, onLocate, onPreserveSnapshot }: {
   title: string;
   empty: string;
   sources: Array<Extract<LearningApplicationState["sources"][number], { kind: "linkedSource" }>>;
+  revisions: LearningApplicationState["sourceRevisions"];
+  assets: Array<Extract<LearningApplicationState["sources"][number], { kind: "managedAsset" }>>;
   onOpen(sourceId: string): Promise<void>;
+  onLocate(sourceId: string): Promise<void>;
+  onPreserveSnapshot(sourceId: string): Promise<void>;
 }) {
   return (
     <div className="source-group">
@@ -379,6 +397,26 @@ function SourceGroup({ title, empty, sources, onOpen }: {
                 aria-label={`${source.link.accessStatus === "unavailable" ? "Retry" : "Open"} Linked Source ${source.name}`}
                 onClick={() => void onOpen(source.id)}
               >{source.link.accessStatus === "unavailable" ? "Retry access" : "Open read-only"}</button>
+              {source.link.accessStatus === "unavailable" && <button className="text-button"
+                aria-label={`Locate Linked Source ${source.name} again`}
+                onClick={() => void onLocate(source.id)}>Locate again</button>}
+              {source.link.accessStatus === "available" && <button className="text-button"
+                aria-label={`Preserve current Source Revision for ${source.name}`}
+                onClick={() => void onPreserveSnapshot(source.id)}>Preserve source snapshot</button>}
+              <ul aria-label={`Source Revisions for ${source.name}`}>
+                {revisions.filter((revision) => revision.sourceId === source.id).map((revision) => {
+                  const snapshot = revision.snapshotAssetId
+                    ? assets.find((asset) => asset.id === revision.snapshotAssetId)
+                    : null;
+                  const current = revision.id === source.link.currentRevisionId;
+                  return <li key={revision.id}>
+                    <strong>{current ? "Current Source Revision" : "Historical Source Revision"}</strong>
+                    {snapshot ? <span> Preserved by Source Snapshot {snapshot.name}.</span>
+                      : current ? <span> Not preserved as a Source Snapshot.</span>
+                        : <span> Historical content unavailable — this Source Revision was not preserved as a Source Snapshot. Source Index and Source Fingerprint are not backups.</span>}
+                  </li>;
+                })}
+              </ul>
             </li>
           ))}
         </ul>

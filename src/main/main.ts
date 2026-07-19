@@ -29,6 +29,28 @@ const sourceAccess = new MacOsSourceAccess({
     const stopAccess = app.startAccessingSecurityScopedResource(bookmarkData);
     return () => stopAccess();
   },
+  resolveSecurityScopedBookmark: async (bookmarkData) => {
+    const helperPath = join(__dirname, "../helpers/source-bookmark-helper").replace("app.asar", "app.asar.unpacked");
+    const { stdout } = await execFileAsync(helperPath, [bookmarkData], {
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+      encoding: "utf8"
+    });
+    const result = JSON.parse(stdout) as unknown;
+    if (!result || typeof result !== "object") throw new Error("The bookmark resolver returned an invalid response.");
+    const resolved = result as Record<string, unknown>;
+    if (typeof resolved.path !== "string" || typeof resolved.stale !== "boolean"
+      || (resolved.refreshedBookmarkData !== undefined && typeof resolved.refreshedBookmarkData !== "string")) {
+      throw new Error("The bookmark resolver returned an invalid response.");
+    }
+    return {
+      path: resolved.path,
+      stale: resolved.stale,
+      ...(typeof resolved.refreshedBookmarkData === "string"
+        ? { refreshedBookmarkData: resolved.refreshedBookmarkData }
+        : {})
+    };
+  },
   extractDocument: async (path) => {
     const helperPath = join(__dirname, "../helpers/source-index-extractor").replace("app.asar", "app.asar.unpacked");
     const { stdout } = await execFileAsync(helperPath, [path], {
@@ -267,6 +289,22 @@ function registerLearningApplicationHandlers(): void {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
     return learningApplication.openLinkedSource(sourceId);
+  });
+  ipcMain.handle("source:locate", async (event, sourceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
+    const source = learningApplication.getState().sources.find((candidate) => candidate.id === sourceId);
+    if (!source || source.kind !== "linkedSource") throw new Error("Invalid Linked Source.");
+    const fixturePath = process.env.QUICK_STUDY_TEST_RELOCATED_SOURCE;
+    const selection = fixturePath
+      ? await sourceAccess.selectDirectPath(fixturePath, source.resourceType)
+      : await sourceAccess.select(source.resourceType);
+    return selection ? learningApplication.relocateLinkedSource(sourceId, selection) : learningApplication.getState();
+  });
+  ipcMain.handle("source:snapshot", async (event, sourceId: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sourceId !== "string") throw new Error("Invalid Linked Source.");
+    return learningApplication.preserveSourceSnapshot(sourceId);
   });
   ipcMain.handle("source:index", async (event, sourceId: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");

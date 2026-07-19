@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld("quickStudy", {
   linkExternalAttachment: (workspaceId: string): Promise<LearningApplicationState> =>
     ipcRenderer.invoke("source:linkExternalAttachment", workspaceId),
   openLinkedSource: (sourceId: string): Promise<LinkedSourceView> => ipcRenderer.invoke("source:open", sourceId),
+  locateLinkedSource: (sourceId: string): Promise<LearningApplicationState> => ipcRenderer.invoke("source:locate", sourceId),
+  preserveSourceSnapshot: (sourceId: string): Promise<LearningApplicationState> => ipcRenderer.invoke("source:snapshot", sourceId),
   indexSource: (sourceId: string): Promise<LearningApplicationState> => ipcRenderer.invoke("source:index", sourceId),
   clearSourceIndex: (sourceId: string): Promise<LearningApplicationState> => ipcRenderer.invoke("source:indexClear", sourceId),
   rebuildSourceIndex: (sourceId: string): Promise<LearningApplicationState> => ipcRenderer.invoke("source:indexRebuild", sourceId),
