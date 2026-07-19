@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
-  validVerificationEnvironment,
+  validRecordedVerificationEnvironment,
   type VerificationEnvironment,
   type VerifierCommandOutcome,
   type VerifierRunRequest,
@@ -54,29 +54,30 @@ const executeLean: LeanCommandExecutor = (executable, args, options) => new Prom
 
 export class LeanVerifierRuntime implements VerifierRuntime {
   constructor(
-    private readonly executablePath: string,
+    private readonly executablePath: string | ((environmentId?: string) => string),
     private readonly execute: LeanCommandExecutor = executeLean,
     private readonly timeoutMs = 15_000,
-    private readonly loadEnvironment: () => Promise<VerificationEnvironment> = () => loadEnvironmentBeside(this.executablePath),
-    private readonly validateInstallation: (signal?: AbortSignal) => Promise<void> = async () => undefined
+    private readonly loadEnvironment: (executablePath: string) => Promise<VerificationEnvironment> = loadEnvironmentBeside,
+    private readonly validateInstallation: (signal?: AbortSignal, environmentId?: string) => Promise<void> = async () => undefined
   ) {}
 
   async run(request: VerifierRunRequest, signal?: AbortSignal): Promise<VerifierRunResult> {
+    const executablePath = typeof this.executablePath === "function" ? this.executablePath(request.environmentId) : this.executablePath;
     await mkdir(request.evidenceDirectory, { recursive: true });
     const evidenceLocation = join(request.evidenceDirectory, `${safeRunId(request.runId)}.lean`);
     const stagingPath = `${evidenceLocation}.tmp`;
     await writeFile(stagingPath, request.proofSource, { encoding: "utf8", mode: 0o600 });
     await rename(stagingPath, evidenceLocation);
-    const command = `${basename(this.executablePath)} ${basename(evidenceLocation)}`;
+    const command = `${basename(executablePath)} ${basename(evidenceLocation)}`;
 
     let environment: VerificationEnvironment;
     try {
-      environment = await this.loadEnvironment();
+      environment = await this.loadEnvironment(executablePath);
     } catch (error) {
       return this.result("versionMismatch", usefulError(error), evidenceLocation, command, null);
     }
     try {
-      await this.validateInstallation(signal);
+      await this.validateInstallation(signal, request.environmentId);
     } catch (error) {
       if (signal?.aborted) return this.result("cancelled", usefulError(error), evidenceLocation, command, environment);
       return this.result("versionMismatch", usefulError(error), evidenceLocation, command, environment);
@@ -84,7 +85,7 @@ export class LeanVerifierRuntime implements VerifierRuntime {
 
     let version: LeanCommandResult;
     try {
-      version = await this.execute(this.executablePath, ["--version"], { timeoutMs: this.timeoutMs, signal });
+      version = await this.execute(executablePath, ["--version"], { timeoutMs: this.timeoutMs, signal });
     } catch (error) {
       return this.result("unavailable", usefulError(error), evidenceLocation, command, environment);
     }
@@ -106,7 +107,7 @@ export class LeanVerifierRuntime implements VerifierRuntime {
 
     let checked: LeanCommandResult;
     try {
-      checked = await this.execute(this.executablePath, [evidenceLocation], { timeoutMs: this.timeoutMs, signal });
+      checked = await this.execute(executablePath, [evidenceLocation], { timeoutMs: this.timeoutMs, signal });
     } catch (error) {
       return this.result("unavailable", usefulError(error), evidenceLocation, command, environment);
     }
@@ -136,7 +137,7 @@ export class LeanVerifierRuntime implements VerifierRuntime {
 async function loadEnvironmentBeside(executablePath: string): Promise<VerificationEnvironment> {
   const manifestPath = join(dirname(dirname(executablePath)), "manifest.json");
   const value: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
-  if (!validVerificationEnvironment(value)) throw new Error("The installed Verification Environment Manifest is invalid or does not match the pinned bundle.");
+  if (!validRecordedVerificationEnvironment(value)) throw new Error("The installed Verification Environment Manifest is invalid or malformed.");
   return value;
 }
 

@@ -843,6 +843,7 @@ export interface LearningSession {
   activeAgentTaskId: string | null;
   reasoningPreference: ReasoningPreference;
   runtimeOverride: RuntimeOverride | null;
+  verifierEnvironmentPinId: string | null;
 }
 
 export interface LearningApplicationState {
@@ -890,9 +891,19 @@ export interface LearningApplicationState {
 export interface VerifierEnvironmentState {
   status: "installed" | "absent" | "installing" | "removing" | "installFailed" | "removeFailed" | "cleanupRequired";
   environment: Readonly<VerificationEnvironment>;
+  defaultEnvironment: Readonly<VerificationEnvironment>;
+  activeEnvironmentId: string | null;
+  environments: RegisteredVerifierEnvironment[];
   installedBytes: number;
   lastRemovedLogicalBytes: number;
   error: string | null;
+}
+
+export interface RegisteredVerifierEnvironment {
+  environment: Readonly<VerificationEnvironment>;
+  installedBytes: number;
+  pinned: boolean;
+  manifestReferences: number;
 }
 
 export type LearnerAction =
@@ -971,6 +982,9 @@ export type LearnerAction =
   | { type: "setSourceExcerptEgressPreference"; enabled: boolean }
   | { type: "removeVerifierEnvironment" }
   | { type: "installVerifierEnvironment" }
+  | { type: "activateVerifierEnvironment"; environmentId: string }
+  | { type: "setVerifierEnvironmentPinned"; environmentId: string; pinned: boolean }
+  | { type: "setSessionVerifierEnvironmentPin"; sessionId: string; environmentId: string | null }
   | { type: "cleanupVerifierEnvironment" }
   | { type: "setResearchEgressPermission"; enabled: boolean }
   | { type: "researchWeb"; query: DerivedResearchQueryInput; sourceAnchorIds: string[] }
@@ -1025,6 +1039,7 @@ export class LearningApplication {
   private persistence = Promise.resolve();
   private sourceIndexWork = Promise.resolve();
   private sourceSnapshotWork = Promise.resolve();
+  private verifierEnvironmentWork = Promise.resolve();
   private readonly modelWorks = new Map<string, {
     controller: AbortController;
     promise: Promise<unknown>;
@@ -1162,6 +1177,7 @@ export class LearningApplication {
     try {
       const inspection = await this.verifierEnvironmentManager.inspect();
       const interrupted = priorStatus === "installing" || priorStatus === "removing";
+      this.applyVerifierEnvironmentInspection(inspection);
       this.state.verifierEnvironment = {
         ...this.state.verifierEnvironment,
         status: interrupted || inspection.cleanupRequired ? "cleanupRequired"
@@ -1185,6 +1201,57 @@ export class LearningApplication {
     }
   }
 
+  private serializeVerifierEnvironment<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.verifierEnvironmentWork.then(work, work);
+    this.verifierEnvironmentWork = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private applyVerifierEnvironmentInspection(inspection: Awaited<ReturnType<VerifierEnvironmentManager["inspect"]>>): void {
+    const previous = new Map(this.state.verifierEnvironment.environments.map((entry) => [entry.environment.id, entry]));
+    const installations = inspection.environments ?? (inspection.installed ? [{
+      environment: this.state.verifierEnvironment.environment,
+      installedBytes: inspection.installedBytes
+    }] : []);
+    const references = new Map<string, number>();
+    for (const manifest of this.state.verifierManifests) {
+      references.set(manifest.environment.id, (references.get(manifest.environment.id) ?? 0) + 1);
+    }
+    const environments = installations.map(({ environment, installedBytes }) => ({
+      environment,
+      installedBytes,
+      pinned: previous.get(environment.id)?.pinned ?? false,
+      manifestReferences: references.get(environment.id) ?? 0
+    }));
+    const activeEnvironmentId = inspection.activeEnvironmentId === undefined
+      ? (inspection.installed ? this.state.verifierEnvironment.activeEnvironmentId ?? this.state.verifierEnvironment.environment.id : null)
+      : inspection.activeEnvironmentId;
+    const active = environments.find((entry) => entry.environment.id === activeEnvironmentId) ?? null;
+    this.state.verifierEnvironment = {
+      ...this.state.verifierEnvironment,
+      activeEnvironmentId: active?.environment.id ?? null,
+      environment: active?.environment ?? this.state.verifierEnvironment.defaultEnvironment,
+      environments,
+      installedBytes: active?.installedBytes ?? 0
+    };
+  }
+
+  private refreshVerifierManifestReferences(): void {
+    for (const environment of this.state.verifierEnvironment.environments) {
+      environment.manifestReferences = this.state.verifierManifests
+        .filter((manifest) => manifest.environment.id === environment.environment.id).length;
+    }
+  }
+
+  private unreferencedVerifierEnvironmentIds(): string[] {
+    const sessionPins = new Set(this.state.sessions.map((session) => session.verifierEnvironmentPinId).filter(Boolean));
+    return this.state.verifierEnvironment.environments
+      .filter((entry) => entry.environment.id !== this.state.verifierEnvironment.activeEnvironmentId
+        && entry.environment.id !== this.state.verifierEnvironment.defaultEnvironment.id
+        && !entry.pinned && entry.manifestReferences === 0 && !sessionPins.has(entry.environment.id))
+      .map((entry) => entry.environment.id);
+  }
+
   private async removeVerifierEnvironment(): Promise<void> {
     if (!this.verifierEnvironmentManager) {
       this.state.verifierEnvironment.status = "removeFailed";
@@ -1198,7 +1265,8 @@ export class LearningApplication {
     this.state.verifierEnvironment.error = null;
     await this.publishAndPersist();
     try {
-      const result = await this.verifierEnvironmentManager.remove();
+      const result = await this.verifierEnvironmentManager.remove(this.state.verifierEnvironment.activeEnvironmentId ?? undefined);
+      this.applyVerifierEnvironmentInspection(await this.verifierEnvironmentManager.inspect());
       this.state.verifierEnvironment = {
         ...this.state.verifierEnvironment,
         status: "absent",
@@ -1218,14 +1286,27 @@ export class LearningApplication {
       this.state.verifierEnvironment.error = "The Bundled Lean Runtime cannot be managed in this application build.";
       return;
     }
-    if (this.state.verifierEnvironment.status !== "absent" && this.state.verifierEnvironment.status !== "installFailed") {
+    const currentDefaultInstalled = this.state.verifierEnvironment.environments
+      .some((entry) => entry.environment.id === this.state.verifierEnvironment.defaultEnvironment.id);
+    if (this.state.verifierEnvironment.status !== "absent" && this.state.verifierEnvironment.status !== "installFailed"
+      && !(this.state.verifierEnvironment.status === "installed" && !currentDefaultInstalled)) {
       throw new Error("Clean up the Bundled Lean Runtime before installing it.");
     }
     this.state.verifierEnvironment.status = "installing";
     this.state.verifierEnvironment.error = null;
     await this.publishAndPersist();
+    const priorActive = this.state.verifierEnvironment.activeEnvironmentId;
     try {
       const result = await this.verifierEnvironmentManager.install();
+      if (result.environment && this.verifierEnvironmentManager.activate) {
+        await this.verifierEnvironmentManager.activate(result.environment.id);
+      }
+      this.applyVerifierEnvironmentInspection(await this.verifierEnvironmentManager.inspect());
+      const superseded = this.unreferencedVerifierEnvironmentIds();
+      if (superseded.length > 0) {
+        await this.verifierEnvironmentManager.cleanup(superseded);
+        this.applyVerifierEnvironmentInspection(await this.verifierEnvironmentManager.inspect());
+      }
       this.state.verifierEnvironment = {
         ...this.state.verifierEnvironment,
         status: "installed",
@@ -1233,9 +1314,34 @@ export class LearningApplication {
         error: null
       };
     } catch (error) {
-      this.state.verifierEnvironment.status = "installFailed";
+      this.state.verifierEnvironment.status = priorActive ? "installed" : "installFailed";
       this.state.verifierEnvironment.error = usefulVerifierEnvironmentError(error);
     }
+  }
+
+  private async activateVerifierEnvironment(environmentId: string): Promise<void> {
+    if (!this.verifierEnvironmentManager?.activate) {
+      throw new Error("This application build cannot switch Verifier Environments.");
+    }
+    const candidate = this.state.verifierEnvironment.environments.find((entry) => entry.environment.id === environmentId);
+    if (!candidate) throw new Error("The selected Verifier Environment is not installed.");
+    const priorActive = this.state.verifierEnvironment.activeEnvironmentId;
+    try {
+      await this.verifierEnvironmentManager.activate(environmentId);
+      this.applyVerifierEnvironmentInspection(await this.verifierEnvironmentManager.inspect());
+      this.state.verifierEnvironment.status = "installed";
+      this.state.verifierEnvironment.error = null;
+    } catch (error) {
+      this.state.verifierEnvironment.activeEnvironmentId = priorActive;
+      this.state.verifierEnvironment.status = priorActive ? "installed" : "installFailed";
+      this.state.verifierEnvironment.error = usefulVerifierEnvironmentError(error);
+    }
+  }
+
+  private setVerifierEnvironmentPinned(environmentId: string, pinned: boolean): void {
+    const environment = this.state.verifierEnvironment.environments.find((entry) => entry.environment.id === environmentId);
+    if (!environment) throw new Error("The selected Verifier Environment is not installed.");
+    environment.pinned = pinned;
   }
 
   private async cleanupVerifierEnvironment(): Promise<void> {
@@ -1245,7 +1351,9 @@ export class LearningApplication {
       return;
     }
     try {
-      const result = await this.verifierEnvironmentManager.cleanup();
+      const removable = this.unreferencedVerifierEnvironmentIds();
+      const result = await this.verifierEnvironmentManager.cleanup(removable);
+      this.applyVerifierEnvironmentInspection(await this.verifierEnvironmentManager.inspect());
       this.state.verifierEnvironment = {
         ...this.state.verifierEnvironment,
         status: result.installed ? "installed" : "absent",
@@ -1389,7 +1497,8 @@ export class LearningApplication {
         ? await this.verifierRuntime.run({
             runId,
             evidenceDirectory: this.verifierEvidenceDirectory,
-            ...formalization
+            ...formalization,
+            environmentId: session.verifierEnvironmentPinId ?? this.state.verifierEnvironment.activeEnvironmentId ?? undefined
           }, signal)
         : {
             outcome: "unavailable" as const,
@@ -1420,6 +1529,7 @@ export class LearningApplication {
       createdAt: new Date().toISOString()
     };
     this.state.verifierManifests.push(manifest);
+    this.refreshVerifierManifestReferences();
     if (result.outcome === "versionMismatch") {
       this.state.verifierEnvironment.status = "cleanupRequired";
       this.state.verifierEnvironment.error = result.diagnostics;
@@ -3115,15 +3225,36 @@ export class LearningApplication {
         break;
       }
       case "removeVerifierEnvironment": {
-        await this.removeVerifierEnvironment();
+        await this.serializeVerifierEnvironment(() => this.removeVerifierEnvironment());
         break;
       }
       case "installVerifierEnvironment": {
-        await this.installVerifierEnvironment();
+        await this.serializeVerifierEnvironment(() => this.installVerifierEnvironment());
+        break;
+      }
+      case "activateVerifierEnvironment": {
+        await this.serializeVerifierEnvironment(() => this.activateVerifierEnvironment(action.environmentId));
+        break;
+      }
+      case "setVerifierEnvironmentPinned": {
+        await this.serializeVerifierEnvironment(async () => {
+          this.setVerifierEnvironmentPinned(action.environmentId, action.pinned);
+        });
+        break;
+      }
+      case "setSessionVerifierEnvironmentPin": {
+        await this.serializeVerifierEnvironment(async () => {
+          const session = this.requireSession(action.sessionId);
+          if (action.environmentId !== null && !this.state.verifierEnvironment.environments
+            .some((entry) => entry.environment.id === action.environmentId)) {
+            throw new Error("The selected Verifier Environment is not installed.");
+          }
+          session.verifierEnvironmentPinId = action.environmentId;
+        });
         break;
       }
       case "cleanupVerifierEnvironment": {
-        await this.cleanupVerifierEnvironment();
+        await this.serializeVerifierEnvironment(() => this.cleanupVerifierEnvironment());
         break;
       }
       case "setResearchEgressPermission": {
@@ -5706,7 +5837,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     current.sourceRevisions = migrateSourceRevisions(stored.sourceRevisions, current.sources);
     current.reanchoringDecisions = migrateReanchoringDecisions(stored.reanchoringDecisions);
     current.verifierManifests = migrateVerifierManifests(stored.verifierManifests);
-    current.verifierEnvironment = migrateVerifierEnvironmentState(stored.verifierEnvironment);
+    current.verifierEnvironment = migrateVerifierEnvironmentState(stored.verifierEnvironment, current.verifierManifests);
     current.authentication ??= signedOutAuthentication();
     current.intakeError ??= null;
     current.runtimeAvailable ??= false;
@@ -5759,7 +5890,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       agentTasks: migrateAgentTasks(session.agentTasks),
       activeAgentTaskId: typeof session.activeAgentTaskId === "string" ? session.activeAgentTaskId : null,
       reasoningPreference: migrateReasoningPreference(session.reasoningPreference),
-      runtimeOverride: migrateRuntimeOverride(session.runtimeOverride)
+      runtimeOverride: migrateRuntimeOverride(session.runtimeOverride),
+      verifierEnvironmentPinId: typeof session.verifierEnvironmentPinId === "string" ? session.verifierEnvironmentPinId : null
     }));
     addLegacyUnresolvedReanchoringDecisions(current);
     attachManagedSourcesToLegacySessions(current);
@@ -5820,7 +5952,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       agentTasks: [],
       activeAgentTaskId: null,
       reasoningPreference: "balanced",
-      runtimeOverride: null
+      runtimeOverride: null,
+      verifierEnvironmentPinId: null
     };
     migrated.sessions.push(session);
     attachManagedSourcesToLegacySessions(migrated);
@@ -6747,7 +6880,8 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     agentTasks: [],
     activeAgentTaskId: null,
     reasoningPreference: "balanced",
-    runtimeOverride: null
+    runtimeOverride: null,
+    verifierEnvironmentPinId: null
   };
 }
 
@@ -8043,25 +8177,58 @@ function defaultVerifierEnvironmentState(): VerifierEnvironmentState {
   return {
     status: "absent",
     environment: BUNDLED_LEAN_ENVIRONMENT,
+    defaultEnvironment: BUNDLED_LEAN_ENVIRONMENT,
+    activeEnvironmentId: null,
+    environments: [],
     installedBytes: 0,
     lastRemovedLogicalBytes: 0,
     error: null
   };
 }
 
-function migrateVerifierEnvironmentState(value: unknown): VerifierEnvironmentState {
+function migrateVerifierEnvironmentState(value: unknown, manifests: VerifierManifest[] = []): VerifierEnvironmentState {
   if (!isRecord(value)) return defaultVerifierEnvironmentState();
   const status = ["installed", "absent", "installing", "removing", "installFailed", "removeFailed", "cleanupRequired"]
     .includes(String(value.status)) ? value.status as VerifierEnvironmentState["status"] : "cleanupRequired";
+  const storedEnvironments = Array.isArray(value.environments)
+    ? value.environments.filter(validRegisteredVerifierEnvironment) : [];
+  const legacyInstalledBytes = typeof value.installedBytes === "number" && value.installedBytes >= 0 ? value.installedBytes : 0;
+  const environments = storedEnvironments.length > 0 ? storedEnvironments.map((entry) => ({
+    ...entry,
+    manifestReferences: manifests.filter((manifest) => manifest.environment.id === entry.environment.id).length
+  })) : status === "installed" ? [{
+    environment: BUNDLED_LEAN_ENVIRONMENT,
+    installedBytes: legacyInstalledBytes,
+    pinned: false,
+    manifestReferences: manifests.filter((manifest) => manifest.environment.id === BUNDLED_LEAN_ENVIRONMENT.id).length
+  }] : [];
+  const storedActive = typeof value.activeEnvironmentId === "string" ? value.activeEnvironmentId : null;
+  const active = environments.find((entry) => entry.environment.id === storedActive)
+    ?? (status === "installed" ? environments[0] ?? null : null);
   return {
     status,
-    environment: BUNDLED_LEAN_ENVIRONMENT,
-    installedBytes: typeof value.installedBytes === "number" && value.installedBytes >= 0 ? value.installedBytes : 0,
+    environment: active?.environment ?? BUNDLED_LEAN_ENVIRONMENT,
+    defaultEnvironment: BUNDLED_LEAN_ENVIRONMENT,
+    activeEnvironmentId: active?.environment.id ?? null,
+    environments,
+    installedBytes: active?.installedBytes ?? legacyInstalledBytes,
     lastRemovedLogicalBytes: typeof value.lastRemovedLogicalBytes === "number" && value.lastRemovedLogicalBytes >= 0
       ? value.lastRemovedLogicalBytes
       : typeof value.lastReclaimedBytes === "number" && value.lastReclaimedBytes >= 0 ? value.lastReclaimedBytes : 0,
     error: typeof value.error === "string" ? value.error : null
   };
+}
+
+function validRegisteredVerifierEnvironment(value: unknown): value is RegisteredVerifierEnvironment {
+  if (!isRecord(value) || !isRecord(value.environment)) return false;
+  const environment = value.environment;
+  return [environment.id, environment.checker, environment.leanVersion, environment.mathlibVersion, environment.mathlibCommit,
+    environment.platform, environment.architecture, environment.sourceArchive, environment.sourceSha256, environment.supportProfile]
+    .every((item) => typeof item === "string" && Boolean(item.trim()))
+    && Array.isArray(environment.mathlibModules) && environment.mathlibModules.every((item) => typeof item === "string")
+    && typeof environment.runtimeFormat === "number" && Number.isFinite(environment.runtimeFormat)
+    && typeof value.installedBytes === "number" && value.installedBytes >= 0
+    && typeof value.pinned === "boolean";
 }
 
 function isReasoningPreference(value: unknown): value is ReasoningPreference {

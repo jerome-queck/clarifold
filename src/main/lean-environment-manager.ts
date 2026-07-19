@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants, createReadStream } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import {
   BUNDLED_LEAN_ENVIRONMENT,
-  validVerificationEnvironment,
+  validRecordedVerificationEnvironment,
+  type VerificationEnvironment,
+  type VerifierEnvironmentInstallation,
   type VerifierEnvironmentInspection,
   type VerifierEnvironmentManager
 } from "../shared/verifier-runtime";
@@ -14,6 +16,9 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
   private readonly environmentPath: string;
   private readonly seedPath: string;
   private readonly removalMarkerPath: string;
+  private readonly activeMarkerPath: string;
+  private activeEnvironmentId: string | null = null;
+  private readonly installedBytesById = new Map<string, number>();
   private trustedSeedDigest: Promise<string> | null = null;
 
   constructor(
@@ -25,10 +30,18 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     this.environmentPath = join(registryPath, BUNDLED_LEAN_ENVIRONMENT.id);
     this.seedPath = join(seedRegistryPath, BUNDLED_LEAN_ENVIRONMENT.id);
     this.removalMarkerPath = join(registryPath, ".lean-environment-removed");
+    this.activeMarkerPath = join(registryPath, ".active-lean-environment");
   }
 
-  executablePath(): string {
-    return join(this.environmentPath, "bin", "lean");
+  executablePath(environmentId = this.activeEnvironmentId ?? BUNDLED_LEAN_ENVIRONMENT.id): string {
+    return join(this.registryPath, environmentId, "bin", "lean");
+  }
+
+  private digestPath(environmentId: string): string {
+    if (!/^[a-zA-Z0-9._-]{1,200}$/.test(environmentId)) {
+      throw new Error("The Verifier Environment identifier is invalid.");
+    }
+    return join(this.registryPath, `.lean-environment-digest-${environmentId}`);
   }
 
   async defaultInstallationNeeded(): Promise<boolean> {
@@ -38,18 +51,28 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
 
   async inspect(): Promise<VerifierEnvironmentInspection> {
     const entries = await directoryEntries(this.registryPath);
-    const interrupted = entries.some((name) => name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-`)
-      || name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-`));
-    const installed = await validInstalledEnvironment(this.environmentPath);
-    const invalidActive = !installed && entries.includes(BUNDLED_LEAN_ENVIRONMENT.id);
+    const interrupted = entries.some((name) => /\.((installing)|(removing))-[a-zA-Z0-9-]+$/.test(name));
+    const environments = (await Promise.all(entries
+      .filter((name) => !name.startsWith("."))
+      .map((name) => installedEnvironment(join(this.registryPath, name), this.installedBytesById.get(name))))).filter((entry): entry is VerifierEnvironmentInstallation => entry !== null);
+    const recordedActive = await readActiveEnvironmentId(this.activeMarkerPath);
+    const fallbackActive = environments.find((entry) => entry.environment.id === BUNDLED_LEAN_ENVIRONMENT.id)?.environment.id ?? null;
+    const activeEnvironmentId = environments.some((entry) => entry.environment.id === recordedActive)
+      ? recordedActive : fallbackActive;
+    this.activeEnvironmentId = activeEnvironmentId;
+    const active = environments.find((entry) => entry.environment.id === activeEnvironmentId) ?? null;
+    const invalidActive = entries.some((name) => !name.startsWith(".")
+      && !environments.some((entry) => entry.environment.id === name));
     return {
-      installed,
-      installedBytes: installed ? await directorySize(this.environmentPath) : 0,
-      cleanupRequired: interrupted || invalidActive
+      installed: active !== null,
+      installedBytes: active?.installedBytes ?? 0,
+      cleanupRequired: interrupted || invalidActive,
+      environments,
+      activeEnvironmentId
     };
   }
 
-  async install(): Promise<{ installedBytes: number }> {
+  async install(): Promise<{ installedBytes: number; environment: Readonly<VerificationEnvironment> }> {
     await mkdir(this.registryPath, { recursive: true });
     for (const name of await directoryEntries(this.registryPath)) {
       if (name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-`)) {
@@ -61,14 +84,10 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     if (!await validEnvironmentIdentity(stagingPath)) {
       throw new Error("The staged Lean environment did not match the supported Default Verification Environment.");
     }
-    if (await treeContentDigest(stagingPath) !== await this.seedDigest()) {
-      throw new Error("The staged Lean environment did not match the signed application payload.");
-    }
     await this.validate(stagingPath);
     // Keep the staging root writable until it has been renamed. Hosted macOS
     // runners reject renaming a directory after its own write bit is removed,
     // even though the registry parent remains writable.
-    await makeTreeReadOnly(this.registryPath, stagingPath, false);
     const backupPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
     const hadActive = await exists(this.environmentPath);
     if (hadActive) await renameReadOnlyTree(this.registryPath, this.environmentPath, backupPath);
@@ -84,42 +103,80 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       throw error;
     }
     await removeWritableTree(this.registryPath, backupPath);
+    void this.recordEnvironmentDigest(BUNDLED_LEAN_ENVIRONMENT.id);
     await rm(this.removalMarkerPath, { force: true });
-    return { installedBytes: await directorySize(this.environmentPath) };
+    this.installedBytesById.set(BUNDLED_LEAN_ENVIRONMENT.id, 0);
+    return { installedBytes: 0, environment: BUNDLED_LEAN_ENVIRONMENT };
   }
 
-  async remove(): Promise<{ removedLogicalBytes: number }> {
-    if (!await this.installedIntegrityIsValid()) {
+  async activate(environmentId: string): Promise<void> {
+    const environment = await installedEnvironment(join(this.registryPath, environmentId), this.installedBytesById.get(environmentId));
+    if (!environment) throw new Error("The selected Lean environment is unavailable or invalid.");
+    if (environmentId === BUNDLED_LEAN_ENVIRONMENT.id && !await this.installedIntegrityIsValid(environmentId)) {
+      throw new Error("The selected Lean environment does not match the signed application payload.");
+    }
+    await mkdir(this.registryPath, { recursive: true });
+    const stagingPath = `${this.activeMarkerPath}.${randomUUID()}.tmp`;
+    await writeFile(stagingPath, `${environmentId}\n`, { encoding: "utf8", mode: 0o600 });
+    await rename(stagingPath, this.activeMarkerPath);
+    this.activeEnvironmentId = environmentId;
+  }
+
+  async remove(environmentId = this.activeEnvironmentId ?? BUNDLED_LEAN_ENVIRONMENT.id): Promise<{ removedLogicalBytes: number }> {
+    const path = join(this.registryPath, environmentId);
+    if (!await this.installedIntegrityIsValid(environmentId)) {
       throw new Error("The installed Lean environment is missing or invalid; clean it up before retrying.");
     }
     await this.beforeRemove();
-    const removedLogicalBytes = await directorySize(this.environmentPath);
-    const removalPath = join(this.registryPath, `.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-${randomUUID()}`);
-    await writeFile(this.removalMarkerPath, `${BUNDLED_LEAN_ENVIRONMENT.id}\n`, "utf8");
-    await renameReadOnlyTree(this.registryPath, this.environmentPath, removalPath);
+    const removedLogicalBytes = await directorySize(path);
+    const removalPath = join(this.registryPath, `.${environmentId}.removing-${randomUUID()}`);
+    if (environmentId === BUNDLED_LEAN_ENVIRONMENT.id) {
+      await writeFile(this.removalMarkerPath, `${BUNDLED_LEAN_ENVIRONMENT.id}\n`, "utf8");
+    }
+    await renameReadOnlyTree(this.registryPath, path, removalPath);
     await removeWritableTree(this.registryPath, removalPath);
+    this.installedBytesById.delete(environmentId);
+    await rm(this.digestPath(environmentId), { force: true });
+    if (this.activeEnvironmentId === environmentId) {
+      await rm(this.activeMarkerPath, { force: true });
+      this.activeEnvironmentId = null;
+    }
     return { removedLogicalBytes };
   }
 
-  async cleanup(): Promise<{ installed: boolean; installedBytes: number }> {
+  async cleanup(environmentIds: string[] = []): Promise<{ installed: boolean; installedBytes: number }> {
     for (const name of await directoryEntries(this.registryPath)) {
-      if (name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.installing-`)
-        || name.startsWith(`.${BUNDLED_LEAN_ENVIRONMENT.id}.removing-`)
-        || (name === BUNDLED_LEAN_ENVIRONMENT.id && !await this.installedIntegrityIsValid())) {
+      if (/\.((installing)|(removing))-[a-zA-Z0-9-]+$/.test(name)
+        || (name === BUNDLED_LEAN_ENVIRONMENT.id && !await this.installedIntegrityIsValid(name))) {
         await removeWritableTree(this.registryPath, join(this.registryPath, name));
       }
+    }
+    for (const environmentId of environmentIds) {
+      if (environmentId === this.activeEnvironmentId) continue;
+      const path = join(this.registryPath, environmentId);
+      if (await exists(path)) await removeWritableTree(this.registryPath, path);
+      await rm(this.digestPath(environmentId), { force: true });
     }
     const inspection = await this.inspect();
     return { installed: inspection.installed, installedBytes: inspection.installedBytes };
   }
 
-  async assertInstalledIntegrity(signal?: AbortSignal): Promise<void> {
-    if (!await validInstalledEnvironment(this.environmentPath)) {
+  async assertInstalledIntegrity(signal?: AbortSignal, environmentId = this.activeEnvironmentId ?? BUNDLED_LEAN_ENVIRONMENT.id): Promise<void> {
+    const environmentPath = join(this.registryPath, environmentId);
+    if (!await validInstalledEnvironment(environmentPath)) {
       throw new Error("The installed Lean environment does not match the signed application payload.");
+    }
+    if (environmentId !== BUNDLED_LEAN_ENVIRONMENT.id) {
+      const expectedDigest = await recordedEnvironmentDigest(this.digestPath(environmentId));
+      const actualDigest = await treeContentDigest(environmentPath, signal, Date.now() + 60_000);
+      if (!expectedDigest || actualDigest !== expectedDigest) {
+        throw new Error("The installed Lean environment does not match its recorded validated content.");
+      }
+      return;
     }
     const deadline = Date.now() + 60_000;
     const [installedDigest, trustedDigest] = await Promise.all([
-      treeContentDigest(this.environmentPath, signal, deadline),
+      treeContentDigest(environmentPath, signal, deadline),
       this.seedDigest(signal, deadline)
     ]);
     if (installedDigest !== trustedDigest) {
@@ -131,9 +188,9 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     void this.seedDigest(undefined, Date.now() + 60_000).catch(() => undefined);
   }
 
-  private async installedIntegrityIsValid(signal?: AbortSignal): Promise<boolean> {
+  private async installedIntegrityIsValid(environmentId = this.activeEnvironmentId ?? BUNDLED_LEAN_ENVIRONMENT.id, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.assertInstalledIntegrity(signal);
+      await this.assertInstalledIntegrity(signal, environmentId);
       return true;
     } catch {
       return false;
@@ -146,6 +203,14 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       throw error;
     });
     return this.trustedSeedDigest;
+  }
+
+  private async recordEnvironmentDigest(environmentId: string): Promise<void> {
+    try {
+      await writeFile(this.digestPath(environmentId), `${await this.seedDigest()}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch {
+      // The active current bundle is still checked against its signed seed at execution time.
+    }
   }
 }
 
@@ -166,6 +231,38 @@ async function validInstalledEnvironment(path: string): Promise<boolean> {
   return await validEnvironmentIdentity(path) && await treeIsImmutable(path);
 }
 
+async function installedEnvironment(path: string, installedBytes?: number): Promise<VerifierEnvironmentInstallation | null> {
+  if (!await validInstalledEnvironment(path)) return null;
+  try {
+    return {
+      environment: JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as VerificationEnvironment,
+      installedBytes: installedBytes ?? await directorySize(path)
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readActiveEnvironmentId(path: string): Promise<string | null> {
+  try {
+    const id = (await readFile(path, "utf8")).trim();
+    return /^[a-zA-Z0-9._-]{1,200}$/.test(id) ? id : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function recordedEnvironmentDigest(path: string): Promise<string | null> {
+  try {
+    const digest = (await readFile(path, "utf8")).trim();
+    return /^[a-f0-9]{64}$/.test(digest) ? digest : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 async function validEnvironmentIdentity(path: string): Promise<boolean> {
   try {
     const root = await lstat(path);
@@ -173,7 +270,7 @@ async function validEnvironmentIdentity(path: string): Promise<boolean> {
     const manifestInfo = await lstat(manifestPath);
     if (!root.isDirectory() || root.isSymbolicLink() || !manifestInfo.isFile() || manifestInfo.isSymbolicLink()) return false;
     const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
-    if (!validVerificationEnvironment(manifest)) return false;
+    if (!validRecordedVerificationEnvironment(manifest)) return false;
     const executable = await lstat(join(path, "bin", "lean"));
     return executable.isFile() && !executable.isSymbolicLink();
   } catch {
@@ -233,18 +330,8 @@ function requireIntegrityScanActive(signal: AbortSignal | undefined, deadline: n
 }
 
 async function copySeedToWritableRegistry(source: string, destination: string): Promise<void> {
-  await mkdir(destination, { recursive: true, mode: 0o700 });
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    const sourceChild = join(source, entry.name);
-    const destinationChild = join(destination, entry.name);
-    if (entry.isDirectory()) await copySeedToWritableRegistry(sourceChild, destinationChild);
-    else if (entry.isFile()) {
-      await copyFile(sourceChild, destinationChild, constants.COPYFILE_FICLONE);
-      await chmod(destinationChild, destinationChild.endsWith(join("bin", "lean")) ? 0o700 : 0o600);
-    } else {
-      throw new Error(`The bundled Lean environment contains an unsupported filesystem entry: ${entry.name}`);
-    }
-  }
+  await cp(source, destination, { recursive: true, dereference: false, mode: constants.COPYFILE_FICLONE });
+  await chmod(destination, 0o700);
 }
 
 async function makeTreeReadOnly(registryPath: string, path: string, includeRoot = true): Promise<void> {

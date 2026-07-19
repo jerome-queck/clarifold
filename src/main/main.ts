@@ -199,6 +199,14 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "setSourceExcerptEgressPreference":
     case "setResearchEgressPermission":
       return "enabled" in action && typeof action.enabled === "boolean";
+    case "activateVerifierEnvironment":
+      return "environmentId" in action && typeof action.environmentId === "string";
+    case "setVerifierEnvironmentPinned":
+      return "environmentId" in action && typeof action.environmentId === "string"
+        && "pinned" in action && typeof action.pinned === "boolean";
+    case "setSessionVerifierEnvironmentPin":
+      return "sessionId" in action && typeof action.sessionId === "string"
+        && "environmentId" in action && (action.environmentId === null || typeof action.environmentId === "string");
     case "researchWeb":
       return "query" in action && isDerivedResearchQueryInput(action.query)
         && "sourceAnchorIds" in action && Array.isArray(action.sourceAnchorIds)
@@ -468,11 +476,11 @@ void app.whenReady().then(async () => {
       : (url) => shell.openExternal(url)),
     null,
     new LeanVerifierRuntime(
-      process.env.QUICK_STUDY_LEAN_PATH ?? verifierEnvironmentManager.executablePath(),
+      process.env.QUICK_STUDY_LEAN_PATH ?? ((environmentId) => verifierEnvironmentManager.executablePath(environmentId)),
       undefined,
       undefined,
       undefined,
-      (signal) => verifierEnvironmentManager.assertInstalledIntegrity(signal)
+      (signal, environmentId) => verifierEnvironmentManager.assertInstalledIntegrity(signal, environmentId)
     ),
     verifierEnvironmentManager
   );

@@ -42,6 +42,56 @@ describe("anchored teaching workbench", () => {
     expect(api.submit).toHaveBeenLastCalledWith({ type: "installVerifierEnvironment" });
   });
 
+  it("lists retained Verifier Environments with explicit pin, rollback, and safe-cleanup controls", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    const prior = {
+      ...state.verifierEnvironment.environment,
+      id: "lean-4.28.0-mathlib-4.28.0-quick-study-v1",
+      leanVersion: "4.28.0",
+      mathlibVersion: "4.28.0"
+    };
+    state.verifierEnvironment.environments = [
+      ...state.verifierEnvironment.environments,
+      { environment: prior, installedBytes: 512_000_000, pinned: false, manifestReferences: 2 }
+    ];
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+    const registry = await screen.findByRole("region", { name: "Verifier Environment Registry" });
+    expect(registry.textContent).toContain("2 retained Verifier Manifests");
+    await user.click(within(registry).getByLabelText(`Keep ${prior.id} as a Pinned Verification Environment`));
+    expect(api.submit).toHaveBeenLastCalledWith({
+      type: "setVerifierEnvironmentPinned", environmentId: prior.id, pinned: true
+    });
+    await user.click(within(registry).getByRole("button", { name: `Use ${prior.id} as the active Verifier Environment` }));
+    expect(api.submit).toHaveBeenLastCalledWith({ type: "activateVerifierEnvironment", environmentId: prior.id });
+    await user.click(within(registry).getByRole("button", { name: "Clean up unreferenced environments" }));
+    expect(api.submit).toHaveBeenLastCalledWith({ type: "cleanupVerifierEnvironment" });
+  });
+
+  it("offers a staged upgrade when the current supported environment is not installed", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    const prior = { ...state.verifierEnvironment.environment, id: "lean-4.28.0-mathlib-4.28.0-quick-study-v1" };
+    state.verifierEnvironment.environment = prior;
+    state.verifierEnvironment.activeEnvironmentId = prior.id;
+    state.verifierEnvironment.environments = [{
+      environment: prior, installedBytes: 512_000_000, pinned: true, manifestReferences: 1
+    }];
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Stage and activate the current supported Lean environment" }));
+    expect(api.submit).toHaveBeenLastCalledWith({ type: "installVerifierEnvironment" });
+  });
+
   it("shows independent research egress controls and inspectable research receipts", async () => {
     const user = userEvent.setup();
     const state = workbenchState();
@@ -1052,6 +1102,7 @@ function workbenchState(): LearningApplicationState {
       activeAgentTaskId: null,
       reasoningPreference: "balanced",
       runtimeOverride: null,
+      verifierEnvironmentPinId: null,
       learningArtifacts: [{
         id: "artifact-1",
         title: "Explain compact subset",
@@ -1102,6 +1153,22 @@ function workbenchState(): LearningApplicationState {
         platform: "darwin", architecture: "arm64", sourceArchive: "lean.zip", sourceSha256: "fixture",
         supportProfile: "Quick Study undergraduate foundations v1", mathlibModules: [], runtimeFormat: 8
       },
+      defaultEnvironment: {
+        id: "lean-4.29.1-mathlib-4.29.1-quick-study-v1", checker: "Lean", leanVersion: "4.29.1",
+        mathlibVersion: "4.29.1", mathlibCommit: "5e932f97dd25535344f80f9dd8da3aab83df0fe6",
+        platform: "darwin", architecture: "arm64", sourceArchive: "lean.zip", sourceSha256: "fixture",
+        supportProfile: "Quick Study undergraduate foundations v1", mathlibModules: [], runtimeFormat: 8
+      },
+      activeEnvironmentId: "lean-4.29.1-mathlib-4.29.1-quick-study-v1",
+      environments: [{
+        environment: {
+          id: "lean-4.29.1-mathlib-4.29.1-quick-study-v1", checker: "Lean", leanVersion: "4.29.1",
+          mathlibVersion: "4.29.1", mathlibCommit: "5e932f97dd25535344f80f9dd8da3aab83df0fe6",
+          platform: "darwin", architecture: "arm64", sourceArchive: "lean.zip", sourceSha256: "fixture",
+          supportProfile: "Quick Study undergraduate foundations v1", mathlibModules: [], runtimeFormat: 8
+        },
+        installedBytes: 734_003_200, pinned: false, manifestReferences: 0
+      }],
       installedBytes: 734_003_200, lastRemovedLogicalBytes: 0, error: null
     },
     activeSessionId: "session-1",

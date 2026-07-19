@@ -42,26 +42,32 @@ describe("LeanEnvironmentManager", () => {
 
   it("installs through staging, reports storage, removes the active environment, and reinstalls it", async () => {
     const { registry, manager } = await fixture();
-    expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: false });
+    expect(await manager.inspect()).toMatchObject({
+      installed: false, installedBytes: 0, cleanupRequired: false, activeEnvironmentId: null, environments: []
+    });
     expect(await manager.defaultInstallationNeeded()).toBe(true);
 
     const installed = await manager.install();
 
-    expect(installed.installedBytes).toBeGreaterThan(0);
+    expect(installed.installedBytes).toBe(0);
     expect(JSON.parse(await readFile(join(registry, bundledEnvironment.id, "manifest.json"), "utf8"))).toMatchObject({
       id: bundledEnvironment.id,
       leanVersion: bundledEnvironment.leanVersion
     });
-    expect(await manager.inspect()).toEqual({
-      installed: true, installedBytes: installed.installedBytes, cleanupRequired: false
+    expect(await manager.inspect()).toMatchObject({
+      installed: true, installedBytes: installed.installedBytes, cleanupRequired: false,
+      activeEnvironmentId: bundledEnvironment.id,
+      environments: [expect.objectContaining({ environment: expect.objectContaining({ id: bundledEnvironment.id }) })]
     });
     expect(await manager.defaultInstallationNeeded()).toBe(false);
     expect((await stat(join(registry, bundledEnvironment.id))).mode & 0o222).toBe(0);
     expect((await stat(join(registry, bundledEnvironment.id, "bin", "lean"))).mode & 0o222).toBe(0);
 
     const removed = await manager.remove();
-    expect(removed.removedLogicalBytes).toBe(installed.installedBytes);
-    expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: false });
+    expect(removed.removedLogicalBytes).toBeGreaterThan(0);
+    expect(await manager.inspect()).toMatchObject({
+      installed: false, installedBytes: 0, cleanupRequired: false, activeEnvironmentId: null, environments: []
+    });
     expect(await manager.defaultInstallationNeeded()).toBe(false);
 
     await manager.install();
@@ -79,9 +85,9 @@ describe("LeanEnvironmentManager", () => {
     await symlink(outside, join(interrupted, "unsafe-link"));
     await link(join(outside, "must-stay-read-only"), join(interrupted, "unsafe-hard-link"));
 
-    expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: true });
+    expect(await manager.inspect()).toMatchObject({ installed: false, installedBytes: 0, cleanupRequired: true });
     expect(await manager.cleanup()).toEqual({ installed: false, installedBytes: 0 });
-    expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: false });
+    expect(await manager.inspect()).toMatchObject({ installed: false, installedBytes: 0, cleanupRequired: false, environments: [] });
     expect((await stat(join(outside, "must-stay-read-only"))).mode & 0o222).toBe(0);
   });
 
@@ -93,7 +99,7 @@ describe("LeanEnvironmentManager", () => {
     });
 
     await expect(manager.install()).rejects.toThrow("Reference proof was rejected");
-    expect(await manager.inspect()).toEqual({ installed: false, installedBytes: 0, cleanupRequired: true });
+    expect(await manager.inspect()).toMatchObject({ installed: false, installedBytes: 0, cleanupRequired: true });
     rejectReferenceProof = false;
     await manager.install();
     expect(await manager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });

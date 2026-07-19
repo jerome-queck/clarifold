@@ -714,6 +714,93 @@ describe("Learning Application", () => {
     expect(recovered.verifierEnvironment).toMatchObject({ status: "installed", installedBytes: 2048, error: null });
   });
 
+  it("keeps a retained Verifier Environment pinned through cleanup and switches the active default without rewriting history", async () => {
+    const priorEnvironment = { ...BUNDLED_LEAN_ENVIRONMENT, id: "lean-4.28.0-mathlib-4.28.0-quick-study-v1" };
+    let activeEnvironmentId = priorEnvironment.id;
+    let installations = [
+      { environment: priorEnvironment, installedBytes: 1024 },
+      { environment: BUNDLED_LEAN_ENVIRONMENT, installedBytes: 2048 }
+    ];
+    const cleanupRequests: string[][] = [];
+    const environmentManager: VerifierEnvironmentManager = {
+      inspect: vi.fn(async () => ({
+        installed: true,
+        installedBytes: installations.find((entry) => entry.environment.id === activeEnvironmentId)?.installedBytes ?? 0,
+        cleanupRequired: false,
+        environments: installations,
+        activeEnvironmentId
+      })),
+      remove: vi.fn(async () => ({ removedLogicalBytes: 0 })),
+      install: vi.fn(async () => ({ installedBytes: 2048, environment: BUNDLED_LEAN_ENVIRONMENT })),
+      activate: vi.fn(async (environmentId: string) => { activeEnvironmentId = environmentId; }),
+      cleanup: vi.fn(async (environmentIds: string[] = []) => {
+        cleanupRequests.push(environmentIds);
+        installations = installations.filter((entry) => !environmentIds.includes(entry.environment.id));
+        return { installed: true, installedBytes: 2048 };
+      })
+    };
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, null, null, null, null, null, null, environmentManager);
+    applications.push(application);
+
+    let state = await application.submit({ type: "startQuickStudy", mathematics: "For every natural number n, n + 0 = n." });
+    const sessionId = state.activeSessionId!;
+    state = await application.submit({ type: "setSessionVerifierEnvironmentPin", sessionId, environmentId: priorEnvironment.id });
+    expect(state.sessions.find((session) => session.id === sessionId)?.verifierEnvironmentPinId).toBe(priorEnvironment.id);
+    state = await application.submit({ type: "setVerifierEnvironmentPinned", environmentId: priorEnvironment.id, pinned: true });
+    expect(state.verifierEnvironment.environments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ environment: expect.objectContaining({ id: priorEnvironment.id }), pinned: true })
+    ]));
+    state = await application.submit({ type: "activateVerifierEnvironment", environmentId: BUNDLED_LEAN_ENVIRONMENT.id });
+    expect(state.verifierEnvironment).toMatchObject({
+      activeEnvironmentId: BUNDLED_LEAN_ENVIRONMENT.id,
+      environment: BUNDLED_LEAN_ENVIRONMENT
+    });
+    await application.submit({ type: "cleanupVerifierEnvironment" });
+    expect(cleanupRequests).toEqual([[]]);
+
+    await application.shutdown();
+    const restored = await LearningApplication.launch(dataDirectory, null, null, null, null, null, null, environmentManager);
+    applications.push(restored);
+    expect(restored.getState().verifierEnvironment).toMatchObject({ activeEnvironmentId: BUNDLED_LEAN_ENVIRONMENT.id });
+    expect(restored.getState().verifierEnvironment.environments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ environment: expect.objectContaining({ id: priorEnvironment.id }), pinned: true })
+    ]));
+    expect(restored.getState().sessions.find((session) => session.id === sessionId)?.verifierEnvironmentPinId).toBe(priorEnvironment.id);
+
+    await restored.submit({ type: "setSessionVerifierEnvironmentPin", sessionId, environmentId: null });
+    await restored.submit({ type: "setVerifierEnvironmentPinned", environmentId: priorEnvironment.id, pinned: false });
+    state = await restored.submit({ type: "cleanupVerifierEnvironment" });
+    expect(cleanupRequests.at(-1)).toEqual([priorEnvironment.id]);
+    expect(state.verifierEnvironment.environments.map((entry) => entry.environment.id)).not.toContain(priorEnvironment.id);
+  });
+
+  it("migrates pre-registry verifier state and sessions without a Verification Environment pin", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory);
+    applications.push(application);
+    await application.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
+    await application.shutdown();
+    const statePath = join(dataDirectory, "learning-application.json");
+    const stored = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const storedSessions = stored.sessions as Array<Record<string, unknown>>;
+    delete storedSessions[0].verifierEnvironmentPinId;
+    stored.verifierEnvironment = {
+      status: "installed", environment: BUNDLED_LEAN_ENVIRONMENT,
+      installedBytes: 1024, lastRemovedLogicalBytes: 0, error: null
+    };
+    await writeFile(statePath, JSON.stringify(stored), "utf8");
+
+    const restored = await LearningApplication.launch(dataDirectory);
+    applications.push(restored);
+    expect(restored.getState().sessions[0]?.verifierEnvironmentPinId).toBeNull();
+    expect(restored.getState().verifierEnvironment.environments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ environment: BUNDLED_LEAN_ENVIRONMENT, installedBytes: 1024 })
+    ]));
+  });
+
   it("retains formalization and diagnostics for an incomplete run without calling the claim false", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Check one arithmetic identity", scope: "One exact claim",

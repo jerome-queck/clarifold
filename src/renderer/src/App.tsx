@@ -98,6 +98,11 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
   const [confirmLeanRemoval, setConfirmLeanRemoval] = useState(false);
   const [leanActionError, setLeanActionError] = useState<string | null>(null);
   const environment = state.verifierEnvironment;
+  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+  const sessionPins = new Set(state.sessions.map((session) => session.verifierEnvironmentPinId).filter(Boolean));
+  const cleanupCandidates = environment.environments.filter((entry) => entry.environment.id !== environment.activeEnvironmentId
+    && entry.environment.id !== environment.defaultEnvironment.id && !entry.pinned && entry.manifestReferences === 0
+    && !sessionPins.has(entry.environment.id));
   const storage = formatStorage(environment.installedBytes || environment.lastRemovedLogicalBytes);
   const updateEnvironment = async (action: LearnerAction) => {
     setLeanActionError(null);
@@ -126,10 +131,60 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
       <div className="verifier-environment" aria-labelledby="lean-environment-title">
         <h3 id="lean-environment-title">Bundled Lean Runtime</h3>
         <p aria-live="polite"><strong>{verifierEnvironmentLabel(environment.status)}</strong></p>
-        <p className="subtle">Default environment: {environment.environment.id}</p>
+        <p className="subtle">Default environment: {environment.defaultEnvironment.id}</p>
         {leanActionError && <p className="failure-message" role="alert">{leanActionError}</p>}
+        {environment.error && environment.status === "installed" && <p className="failure-message" role="alert">{environment.error}</p>}
+        <section aria-label="Verifier Environment Registry">
+          <h4>Verifier Environment Registry</h4>
+          {environment.environments.length === 0
+            ? <p>No installed Verifier Environments are available.</p>
+            : <ul className="verifier-environment-list">
+              {environment.environments.map((entry) => {
+                const active = entry.environment.id === environment.activeEnvironmentId;
+                return <li key={entry.environment.id}>
+                  <strong>{entry.environment.id}</strong>
+                  <p>Lean {entry.environment.leanVersion} · mathlib {entry.environment.mathlibVersion} · {formatStorage(entry.installedBytes)}</p>
+                  <p>{active ? "Active default" : "Retained environment"} · {entry.manifestReferences} retained Verifier Manifest{entry.manifestReferences === 1 ? "" : "s"}</p>
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={`Keep ${entry.environment.id} as a Pinned Verification Environment`}
+                      checked={entry.pinned}
+                      onChange={(event) => void updateEnvironment({
+                        type: "setVerifierEnvironmentPinned", environmentId: entry.environment.id, pinned: event.target.checked
+                      })}
+                    />
+                    Keep as a Pinned Verification Environment
+                  </label>
+                  {!active && <button className="secondary" onClick={() => void updateEnvironment({
+                    type: "activateVerifierEnvironment", environmentId: entry.environment.id
+                  })} aria-label={`Use ${entry.environment.id} as the active Verifier Environment`}>Use this environment</button>}
+                </li>;
+              })}
+            </ul>}
+          <p className="subtle">Cleanup removes only inactive, unpinned environments without retained Verifier Manifest references or Learning Session pins.</p>
+          {cleanupCandidates.length > 0 && <p className="subtle">Cleanup will reclaim {cleanupCandidates.map((entry) =>
+            `${entry.environment.id} (${formatStorage(entry.installedBytes)})`).join(", ")}.</p>}
+          {cleanupCandidates.length === 0 && <p className="subtle">No unreferenced inactive environments are available for cleanup.</p>}
+          <button className="secondary" onClick={() => void updateEnvironment({ type: "cleanupVerifierEnvironment" })}>
+            Clean up unreferenced environments
+          </button>
+        </section>
+        {activeSession && environment.activeEnvironmentId && <p>
+          {activeSession.verifierEnvironmentPinId
+            ? <button className="secondary" onClick={() => void updateEnvironment({
+              type: "setSessionVerifierEnvironmentPin", sessionId: activeSession.id, environmentId: null
+            })}>Use the active environment for this Learning Session</button>
+            : <button className="secondary" onClick={() => void updateEnvironment({
+              type: "setSessionVerifierEnvironmentPin", sessionId: activeSession.id, environmentId: environment.activeEnvironmentId
+            })}>Pin {environment.activeEnvironmentId} for this Learning Session</button>}
+        </p>}
         {environment.status === "installed" && <>
           <p>Formal checks are available. Logical installed size: {storage}.</p>
+          {!environment.environments.some((entry) => entry.environment.id === environment.defaultEnvironment.id) &&
+            <button onClick={() => void updateEnvironment({ type: "installVerifierEnvironment" })}>
+              Stage and activate the current supported Lean environment
+            </button>}
           <button className="secondary" onClick={() => setConfirmLeanRemoval(true)}>Remove Lean environment</button>
         </>}
         {environment.status === "absent" && <>
