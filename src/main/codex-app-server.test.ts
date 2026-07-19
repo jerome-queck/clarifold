@@ -568,6 +568,7 @@ describe("Codex app-server contract", () => {
   });
 
   it("interrupts Specialist Agent work when Codex reports total token use beyond its limit", async () => {
+    const reportedTokenUsage: number[] = [];
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;
       if (message.method === "initialize") {
@@ -601,8 +602,10 @@ describe("Codex app-server contract", () => {
         agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
         tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
       },
-      signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined
+      signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined,
+      onTokenUsage: (totalTokens) => reportedTokenUsage.push(totalTokens)
     })).rejects.toThrow("exceeded its token budget");
+    expect(reportedTokenUsage).toEqual([520]);
     expect(transport.messages).toContainEqual(expect.objectContaining({
       method: "turn/interrupt", params: { threadId: "budget-thread", turnId: "budget-turn" }
     }));

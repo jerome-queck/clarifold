@@ -90,6 +90,7 @@ function isLearnerAction(value: unknown): value is LearnerAction {
       return !("coordination" in action) || action.coordination === undefined
         || isAgentTaskCoordination(action.coordination);
     case "retryAgentTask":
+    case "resumeAgentTask":
       return "taskId" in action && typeof action.taskId === "string";
     case "resumeSession":
     case "cancelSessionModelWork":

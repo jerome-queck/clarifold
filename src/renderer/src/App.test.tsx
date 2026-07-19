@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LearningApplicationState } from "../../shared/learning-application";
+import type { AgentTask, LearningApplicationState, LearningSession } from "../../shared/learning-application";
 import { App } from "./App";
 
 describe("anchored teaching workbench", () => {
@@ -210,6 +210,7 @@ describe("anchored teaching workbench", () => {
     session.agentTasks = [{
       id: "agent-task-1", purpose: "Review one hidden assumption", status: "waiting",
       statusMessage: "Waiting for Codex.",
+      resumeAvailable: false,
       identifiedNeed: {
         kind: "hiddenAssumptionReview", requestedBy: "learner", description: "Check the current Teaching Card."
       },
@@ -221,6 +222,7 @@ describe("anchored teaching workbench", () => {
         learningGoal: session.learningGoal, sourceAnchors: [], constraints: ["Review one card."], learnerEvidence: [],
         expectedOutput: "One concise card.", verificationNeeds: ["Identify hidden assumptions."]
       }],
+      specialistProgress: [{ status: "working", checkpoint: "", result: null, usedTokens: 0, usedLatencyMs: 0 }],
       coordination: "single",
       budget: {
         agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
@@ -246,6 +248,52 @@ describe("anchored teaching workbench", () => {
     await user.click(stop);
     expect(window.quickStudy.submit).toHaveBeenCalledWith({
       type: "cancelSessionModelWork", sessionId: "session-1"
+    });
+  });
+
+  it("offers keyboard-accessible explicit resumption for a checkpointed Agent Task", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    const session = state.sessions[0];
+    session.status = "paused";
+    session.agentTasks = [agentTaskFixture(session, {
+      status: "stopped",
+      statusMessage: "Agent Task checkpointed when the application closed. Resume when ready.",
+      resumeAvailable: true,
+      integratedTeachingCard: {
+        title: "Specialist review",
+        status: "stopped",
+        content: "This step uses Hausdorff separation.",
+        error: "Agent Task checkpointed when the application closed. Resume when ready.",
+        retryable: false
+      }
+    })];
+    session.activeAgentTaskId = session.agentTasks[0].id;
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    state.resumeSessionId = session.id;
+    state.runtimeAvailable = true;
+    state.authentication = {
+      status: "signedIn", method: "chatgpt", accountLabel: "Learner", loginUrl: null, error: null
+    };
+    state.modelAccess = { status: "available" };
+    window.quickStudy = quickStudyApi(state);
+
+    render(<App />);
+
+    expect((await screen.findByRole("status", { name: "Checkpointed Agent Task" })).textContent).toContain(
+      "Useful partial output is saved"
+    );
+    const history = screen.getByRole("region", { name: "Quick Study · Unfiled" });
+    expect(history.textContent).toContain("Agent Task checkpoint ready");
+    expect(within(history).getByRole("button", {
+      name: "Resume checkpointed Agent Task for Understand compactness"
+    })).toBeTruthy();
+    const resume = screen.getByRole("button", { name: "Resume Agent Task" });
+    resume.focus();
+    await user.keyboard("{Enter}");
+    expect(window.quickStudy.submit).toHaveBeenCalledWith({
+      type: "resumeAgentTask", taskId: "agent-task-1"
     });
   });
 
@@ -670,6 +718,39 @@ function quickStudyApi(state: LearningApplicationState): typeof window.quickStud
     exportLearningArtifact: vi.fn().mockResolvedValue({ status: "exported", path: "/tmp/artifact.md" }),
     shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
     onStateChanged: vi.fn().mockReturnValue(() => undefined), openExternal: vi.fn()
+  };
+}
+
+function agentTaskFixture(session: LearningSession, overrides: Partial<AgentTask> = {}): AgentTask {
+  return {
+    id: "agent-task-1",
+    purpose: "Review one hidden assumption",
+    status: "waiting",
+    statusMessage: "Waiting for Codex.",
+    resumeAvailable: false,
+    identifiedNeed: {
+      kind: "hiddenAssumptionReview", requestedBy: "learner", description: "Check the current Teaching Card."
+    },
+    brief: {
+      learningGoal: session.learningGoal, sourceAnchors: [], constraints: ["Review one card."], learnerEvidence: [],
+      expectedOutput: "One concise card.", verificationNeeds: ["Identify hidden assumptions."]
+    },
+    specialistBriefs: [{
+      learningGoal: session.learningGoal, sourceAnchors: [], constraints: ["Review one card."], learnerEvidence: [],
+      expectedOutput: "One concise card.", verificationNeeds: ["Identify hidden assumptions."]
+    }],
+    specialistProgress: [{ status: "working", checkpoint: "", result: null, usedTokens: 0, usedLatencyMs: 0 }],
+    coordination: "single",
+    budget: {
+      agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+      tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
+    },
+    integratedTeachingCard: {
+      title: "Specialist review", status: "streaming", content: "", error: null, retryable: false
+    },
+    agentWorkLogReference: { sessionId: session.id, fromSequence: 3, toSequence: 4 },
+    priorAgentWorkLogReferences: [],
+    ...overrides
   };
 }
 
