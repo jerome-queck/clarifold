@@ -28,6 +28,11 @@ module.exports = {
   },
   makers: [],
   hooks: {
+    prePackage: async (_forgeConfig, platform, arch) => {
+      const priorVerifierDirectory = join(__dirname, "out", `Quick Study-${platform}-${arch}`,
+        "Quick Study.app", "Contents", "Resources", "verifiers");
+      await makeVerifierFilesWritable(priorVerifierDirectory);
+    },
     postPackage: async (_forgeConfig, packageResult) => {
       for (const outputPath of packageResult.outputPaths) {
         await makeVerifierFilesReadOnly(join(outputPath, "Quick Study.app", "Contents", "Resources", "verifiers"));
@@ -43,4 +48,19 @@ async function makeVerifierFilesReadOnly(directory) {
     else await chmod(path, path.endsWith(join("bin", "lean")) ? 0o555 : 0o444);
   }
   await chmod(directory, 0o555);
+}
+
+async function makeVerifierFilesWritable(directory) {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  await chmod(directory, 0o755);
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await makeVerifierFilesWritable(path);
+  }
 }
