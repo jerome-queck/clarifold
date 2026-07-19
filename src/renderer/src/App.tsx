@@ -1079,6 +1079,7 @@ function Workbench({ state, onState, returnFocusAnchorId, onReturnFocusConsumed,
               onState(await window.quickStudy.submit({ type: "activateSourceAnchor", sourceAnchorId: card.sourceAnchorId }));
             }} />}
             <SessionAccessPanel state={state} session={session} onState={onState} />
+            <CorroborationPassPanel session={session} />
             <ExternalResearchPanel state={state} session={session} onState={onState} />
             <ModelAccessPanel state={state} onState={onState} />
             <SessionRecord session={session} />
@@ -1967,6 +1968,71 @@ function accessPolicyDescription(policy: LearningSession["accessPolicy"]): strin
     workspace: "Current session material and supported sources owned by this Study Workspace; unrelated workspaces and device content stay excluded.",
     full: "Broader local-file and agent-tool access for this Learning Session only."
   }[policy];
+}
+
+function CorroborationPassPanel({ session }: { session: LearningSession }) {
+  const pass = session.corroborationPass;
+  if (!pass) return null;
+  return (
+    <section className={`corroboration-pass ${pass.status}`} aria-labelledby="corroboration-pass-title">
+      <div className="access-heading">
+        <div>
+          <p className="eyebrow">Mathematical trust</p>
+          <h2 id="corroboration-pass-title">Corroboration Pass</h2>
+        </div>
+        <span className="saved" role="status">{corroborationStatusLabel(pass.status)}</span>
+      </div>
+      <p>{pass.message}</p>
+      <dl>
+        <div><dt>Relevant result</dt><dd>{pass.relevantResult}</dd></div>
+        <div><dt>Current assumptions</dt><dd>{pass.currentUse.assumptions.join("; ") || "Not yet identified"}</dd></div>
+        <div><dt>Current conclusion</dt><dd>{pass.currentUse.conclusion}</dd></div>
+        <div><dt>Pedagogical Baseline</dt><dd>{pass.pedagogicalBaselinePresent ? "Supplied material" : "None supplied"}</dd></div>
+        <div><dt>Assumptions</dt><dd>{corroborationComparisonLabel(pass.assumptionComparison)}</dd></div>
+        <div><dt>Conclusion</dt><dd>{corroborationComparisonLabel(pass.conclusionComparison)}</dd></div>
+        <div><dt>Known errata</dt><dd>{corroborationErrataLabel(pass.errataCheck)}</dd></div>
+        <div><dt>Independent support</dt><dd>{corroborationSupportLabel(pass.independentSupport)}</dd></div>
+        <div><dt>Established proof approaches</dt><dd>{pass.proofApproachResearch === "established"
+          ? "Researched" : pass.proofApproachResearch === "notRequired" ? "Pedagogical Baseline available" : "Incomplete"}</dd></div>
+        <div><dt>Deeper research</dt><dd>{pass.deeperResearch.required
+          ? `Required · ${pass.deeperResearch.reason}` : "Not triggered"}</dd></div>
+      </dl>
+      {pass.evidence.length > 0 && <section aria-label="Weighted corroboration evidence">
+        <h3>Weighted evidence</h3>
+        <ul>{pass.evidence.map((evidence, index) => <li key={`${evidence.sourceUrl}:${index}`}>
+          <strong>{evidence.sourceTitle}</strong>
+          <span>Authority {evidence.authority} · Relevance {evidence.relevance}</span>
+          <span>{evidence.detail}</span>
+          <code>{evidence.sourceUrl}</code>
+        </li>)}</ul>
+      </section>}
+      {pass.sourceDiscrepancies.map((discrepancy) => <section key={discrepancy.id}
+        className="source-discrepancy" role="alert" aria-label="Source Discrepancy">
+        <p className="eyebrow">Source Discrepancy</p>
+        <h3>{discrepancy.relevantResult}</h3>
+        <p>{discrepancy.summary}</p>
+        <ul>{discrepancy.competingEvidence.map((evidence, index) => <li key={`${evidence.sourceUrl}:${index}`}>
+          <strong>{evidence.sourceTitle}</strong>: {evidence.detail}
+        </li>)}</ul>
+      </section>)}
+    </section>
+  );
+}
+
+function corroborationStatusLabel(status: NonNullable<LearningSession["corroborationPass"]>["status"]): string {
+  return { running: "Checking evidence", completed: "Corroborated", incomplete: "Incomplete", disputed: "Disputed" }[status];
+}
+
+function corroborationComparisonLabel(comparison: "matches" | "mismatch" | "unchecked"): string {
+  return { matches: "matches", mismatch: "mismatch", unchecked: "not independently checked" }[comparison];
+}
+
+function corroborationErrataLabel(check: "noneFound" | "found" | "unchecked"): string {
+  return { noneFound: "none found", found: "found", unchecked: "not checked" }[check];
+}
+
+function corroborationSupportLabel(support: NonNullable<LearningSession["corroborationPass"]>["independentSupport"]): string {
+  return { sufficient: "sufficient", weakOnly: "weak sources only", conflicting: "conflicting", missing: "missing" }[support];
 }
 
 function ExternalResearchPanel({ state, session, onState }: {

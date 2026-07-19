@@ -12,7 +12,7 @@ import {
   type SourceFingerprint
 } from "./learning-application";
 import { ModelAccessError, type ArtifactSynthesisRequest, type ModelAccessCause, type ModelRuntime, type RuntimeAccessRequest, type SessionProposal, type SpecialistAgentRequest, type SpecialistAgentResult, type TeachingRequest } from "./model-runtime";
-import type { ExternalResearch, ExternalResearchRequest, ExternalResearchResult } from "./external-research";
+import type { CorroborationResearchEvidence, ExternalResearch, ExternalResearchRequest, ExternalResearchResult } from "./external-research";
 
 describe("Learning Application", () => {
   const dataDirectories: string[] = [];
@@ -65,6 +65,14 @@ describe("Learning Application", () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
     dataDirectories.push(dataDirectory);
     const application = await LearningApplication.launch(dataDirectory, null, null, null, externalResearch);
+    applications.push(application);
+    return { dataDirectory, application };
+  }
+
+  async function launchWithRuntimeAndExternalResearch(runtime: ModelRuntime, externalResearch: ExternalResearch) {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-test-"));
+    dataDirectories.push(dataDirectory);
+    const application = await LearningApplication.launch(dataDirectory, runtime, null, null, externalResearch);
     applications.push(application);
     return { dataDirectory, application };
   }
@@ -4471,18 +4479,187 @@ describe("Learning Application", () => {
       informedBySourceIds: state.sessions[0].sourceIds,
       query: {
         theoremNames: ["orbit-stabilizer theorem"],
-        assumptions: [],
+        assumptions: ["finite group"],
         keywords: []
       }
     });
     await application.waitForModelWork();
-    expect(application.getState().sessions[0].researchActions.at(-1)).toMatchObject({ status: "completed" });
+    expect(application.getState().sessions[0]).toMatchObject({
+      researchActions: [expect.objectContaining({ status: "completed" })],
+      corroborationPass: {
+        status: "incomplete",
+        errataCheck: "unchecked",
+        independentSupport: "missing",
+        deeperResearch: { required: true },
+        message: expect.stringContaining("not presented as settled")
+      }
+    });
     expect(research.requests[0]).toMatchObject({
       queryOrigin: "automaticCorroboration",
       informedBySourceIds: state.sessions[0].sourceIds,
       excerpts: []
     });
   });
+
+  it("completes a visible Corroboration Pass before substantive proof teaching begins", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand orbit-stabilizer",
+      scope: "Prove the orbit-stabilizer theorem",
+      initialTeachingDirection: "Compare the orbit map with its fibres",
+      requiresConfirmation: false,
+      confirmationReason: null
+    }, true);
+    const research = new DeterministicExternalResearch();
+    let releaseResearch!: () => void;
+    research.gate = new Promise<void>((resolve) => { releaseResearch = resolve; });
+    research.result = {
+      title: "Authoritative corroboration",
+      summary: "The theorem statement and its use agree.",
+      sources: [{ title: "Standard theorem reference", url: "https://example.test/orbit-stabilizer" }],
+      corroboration: {
+        relevantResult: "Orbit-stabilizer theorem",
+        proposedApproachDeparture: false,
+        evidence: [{
+          sourceTitle: "Standard theorem reference",
+          sourceUrl: "https://example.test/orbit-stabilizer",
+          authority: "authoritative",
+          relevance: "direct",
+          relation: "supports",
+          assumptions: "matches",
+          conclusion: "matches",
+          proofApproaches: ["Identify the orbit with the cosets of the stabilizer"],
+          detail: "The stated action hypotheses and orbit-cardinality conclusion match the current use."
+        }]
+      }
+    };
+    const { application } = await launchWithRuntimeAndExternalResearch(runtime, research);
+
+    const submission = application.submit({
+      type: "submitSessionIntake",
+      mathematics: "Prove the orbit-stabilizer theorem for a finite group acting on a set."
+    });
+    await vi.waitFor(() => expect(research.requests).toHaveLength(1));
+
+    const whileCorroborating = application.getState().sessions[0];
+    releaseResearch();
+    const state = await submission;
+
+    expect(whileCorroborating).toMatchObject({
+      teachingCard: { status: "idle" },
+      corroborationPass: {
+        status: "running",
+        relevantResult: "orbit-stabilizer theorem"
+      }
+    });
+    expect(state.sessions[0]).toMatchObject({
+      teachingCard: { status: "streaming" },
+      corroborationPass: {
+        status: "completed",
+        assumptionComparison: "matches",
+        conclusionComparison: "matches",
+        errataCheck: "noneFound",
+        independentSupport: "sufficient",
+        deeperResearch: { required: false }
+      }
+    });
+    expect(runtime.teachingRequests[0].corroboration).toMatchObject({
+      status: "completed", relevantResult: "Orbit-stabilizer theorem", independentSupport: "sufficient"
+    });
+    runtime.completeTeaching();
+  });
+
+  it("keeps an authoritative assumption mismatch disputed", async () => {
+    const pass = await corroborateWithEvidence([authoritativeEvidence({
+      assumptions: "mismatch",
+      detail: "The reference requires a group action, but the current use supplies only a set map."
+    })]);
+    expect(pass).toMatchObject({
+      status: "disputed",
+      assumptionComparison: "mismatch",
+      independentSupport: "conflicting",
+      deeperResearch: { required: true },
+      sourceDiscrepancies: [{ competingEvidence: [expect.objectContaining({ assumptions: "mismatch" })] }]
+    });
+  });
+
+  it("preserves known errata as a Source Discrepancy", async () => {
+    const pass = await corroborateWithEvidence([authoritativeEvidence({
+      authority: "primary",
+      relation: "erratum",
+      detail: "The publisher erratum adds the missing action hypothesis."
+    })]);
+    expect(pass).toMatchObject({
+      status: "disputed",
+      errataCheck: "found",
+      sourceDiscrepancies: [{
+        summary: expect.stringContaining("materially disagrees"),
+        competingEvidence: [expect.objectContaining({ relation: "erratum" })]
+      }]
+    });
+  });
+
+  it("does not treat agreement among derivative sources as sufficient corroboration", async () => {
+    const pass = await corroborateWithEvidence([
+      authoritativeEvidence({ sourceTitle: "Derivative notes A", authority: "derivative", relevance: "related" }),
+      authoritativeEvidence({ sourceTitle: "Derivative notes B", authority: "derivative", relevance: "weak" })
+    ]);
+    expect(pass).toMatchObject({
+      status: "incomplete",
+      independentSupport: "weakOnly",
+      deeperResearch: { required: true, reason: expect.stringContaining("weak") },
+      sourceDiscrepancies: []
+    });
+  });
+
+  it("preserves both sides when authoritative sources conflict", async () => {
+    const pass = await corroborateWithEvidence([
+      authoritativeEvidence({ sourceTitle: "Authority supporting the use" }),
+      authoritativeEvidence({
+        sourceTitle: "Authority disputing the conclusion",
+        relation: "conflicts",
+        conclusion: "mismatch",
+        detail: "This source gives a counterexample under the stated assumptions."
+      })
+    ]);
+    expect(pass).toMatchObject({
+      status: "disputed",
+      conclusionComparison: "mismatch",
+      independentSupport: "conflicting",
+      sourceDiscrepancies: [{ competingEvidence: [
+        expect.objectContaining({ sourceTitle: "Authority supporting the use" }),
+        expect.objectContaining({ sourceTitle: "Authority disputing the conclusion" })
+      ] }]
+    });
+  });
+
+  it("researches an established proof approach when no Pedagogical Baseline exists", async () => {
+    const pass = await corroborateWithEvidence([authoritativeEvidence({
+      proofApproaches: ["Identify the orbit with stabilizer cosets"]
+    })]);
+    expect(pass).toMatchObject({
+      status: "completed",
+      pedagogicalBaselinePresent: false,
+      proofApproachResearch: "established",
+      deeperResearch: { required: false }
+    });
+  });
+
+  async function corroborateWithEvidence(evidence: CorroborationResearchEvidence[]) {
+    const research = new DeterministicExternalResearch();
+    research.result = {
+      title: "Deterministic benchmark evidence",
+      summary: "Pinned corroboration fixture.",
+      sources: evidence.map((item) => ({ title: item.sourceTitle, url: item.sourceUrl })),
+      corroboration: { relevantResult: "Orbit-stabilizer theorem", proposedApproachDeparture: false, evidence }
+    };
+    const { application } = await launchWithExternalResearch(research);
+    await application.submit({
+      type: "startQuickStudy",
+      mathematics: "Prove the orbit-stabilizer theorem for a finite group acting on a set."
+    });
+    await application.waitForModelWork();
+    return application.getState().sessions[0].corroborationPass;
+  }
 
   it.each([
     ["Study Cauchy's theorem from /Users/alice/private-course-notes.pdf", ["Cauchy's theorem"], [], []],
@@ -5281,10 +5458,12 @@ class DeterministicExternalResearch implements ExternalResearch {
   };
   error: Error | null = null;
   hold = false;
+  gate: Promise<void> | null = null;
 
   async research(request: ExternalResearchRequest): Promise<ExternalResearchResult> {
     this.requests.push(request);
     if (this.error) throw this.error;
+    if (this.gate) await this.gate;
     if (this.hold) {
       await new Promise<void>((_resolve, reject) => request.signal.addEventListener(
         "abort", () => reject(new DOMException("External research was stopped.", "AbortError")), { once: true }
@@ -5292,6 +5471,23 @@ class DeterministicExternalResearch implements ExternalResearch {
     }
     return structuredClone(this.result);
   }
+}
+
+function authoritativeEvidence(
+  overrides: Partial<CorroborationResearchEvidence> = {}
+): CorroborationResearchEvidence {
+  return {
+    sourceTitle: "Authoritative theorem reference",
+    sourceUrl: "https://example.test/orbit-stabilizer",
+    authority: "authoritative",
+    relevance: "direct",
+    relation: "supports",
+    assumptions: "matches",
+    conclusion: "matches",
+    proofApproaches: ["Identify the orbit with the cosets of the stabilizer"],
+    detail: "The theorem statement matches the current use.",
+    ...overrides
+  };
 }
 
 class DeterministicModelRuntime implements ModelRuntime {

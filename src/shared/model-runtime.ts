@@ -76,6 +76,15 @@ export interface TeachingRequest {
   learningGoal: string;
   scope: string;
   initialTeachingDirection: string;
+  corroboration: null | {
+    status: "completed" | "incomplete" | "disputed";
+    relevantResult: string;
+    assumptionComparison: "matches" | "mismatch" | "unchecked";
+    conclusionComparison: "matches" | "mismatch" | "unchecked";
+    errataCheck: "noneFound" | "found" | "unchecked";
+    independentSupport: "sufficient" | "weakOnly" | "conflicting" | "missing";
+    message: string;
+  };
   learningSlice?: {
     roadmapTitle: string;
     stageTitle: string;

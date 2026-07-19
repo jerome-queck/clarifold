@@ -26,11 +26,13 @@ import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-ac
 import { coordinateAgentTasks } from "./agent-task-coordinator";
 import {
   buildDerivedResearchQuery,
+  validatedCorroborationResearchResult,
   validatedExternalResearchResult,
   type DerivedResearchQuery,
   type DerivedResearchQueryInput,
   type ExternalResearch,
   type ExternalResearchResult,
+  type CorroborationResearchEvidence,
   type ResearchExcerpt
 } from "./external-research";
 export type { SessionAccessPolicy } from "./session-access";
@@ -74,6 +76,31 @@ export interface ResearchAction {
   status: "running" | "completed" | "denied" | "timedOut" | "failed" | "stopped";
   result: ExternalResearchResult | null;
   error: string | null;
+}
+
+export interface SourceDiscrepancy {
+  id: string;
+  relevantResult: string;
+  summary: string;
+  competingEvidence: CorroborationResearchEvidence[];
+}
+
+export interface CorroborationPass {
+  id: string;
+  researchActionId: string | null;
+  status: "running" | "completed" | "incomplete" | "disputed";
+  relevantResult: string;
+  currentUse: { assumptions: string[]; conclusion: string };
+  pedagogicalBaselinePresent: boolean;
+  assumptionComparison: "matches" | "mismatch" | "unchecked";
+  conclusionComparison: "matches" | "mismatch" | "unchecked";
+  errataCheck: "noneFound" | "found" | "unchecked";
+  independentSupport: "sufficient" | "weakOnly" | "conflicting" | "missing";
+  proofApproachResearch: "notRequired" | "established" | "incomplete";
+  deeperResearch: { required: boolean; reason: string | null };
+  evidence: CorroborationResearchEvidence[];
+  sourceDiscrepancies: SourceDiscrepancy[];
+  message: string;
 }
 
 export type ModelAccessState =
@@ -675,6 +702,7 @@ export interface LearningSession {
   pendingFullAccessConfirmation: boolean;
   researchEgressPermission: { status: "notGranted" | "granted" | "revoked" };
   researchActions: ResearchAction[];
+  corroborationPass: CorroborationPass | null;
   sourceAnchors: SourceAnchor[];
   sourceAnchorRequests: SourceAnchorRequest[];
   annotations: SourceAnnotation[];
@@ -904,6 +932,13 @@ export class LearningApplication {
             research.status = "failed";
             research.error = "External research stopped when the application closed. Review and start it again explicitly.";
           }
+        }
+        if (session.corroborationPass?.status === "running") {
+          const research = session.researchActions.find(
+            (candidate) => candidate.id === session.corroborationPass?.researchActionId
+          );
+          if (research) completeCorroborationPass(session.corroborationPass, research);
+          else completeUnavailableCorroboration(session.corroborationPass);
         }
         if (session.teachingCard.status === "streaming") {
           replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content));
@@ -2143,7 +2178,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
-        this.beginAutomaticCorroboration(session);
+        void this.beginAutomaticCorroboration(session);
         break;
       }
       case "submitSessionIntake": {
@@ -2198,7 +2233,7 @@ export class LearningApplication {
           this.state.resumeSessionId = selectedSession.id;
           this.state.navigation = { workspaceId: selectedSession.workspaceId, missionId: selectedSession.missionId };
           this.state.screen = "workbench";
-          this.beginAutomaticCorroboration(selectedSession);
+          await this.beginAutomaticCorroboration(selectedSession);
           break;
         }
         const session = createLearningSession({
@@ -2231,7 +2266,7 @@ export class LearningApplication {
         this.state.resumeSessionId = session.id;
         this.state.navigation = { workspaceId: session.workspaceId, missionId: session.missionId };
         this.state.screen = "workbench";
-        this.beginAutomaticCorroboration(session);
+        await this.beginAutomaticCorroboration(session);
         if (!proposal.requiresConfirmation) await this.beginTeaching(session);
         break;
       }
@@ -2573,7 +2608,7 @@ export class LearningApplication {
           researchAction.error = "External research is unavailable. Local work and model access remain unchanged.";
           break;
         }
-        this.beginExternalResearch(researchAction);
+        void this.beginExternalResearch(researchAction);
         break;
       }
       case "selectSessionAccessPolicy": {
@@ -3382,6 +3417,7 @@ export class LearningApplication {
       learningGoal: session.learningGoal,
       scope: session.proposal.scope,
       initialTeachingDirection: session.proposal.initialTeachingDirection,
+      corroboration: teachingCorroborationContext(session.corroborationPass),
       ...(roadmap && stage && session.learningSlice ? {
         learningSlice: {
           roadmapTitle: roadmap.title,
@@ -3706,10 +3742,32 @@ export class LearningApplication {
     }
   }
 
-  private beginAutomaticCorroboration(session: LearningSession): void {
-    if (!this.externalResearch || session.researchActions.some((research) => research.queryOrigin === "automaticCorroboration")) return;
+  private async beginAutomaticCorroboration(session: LearningSession): Promise<void> {
+    if (session.corroborationPass) return;
     const query = automaticCorroborationQuery(session.mathematics);
     if (!query) return;
+    const baselinePresent = suppliedPedagogicalBaselinePresent(session.mathematics);
+    session.corroborationPass = {
+      id: crypto.randomUUID(),
+      researchActionId: null,
+      status: "running",
+      relevantResult: query.theoremNames[0] ?? query.text,
+      currentUse: { assumptions: [...query.assumptions], conclusion: session.mathematics },
+      pedagogicalBaselinePresent: baselinePresent,
+      assumptionComparison: "unchecked",
+      conclusionComparison: "unchecked",
+      errataCheck: "unchecked",
+      independentSupport: "missing",
+      proofApproachResearch: baselinePresent ? "notRequired" : "incomplete",
+      deeperResearch: { required: false, reason: null },
+      evidence: [],
+      sourceDiscrepancies: [],
+      message: "Corroboration is checking the result, its assumptions and conclusion, known errata, and independent support."
+    };
+    if (!this.externalResearch) {
+      completeUnavailableCorroboration(session.corroborationPass);
+      return;
+    }
     const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
     const intakeSource = this.state.sources.find((source) => source.kind === "managedAsset"
       && session.sourceIds.includes(source.id) && managedAssetLearnerContent(source) === session.mathematics);
@@ -3726,11 +3784,13 @@ export class LearningApplication {
       result: null,
       error: null
     };
+    session.corroborationPass.researchActionId = research.id;
     session.researchActions.push(research);
-    this.beginExternalResearch(research);
+    await this.publishAndPersist();
+    await this.beginExternalResearch(research);
   }
 
-  private beginExternalResearch(research: ResearchAction): void {
+  private beginExternalResearch(research: ResearchAction): Promise<void> {
     const controller = new AbortController();
     const promise = Promise.resolve().then(async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -3763,11 +3823,14 @@ export class LearningApplication {
           : usefulResearchError(error);
       } finally {
         if (timeout !== undefined) clearTimeout(timeout);
+        const session = this.state.sessions.find((candidate) => candidate.corroborationPass?.researchActionId === research.id);
+        if (session?.corroborationPass) completeCorroborationPass(session.corroborationPass, research);
         this.researchWorks.delete(research.id);
         await this.publishAndPersist();
       }
     });
     this.researchWorks.set(research.id, { controller, promise });
+    return promise;
   }
 
   private stopSessionExcerptResearch(session: LearningSession, message: string): void {
@@ -4331,15 +4394,15 @@ function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery 
   )?.[1];
   const substantive = /\b(prove|proof|show\s+that|why\s+(?:is|are|does)|theorems?|lemma|proposition|corollary)\b/i.test(mathematics);
   if (!substantive) return null;
-  const theoremName = namedTheorem?.replace(/\s+/g, " ");
-  if (theoremName) {
-    return buildDerivedResearchQuery({ theoremNames: [theoremName], assumptions: [], keywords: [] });
-  }
   const assumptions = Array.from(mathematics.matchAll(
     /\b(?:finite|abelian)\s+(?:group|ring|field)\b|\b(?:compact|hausdorff)\s+(?:space|subset)\b|\bcontinuous\s+(?:function|map)\b/gi
   )).map(([assumption]) => assumption.toLocaleLowerCase())
     .filter((assumption, index, all) => all.indexOf(assumption) === index)
     .slice(0, 3);
+  const theoremName = namedTheorem?.replace(/\s+/g, " ");
+  if (theoremName) {
+    return buildDerivedResearchQuery({ theoremNames: [theoremName], assumptions, keywords: [] });
+  }
   const allowedKeywords = new Set([
     "abelian", "algebra", "compact", "compactness", "continuous", "convergence", "derivative", "field", "finite",
     "graph", "group", "hausdorff", "homomorphism", "integral", "isomorphism", "matrix", "measure", "probability",
@@ -4352,6 +4415,87 @@ function automaticCorroborationQuery(mathematics: string): DerivedResearchQuery 
     .slice(0, 5);
   if (assumptions.length === 0 && keywords.length === 0) return null;
   return buildDerivedResearchQuery({ theoremNames: [], assumptions, keywords });
+}
+
+function suppliedPedagogicalBaselinePresent(mathematics: string): boolean {
+  return /\b(?:proof|argument|solution)\s*:|\b(?:the proof|this proof|this argument|the source|the notes?)\b/i.test(mathematics)
+    && !/^\s*(?:give\s+(?:me\s+)?a\s+proof|prove|show\s+that)\b/i.test(mathematics);
+}
+
+function completeUnavailableCorroboration(pass: CorroborationPass): void {
+  pass.status = "incomplete";
+  pass.deeperResearch = { required: true, reason: "Independent evidence is missing because external research is unavailable." };
+  pass.message = "Corroboration is incomplete: independent evidence and errata could not be checked. The affected claim is not presented as settled.";
+}
+
+function completeCorroborationPass(pass: CorroborationPass, research: ResearchAction): void {
+  if (research.status !== "completed" || !research.result?.corroboration) {
+    completeUnavailableCorroboration(pass);
+    if (research.error) pass.message = `Corroboration is incomplete: ${research.error} The affected claim is not presented as settled.`;
+    return;
+  }
+  const corroboration = research.result.corroboration;
+  pass.relevantResult = corroboration.relevantResult;
+  pass.evidence = structuredClone(corroboration.evidence);
+  const strong = corroboration.evidence.filter((item) =>
+    (item.authority === "primary" || item.authority === "authoritative") && item.relevance === "direct"
+  );
+  const assumptionMismatch = strong.some((item) => item.assumptions === "mismatch");
+  const conclusionMismatch = strong.some((item) => item.conclusion === "mismatch");
+  const matchingSupport = strong.some((item) => item.relation === "supports"
+    && item.assumptions === "matches" && item.conclusion === "matches");
+  const errata = strong.filter((item) => item.relation === "erratum");
+  const conflicts = strong.filter((item) => item.relation === "conflicts"
+    || item.assumptions === "mismatch" || item.conclusion === "mismatch" || item.relation === "erratum");
+  const anySupport = corroboration.evidence.some((item) => item.relation === "supports");
+  pass.assumptionComparison = assumptionMismatch ? "mismatch" : matchingSupport ? "matches" : "unchecked";
+  pass.conclusionComparison = conclusionMismatch ? "mismatch" : matchingSupport ? "matches" : "unchecked";
+  pass.errataCheck = errata.length > 0 ? "found" : strong.length > 0 ? "noneFound" : "unchecked";
+  pass.independentSupport = conflicts.length > 0 ? "conflicting" : matchingSupport ? "sufficient" : anySupport ? "weakOnly" : "missing";
+  const establishedApproaches = strong.flatMap((item) => item.proofApproaches);
+  pass.proofApproachResearch = pass.pedagogicalBaselinePresent
+    ? "notRequired"
+    : establishedApproaches.length > 0 ? "established" : "incomplete";
+  if (conflicts.length > 0) {
+    pass.sourceDiscrepancies = [{
+      id: crypto.randomUUID(),
+      relevantResult: pass.relevantResult,
+      summary: "Authoritative evidence materially disagrees with the current use or reports a correction.",
+      competingEvidence: structuredClone(corroboration.evidence)
+    }];
+  }
+  const deeperReasons = [
+    ...(!matchingSupport && conflicts.length === 0 ? [anySupport
+      ? "Available agreement comes only from weak, related, derivative, or unknown-authority evidence."
+      : "Independent evidence is missing."] : []),
+    ...(conflicts.length > 0 ? ["Authoritative evidence is disputed or conflicting."] : []),
+    ...(!pass.pedagogicalBaselinePresent && establishedApproaches.length === 0
+      ? ["No Pedagogical Baseline or established proof approach is available."] : []),
+    ...(corroboration.proposedApproachDeparture ? ["The proposed teaching route substantially departs from established approaches."] : [])
+  ];
+  pass.deeperResearch = { required: deeperReasons.length > 0, reason: deeperReasons.join(" ") || null };
+  pass.status = conflicts.length > 0
+    ? "disputed"
+    : matchingSupport && pass.errataCheck !== "unchecked"
+      && pass.proofApproachResearch !== "incomplete" ? "completed" : "incomplete";
+  pass.message = pass.status === "completed"
+    ? "Corroboration found direct authoritative support for the current assumptions and conclusion."
+    : pass.status === "disputed"
+      ? "A Source Discrepancy preserves material disagreement. The affected claim is not presented as settled."
+      : "Corroboration is incomplete. The affected claim is not presented as settled.";
+}
+
+function teachingCorroborationContext(pass: CorroborationPass | null): TeachingRequest["corroboration"] {
+  if (!pass || pass.status === "running") return null;
+  return {
+    status: pass.status,
+    relevantResult: pass.relevantResult,
+    assumptionComparison: pass.assumptionComparison,
+    conclusionComparison: pass.conclusionComparison,
+    errataCheck: pass.errataCheck,
+    independentSupport: pass.independentSupport,
+    message: pass.message
+  };
 }
 
 function researchDestination(query: DerivedResearchQuery, excerpts: ResearchExcerpt[] = []): string {
@@ -4477,6 +4621,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       pendingFullAccessConfirmation: false,
       researchEgressPermission: migrateResearchEgressPermission(session.researchEgressPermission),
       researchActions: migrateResearchActions(session.researchActions),
+      corroborationPass: migrateCorroborationPass(session.corroborationPass),
       sourceAnchors: migrateSourceAnchors(session.sourceAnchors, current.sources, current.sourceRevisions),
       sourceAnchorRequests: migrateSourceAnchorRequests(session.sourceAnchorRequests),
       annotations: migrateAnnotations(session.annotations),
@@ -4539,6 +4684,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       pendingFullAccessConfirmation: false,
       researchEgressPermission: { status: "notGranted" },
       researchActions: [],
+      corroborationPass: null,
       sourceAnchors: [],
       sourceAnchorRequests: [],
       annotations: [],
@@ -4941,6 +5087,72 @@ function migrateResearchActions(value: unknown): ResearchAction[] {
   });
 }
 
+function migrateCorroborationPass(value: unknown): CorroborationPass | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.id !== "string"
+    || !(value.researchActionId === null || typeof value.researchActionId === "string")
+    || !["running", "completed", "incomplete", "disputed"].includes(String(value.status))
+    || typeof value.relevantResult !== "string" || !value.relevantResult.trim()
+    || !isRecord(value.currentUse) || !Array.isArray(value.currentUse.assumptions)
+    || !value.currentUse.assumptions.every((assumption) => typeof assumption === "string")
+    || typeof value.currentUse.conclusion !== "string"
+    || typeof value.pedagogicalBaselinePresent !== "boolean"
+    || !["matches", "mismatch", "unchecked"].includes(String(value.assumptionComparison))
+    || !["matches", "mismatch", "unchecked"].includes(String(value.conclusionComparison))
+    || !["noneFound", "found", "unchecked"].includes(String(value.errataCheck))
+    || !["sufficient", "weakOnly", "conflicting", "missing"].includes(String(value.independentSupport))
+    || !["notRequired", "established", "incomplete"].includes(String(value.proofApproachResearch))
+    || !isRecord(value.deeperResearch) || typeof value.deeperResearch.required !== "boolean"
+    || !(value.deeperResearch.reason === null || typeof value.deeperResearch.reason === "string")
+    || !Array.isArray(value.evidence) || !Array.isArray(value.sourceDiscrepancies)
+    || typeof value.message !== "string" || !value.message.trim()) {
+    throw new Error("Stored Corroboration Pass is invalid.");
+  }
+  const evidence = validatedCorroborationResearchResult({
+    relevantResult: value.relevantResult,
+    proposedApproachDeparture: false,
+    evidence: value.evidence
+  }).evidence;
+  const sourceDiscrepancies = value.sourceDiscrepancies.map((discrepancy) => {
+    if (!isRecord(discrepancy) || typeof discrepancy.id !== "string"
+      || typeof discrepancy.relevantResult !== "string" || !discrepancy.relevantResult.trim()
+      || typeof discrepancy.summary !== "string" || !discrepancy.summary.trim()
+      || !Array.isArray(discrepancy.competingEvidence)) {
+      throw new Error("Stored Source Discrepancy is invalid.");
+    }
+    return {
+      id: discrepancy.id,
+      relevantResult: discrepancy.relevantResult,
+      summary: discrepancy.summary,
+      competingEvidence: validatedCorroborationResearchResult({
+        relevantResult: discrepancy.relevantResult,
+        proposedApproachDeparture: false,
+        evidence: discrepancy.competingEvidence
+      }).evidence
+    };
+  });
+  return {
+    id: value.id,
+    researchActionId: value.researchActionId as string | null,
+    status: value.status as CorroborationPass["status"],
+    relevantResult: value.relevantResult,
+    currentUse: {
+      assumptions: value.currentUse.assumptions as string[],
+      conclusion: value.currentUse.conclusion
+    },
+    pedagogicalBaselinePresent: value.pedagogicalBaselinePresent,
+    assumptionComparison: value.assumptionComparison as CorroborationPass["assumptionComparison"],
+    conclusionComparison: value.conclusionComparison as CorroborationPass["conclusionComparison"],
+    errataCheck: value.errataCheck as CorroborationPass["errataCheck"],
+    independentSupport: value.independentSupport as CorroborationPass["independentSupport"],
+    proofApproachResearch: value.proofApproachResearch as CorroborationPass["proofApproachResearch"],
+    deeperResearch: value.deeperResearch as CorroborationPass["deeperResearch"],
+    evidence,
+    sourceDiscrepancies,
+    message: value.message
+  };
+}
+
 function migratePendingQuestion(value: unknown): PendingQuestion | null {
   if (value === undefined || value === null) return null;
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.text !== "string" || !value.text.trim()) {
@@ -5335,6 +5547,7 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     pendingFullAccessConfirmation: false,
     researchEgressPermission: { status: "notGranted" },
     researchActions: [],
+    corroborationPass: null,
     sourceAnchors: details.sourceAnchors ?? [],
     sourceAnchorRequests: [],
     annotations: [],
