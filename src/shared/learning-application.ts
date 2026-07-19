@@ -24,6 +24,15 @@ import { annotationPurposeLabel, type AnnotationPurpose, type SourceAnnotation }
 export type { AnnotationPurpose, SourceAnnotation } from "./annotations";
 import { sessionAccessPolicyLabel, type SessionAccessPolicy } from "./session-access";
 import { coordinateAgentTasks } from "./agent-task-coordinator";
+import {
+  buildDerivedResearchQuery,
+  validatedExternalResearchResult,
+  type DerivedResearchQuery,
+  type DerivedResearchQueryInput,
+  type ExternalResearch,
+  type ExternalResearchResult,
+  type ResearchExcerpt
+} from "./external-research";
 export type { SessionAccessPolicy } from "./session-access";
 
 const MAX_TEACHING_SOURCE_CONTEXT_CHARACTERS = 60_000;
@@ -52,6 +61,17 @@ export interface SessionAccessRequest {
   intendedAction: string;
   status: "pending" | "approved" | "denied" | "narrowed";
   decidedPolicy: SessionAccessPolicy | null;
+}
+
+export interface ResearchAction {
+  id: string;
+  accessPolicy: SessionAccessPolicy;
+  query: DerivedResearchQuery;
+  destination: string;
+  excerpts: ResearchExcerpt[];
+  status: "running" | "completed" | "denied" | "timedOut" | "failed";
+  result: ExternalResearchResult | null;
+  error: string | null;
 }
 
 export type ModelAccessState =
@@ -650,6 +670,8 @@ export interface LearningSession {
   accessPolicy: SessionAccessPolicy;
   accessRequests: SessionAccessRequest[];
   pendingFullAccessConfirmation: boolean;
+  researchEgressPermission: { status: "notGranted" | "granted" | "revoked" };
+  researchActions: ResearchAction[];
   sourceAnchors: SourceAnchor[];
   sourceAnchorRequests: SourceAnchorRequest[];
   annotations: SourceAnnotation[];
@@ -707,6 +729,9 @@ export interface LearningApplicationState {
   };
   personalNoteSynthesisPreference: {
     includePersonalNotes: boolean;
+  };
+  sourceExcerptEgressPreference: {
+    enabled: boolean;
   };
 }
 
@@ -771,6 +796,9 @@ export type LearnerAction =
   | { type: "selectSessionAccessPolicy"; policy: SessionAccessPolicy }
   | { type: "setFullAccessConfirmation"; enabled: boolean }
   | { type: "setPersonalNoteSynthesis"; enabled: boolean }
+  | { type: "setSourceExcerptEgressPreference"; enabled: boolean }
+  | { type: "setResearchEgressPermission"; enabled: boolean }
+  | { type: "researchWeb"; query: DerivedResearchQueryInput; sourceAnchorIds: string[] }
   | { type: "decideFullAccessConfirmation"; decision: "confirm" | "cancel" }
   | {
       type: "decideAccessRequest";
@@ -838,7 +866,8 @@ export class LearningApplication {
     dataDirectory: string,
     modelRuntime: ModelRuntime | null,
     private readonly sourceAccess: LocalSourceAccess | null,
-    private readonly artifactSharing: ArtifactSharing | null
+    private readonly artifactSharing: ArtifactSharing | null,
+    private readonly externalResearch: ExternalResearch | null
   ) {
     this.statePath = join(dataDirectory, "learning-application.json");
     this.sourceIndexPath = join(dataDirectory, "source-index.json");
@@ -849,9 +878,10 @@ export class LearningApplication {
     dataDirectory: string,
     modelRuntime: ModelRuntime | null = null,
     sourceAccess: LocalSourceAccess | null = null,
-    artifactSharing: ArtifactSharing | null = null
+    artifactSharing: ArtifactSharing | null = null,
+    externalResearch: ExternalResearch | null = null
   ): Promise<LearningApplication> {
-    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess, artifactSharing);
+    const application = new LearningApplication(dataDirectory, modelRuntime, sourceAccess, artifactSharing, externalResearch);
     try {
       const stored = JSON.parse(await readFile(application.statePath, "utf8")) as Record<string, unknown>;
       const { agentWorkLogs, ...storedState } = stored;
@@ -863,6 +893,12 @@ export class LearningApplication {
         session.pendingFullAccessConfirmation = false;
         for (const request of session.accessRequests) {
           if (request.status === "pending") request.status = "denied";
+        }
+        for (const research of session.researchActions) {
+          if (research.status === "running") {
+            research.status = "failed";
+            research.error = "External research stopped when the application closed. Review and start it again explicitly.";
+          }
         }
         if (session.teachingCard.status === "streaming") {
           replaceTeachingCard(session, interruptedTeachingCard(session.teachingCard.content));
@@ -2432,6 +2468,103 @@ export class LearningApplication {
       }
       case "setPersonalNoteSynthesis": {
         this.state.personalNoteSynthesisPreference.includePersonalNotes = action.enabled;
+        break;
+      }
+      case "setSourceExcerptEgressPreference": {
+        this.state.sourceExcerptEgressPreference.enabled = action.enabled;
+        break;
+      }
+      case "setResearchEgressPermission": {
+        const session = this.requireActiveSession();
+        session.researchEgressPermission = { status: action.enabled ? "granted" : "revoked" };
+        break;
+      }
+      case "researchWeb": {
+        const session = this.requireActiveSession();
+        const query = buildDerivedResearchQuery(action.query);
+        const destination = researchDestination(query);
+        const researchAction: ResearchAction = {
+          id: crypto.randomUUID(),
+          accessPolicy: session.accessPolicy,
+          query,
+          destination,
+          excerpts: [],
+          status: "running",
+          result: null,
+          error: null
+        };
+        session.researchActions.push(researchAction);
+        const sourceAnchorIds = [...new Set(action.sourceAnchorIds)];
+        if (sourceAnchorIds.length > 0) {
+          if (!this.state.sourceExcerptEgressPreference.enabled
+            || session.researchEgressPermission.status !== "granted") {
+            researchAction.status = "denied";
+            researchAction.error = "Source Excerpt Egress was denied. The Derived Research Query was not sent.";
+            break;
+          }
+          const authorizedSourceIds = new Set(this.getSessionAccessScope(session.id).sourceIds);
+          try {
+            researchAction.excerpts = sourceAnchorIds.map((sourceAnchorId) => {
+              const anchor = requireSourceAnchor(session, sourceAnchorId);
+              if (!authorizedSourceIds.has(anchor.sourceId)) {
+                throw new Error("The active Session Access Policy does not allow this source to inform external research.");
+              }
+              if (anchor.selection.kind === "diagramRegion") {
+                throw new Error("Choose an inspectable text or equation excerpt for external research.");
+              }
+              if (!anchor.selection.prefix && !anchor.selection.suffix) {
+                throw new Error("Whole-file transmission requires a separate explicit confirmation and is not available from Source Excerpt Egress.");
+              }
+              if (anchor.selection.exactText.length > 2_000) {
+                throw new Error("Choose a Source Excerpt of at most 2,000 characters for external research.");
+              }
+              return {
+                sourceId: anchor.sourceId,
+                kind: anchor.selection.kind === "equation" ? "equation" as const : "excerpt" as const,
+                content: anchor.selection.exactText,
+                location: `${anchor.selection.kind === "equation" ? `Equation ${anchor.selection.equationIndex + 1}` : "Text"}: characters ${anchor.selection.startOffset}–${anchor.selection.endOffset}`
+              };
+            });
+          } catch (error) {
+            researchAction.status = "denied";
+            researchAction.error = error instanceof Error ? error.message : "Source Excerpt Egress was denied.";
+            break;
+          }
+          researchAction.destination = researchDestination(query, researchAction.excerpts);
+        }
+        if (!this.externalResearch) {
+          researchAction.status = "failed";
+          researchAction.error = "External research is unavailable. Local work and model access remain unchanged.";
+          break;
+        }
+        const controller = new AbortController();
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const result = await Promise.race([
+            this.externalResearch.research({
+              query,
+              destination: researchAction.destination,
+              excerpts: structuredClone(researchAction.excerpts),
+              signal: controller.signal
+            }),
+            new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => {
+                controller.abort();
+                reject(new DOMException("External research timed out.", "TimeoutError"));
+              }, 15_000);
+            })
+          ]);
+          researchAction.result = validatedExternalResearchResult(result);
+          researchAction.status = "completed";
+        } catch (error) {
+          const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+          researchAction.status = timedOut ? "timedOut" : "failed";
+          researchAction.error = timedOut
+            ? "External research timed out. No access was elevated and no retry was attempted."
+            : usefulResearchError(error);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
         break;
       }
       case "selectSessionAccessPolicy": {
@@ -4084,6 +4217,28 @@ function usefulRuntimeError(error: unknown): string {
     : "Codex could not complete this Teaching Card. Check authentication and try again.";
 }
 
+function usefulResearchError(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim()
+    ? error.message
+    : "The external research service failed.";
+  return `${detail} No access was elevated and no retry was attempted.`;
+}
+
+function researchDestination(query: DerivedResearchQuery, excerpts: ResearchExcerpt[] = []): string {
+  const destination = new URL("https://duckduckgo.com/");
+  destination.searchParams.set("q", [query.text, ...excerpts.map((excerpt) => `"${excerpt.content}"`)].join("; "));
+  return destination.href;
+}
+
+function researchDestinationIsAllowed(value: string): boolean {
+  try {
+    const destination = new URL(value);
+    return destination.protocol === "https:" && destination.hostname === "duckduckgo.com";
+  } catch {
+    return false;
+  }
+}
+
 function agentWorkEvidenceSummary(event: ModelRuntimeEvent): string {
   if (event.workKind === "specialist") {
     return {
@@ -4173,6 +4328,7 @@ function migratePersistedState(value: unknown): LearningApplicationState {
     };
     current.accessConfirmationPreference = migrateAccessConfirmationPreference(stored.accessConfirmationPreference);
     current.personalNoteSynthesisPreference = migratePersonalNoteSynthesisPreference(stored.personalNoteSynthesisPreference);
+    current.sourceExcerptEgressPreference = migrateSourceExcerptEgressPreference(stored.sourceExcerptEgressPreference);
     current.argumentRoadmaps = migrateArgumentRoadmaps(stored.argumentRoadmaps);
     current.sessions = current.sessions.map((session) => ({
       ...session,
@@ -4189,6 +4345,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       accessPolicy: migrateSessionAccessPolicy(session.accessPolicy),
       accessRequests: migrateAccessRequests(session.accessRequests),
       pendingFullAccessConfirmation: false,
+      researchEgressPermission: migrateResearchEgressPermission(session.researchEgressPermission),
+      researchActions: migrateResearchActions(session.researchActions),
       sourceAnchors: migrateSourceAnchors(session.sourceAnchors, current.sources, current.sourceRevisions),
       sourceAnchorRequests: migrateSourceAnchorRequests(session.sourceAnchorRequests),
       annotations: migrateAnnotations(session.annotations),
@@ -4249,6 +4407,8 @@ function migratePersistedState(value: unknown): LearningApplicationState {
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,
+      researchEgressPermission: { status: "notGranted" },
+      researchActions: [],
       sourceAnchors: [],
       sourceAnchorRequests: [],
       annotations: [],
@@ -4581,6 +4741,68 @@ function migratePersonalNoteSynthesisPreference(value: unknown): LearningApplica
     throw new Error("Stored Personal Note Synthesis Preference is invalid.");
   }
   return { includePersonalNotes: value.includePersonalNotes };
+}
+
+function migrateSourceExcerptEgressPreference(value: unknown): LearningApplicationState["sourceExcerptEgressPreference"] {
+  if (value === undefined) return { enabled: false };
+  if (!isRecord(value) || typeof value.enabled !== "boolean") {
+    throw new Error("Stored Source Excerpt Egress Preference is invalid.");
+  }
+  return { enabled: value.enabled };
+}
+
+function migrateResearchEgressPermission(value: unknown): LearningSession["researchEgressPermission"] {
+  if (value === undefined) return { status: "notGranted" };
+  if (!isRecord(value) || !["notGranted", "granted", "revoked"].includes(String(value.status))) {
+    throw new Error("Stored Research Egress Permission is invalid.");
+  }
+  return { status: value.status as LearningSession["researchEgressPermission"]["status"] };
+}
+
+function migrateResearchActions(value: unknown): ResearchAction[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored external research actions are invalid.");
+  return value.map((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string"
+      || !["focused", "workspace", "full"].includes(String(candidate.accessPolicy))
+      || typeof candidate.destination !== "string" || !researchDestinationIsAllowed(candidate.destination)
+      || !["running", "completed", "denied", "timedOut", "failed"].includes(String(candidate.status))
+      || !(candidate.error === null || typeof candidate.error === "string")
+      || !Array.isArray(candidate.excerpts) || !isRecord(candidate.query)) {
+      throw new Error("Stored external research actions are invalid.");
+    }
+    const query = buildDerivedResearchQuery({
+      theoremNames: candidate.query.theoremNames as string[],
+      assumptions: candidate.query.assumptions as string[],
+      keywords: candidate.query.keywords as string[]
+    });
+    const excerpts = candidate.excerpts.map((excerpt) => {
+      if (!isRecord(excerpt) || typeof excerpt.sourceId !== "string"
+        || !["excerpt", "equation", "selectedPages"].includes(String(excerpt.kind))
+        || typeof excerpt.content !== "string" || !excerpt.content.trim()
+        || typeof excerpt.location !== "string" || !excerpt.location.trim()) {
+        throw new Error("Stored external research actions are invalid.");
+      }
+      return excerpt as unknown as ResearchExcerpt;
+    });
+    const result = candidate.result === null ? null : validatedExternalResearchResult(candidate.result);
+    const status = candidate.status as ResearchAction["status"];
+    if (candidate.destination !== researchDestination(query, excerpts)
+      || (status === "completed") !== (result !== null)
+      || (["denied", "timedOut", "failed"].includes(status) && typeof candidate.error !== "string")) {
+      throw new Error("Stored external research actions are invalid.");
+    }
+    return {
+      id: candidate.id,
+      accessPolicy: candidate.accessPolicy as SessionAccessPolicy,
+      query,
+      destination: candidate.destination,
+      excerpts,
+      status,
+      result,
+      error: candidate.error as string | null
+    };
+  });
 }
 
 function migratePendingQuestion(value: unknown): PendingQuestion | null {
@@ -4972,6 +5194,8 @@ function createLearningSession(details: NewLearningSession): LearningSession {
     activeQuestionCardId: null,
     accessRequests: [],
     pendingFullAccessConfirmation: false,
+    researchEgressPermission: { status: "notGranted" },
+    researchActions: [],
     sourceAnchors: details.sourceAnchors ?? [],
     sourceAnchorRequests: [],
     annotations: [],
@@ -6150,7 +6374,8 @@ function initialState(): LearningApplicationState {
       message: "Codex Runtime is unavailable. Restart Codex and try again."
     },
     accessConfirmationPreference: { confirmFullAccess: true },
-    personalNoteSynthesisPreference: { includePersonalNotes: true }
+    personalNoteSynthesisPreference: { includePersonalNotes: true },
+    sourceExcerptEgressPreference: { enabled: false }
   };
 }
 

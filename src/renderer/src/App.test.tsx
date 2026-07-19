@@ -9,6 +9,53 @@ import { App } from "./App";
 describe("anchored teaching workbench", () => {
   afterEach(cleanup);
 
+  it("shows independent research egress controls and inspectable research receipts", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.sourceExcerptEgressPreference.enabled = true;
+    state.sessions[0].researchEgressPermission = { status: "granted" };
+    state.sessions[0].researchActions = [{
+      id: "research-1",
+      accessPolicy: "focused",
+      query: {
+        text: "Heine-Borel theorem; compact subset",
+        theoremNames: ["Heine-Borel theorem"], assumptions: [], keywords: ["compact subset"]
+      },
+      destination: "https://duckduckgo.com/?q=Heine-Borel+theorem%3B+compact+subset",
+      excerpts: [], status: "completed", error: null,
+      result: {
+        title: "Research opened in browser", summary: "Opened using only the Derived Research Query.",
+        sources: [{ title: "Inspect external research destination", url: "https://duckduckgo.com/?q=Heine-Borel" }]
+      }
+    }];
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+    const panel = await screen.findByRole("region", { name: "Privacy-minimized web research" });
+    expect(panel.textContent).toContain("Independent from Codex model access");
+    expect(panel.textContent).toContain("Heine-Borel theorem; compact subset");
+    expect(within(panel).getByText(/https:\/\/duckduckgo\.com\//).textContent)
+      .toContain("https://duckduckgo.com/");
+
+    await user.type(within(panel).getByLabelText("Theorem names"), "Orbit-stabilizer theorem");
+    await user.type(within(panel).getByLabelText("Assumptions"), "G acts on X");
+    await user.type(within(panel).getByLabelText("Mathematical keywords"), "stabilizer cosets");
+    await user.click(within(panel).getByRole("checkbox", { name: "Include the active Source Anchor excerpt" }));
+    await user.click(within(panel).getByRole("button", { name: "Research the web" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "researchWeb",
+      query: {
+        theoremNames: ["Orbit-stabilizer theorem"],
+        assumptions: ["G acts on X"],
+        keywords: ["stabilizer cosets"]
+      },
+      sourceAnchorIds: ["anchor-1"]
+    });
+    await user.click(within(panel).getByRole("checkbox", { name: "Allow Source Excerpt Egress for this Learning Session" }));
+    expect(api.submit).toHaveBeenCalledWith({ type: "setResearchEgressPermission", enabled: false });
+  });
+
   it("restores a closed Contextual Inspector only through its Anchor Marker and returns focus on close", async () => {
     const user = userEvent.setup();
     const state = workbenchState();
@@ -807,6 +854,8 @@ function workbenchState(): LearningApplicationState {
       accessPolicy: "focused",
       accessRequests: [],
       pendingFullAccessConfirmation: false,
+      researchEgressPermission: { status: "notGranted" },
+      researchActions: [],
       sourceAnchors: [anchor],
       sourceAnchorRequests: [{ id: "request-1", sourceAnchorId: "anchor-1", action: "explain" }],
       annotations: [],
@@ -873,6 +922,7 @@ function workbenchState(): LearningApplicationState {
     runtimeCapabilities: { models: [] },
     modelAccess: { status: "unavailable", cause: "runtime", message: "Unavailable" },
     accessConfirmationPreference: { confirmFullAccess: true },
-    personalNoteSynthesisPreference: { includePersonalNotes: true }
+    personalNoteSynthesisPreference: { includePersonalNotes: true },
+    sourceExcerptEgressPreference: { enabled: false }
   };
 }
