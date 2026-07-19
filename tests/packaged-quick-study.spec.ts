@@ -368,7 +368,6 @@ test("packaged Quick Study organizes durable work and resumes the latest session
 
 test("packaged Quick Study checkpoints Background Agent Tasks and resumes them explicitly", async () => {
   test.setTimeout(120_000);
-  test.setTimeout(60_000);
   const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-agent-task-smoke-"));
   const accessStatePath = join(dataDirectory, "fake-codex-access.json");
   let launched: { browser: Browser; page: Page; process: ChildProcess; output(): string } | undefined;

@@ -11,6 +11,7 @@ export interface VerificationEnvironment {
   sourceArchive: string;
   sourceSha256: string;
   supportProfile: string;
+  mathlibModules: string[];
   runtimeFormat: number;
 }
 
@@ -22,13 +23,6 @@ export const BUNDLED_LEAN_ENVIRONMENT: Readonly<VerificationEnvironment> = Objec
   sourceArchive: "recorded by installed runtime",
   sourceSha256: "recorded by installed runtime"
 });
-
-export interface VerifierEnvironmentStatus {
-  environmentId: string;
-  installed: boolean;
-  ready: boolean;
-  diagnostics: string;
-}
 
 export interface Formalization {
   exactClaim: string;
@@ -72,15 +66,21 @@ export function formalizationForClaim(exactClaim: string): Formalization | null 
 export function validVerificationEnvironment(value: unknown): value is VerificationEnvironment {
   if (!value || typeof value !== "object") return false;
   const environment = value as Record<string, unknown>;
+  const architecture = environment.architecture;
+  const release = architecture === "arm64" ? bundledEnvironment.releases.arm64
+    : architecture === "x64" ? bundledEnvironment.releases.x64 : null;
   return environment.id === bundledEnvironment.id
     && environment.checker === bundledEnvironment.checker
     && environment.leanVersion === bundledEnvironment.leanVersion
     && environment.mathlibVersion === bundledEnvironment.mathlibVersion
     && environment.mathlibCommit === bundledEnvironment.mathlibCommit
     && environment.platform === bundledEnvironment.platform
-    && (environment.architecture === "arm64" || environment.architecture === "x64")
-    && typeof environment.sourceArchive === "string"
-    && typeof environment.sourceSha256 === "string" && /^[a-f0-9]{64}$/.test(environment.sourceSha256)
+    && release !== null
+    && environment.sourceArchive === release.archive
+    && environment.sourceSha256 === release.sha256
     && environment.supportProfile === bundledEnvironment.supportProfile
+    && Array.isArray(environment.mathlibModules)
+    && environment.mathlibModules.length === bundledEnvironment.mathlibModules.length
+    && environment.mathlibModules.every((module, index) => module === bundledEnvironment.mathlibModules[index])
     && environment.runtimeFormat === bundledEnvironment.runtimeFormat;
 }

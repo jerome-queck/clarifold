@@ -5,7 +5,14 @@
   "mathlibVersion": "4.29.1",
   "mathlibCommit": "5e932f97dd25535344f80f9dd8da3aab83df0fe6",
   "platform": "darwin",
-  "supportProfile": "Quick Study undergraduate arithmetic v1",
+  "supportProfile": "Quick Study undergraduate foundations v1",
+  "mathlibModules": [
+    "Mathlib.Data.Nat.Basic",
+    "Mathlib.Data.Real.Basic",
+    "Mathlib.Algebra.Group.Basic",
+    "Mathlib.Topology.Basic",
+    "Mathlib.Analysis.Calculus.Deriv.Basic"
+  ],
   "runtimeFormat": 5,
   "releases": {
     "arm64": {

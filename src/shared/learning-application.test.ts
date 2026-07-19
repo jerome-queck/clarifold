@@ -562,6 +562,13 @@ describe("Learning Application", () => {
     expect(checked.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationLevel)
       .toBe("notIndependentlyChecked");
 
+    await expect(application.runFormalVerification(current.originatingSessionId, {
+      runId: "accepted-run", target: "learningArtifact", targetId: artifactId,
+      claimId: current.currentRevision.claims[0].claimId
+    })).rejects.toThrow("already been used");
+    expect(verifier.run).toHaveBeenCalledTimes(1);
+    expect(application.getState().verifierManifests).toHaveLength(1);
+
     const relaunched = await LearningApplication.launch(dataDirectory);
     applications.push(relaunched);
     expect(relaunched.getState().verifierManifests).toEqual(checked.verifierManifests);

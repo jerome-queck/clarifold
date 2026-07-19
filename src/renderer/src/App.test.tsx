@@ -155,11 +155,6 @@ describe("anchored teaching workbench", () => {
       shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
       verifyClaim: vi.fn().mockResolvedValue(state),
       cancelClaimVerification: vi.fn().mockResolvedValue(undefined),
-      getVerifierEnvironmentStatus: vi.fn().mockResolvedValue({
-        environmentId: "test", installed: true, ready: true, diagnostics: "Ready."
-      }),
-      removeVerifierEnvironment: vi.fn(),
-      installVerifierEnvironment: vi.fn(),
       onStateChanged: vi.fn().mockReturnValue(() => undefined),
       openExternal: vi.fn()
     };
@@ -435,27 +430,6 @@ describe("anchored teaching workbench", () => {
     expect(window.quickStudy.submit).toHaveBeenCalledWith({
       type: "cancelSessionModelWork", sessionId: "session-1"
     });
-  });
-
-  it("removes and reinstalls the bundled verifier from settings without implying learner data removal", async () => {
-    const user = userEvent.setup();
-    const state = workbenchState();
-    state.screen = "dashboard";
-    state.activeSessionId = null;
-    window.quickStudy = quickStudyApi(state);
-    vi.mocked(window.quickStudy.removeVerifierEnvironment).mockResolvedValue({
-      environmentId: "test", installed: false, ready: false,
-      diagnostics: "Removed. Existing sessions and Verifier Manifests are preserved."
-    });
-    vi.mocked(window.quickStudy.installVerifierEnvironment).mockResolvedValue({
-      environmentId: "test", installed: true, ready: true, diagnostics: "Installed and ready."
-    });
-
-    render(<App />);
-    await user.click(await screen.findByRole("button", { name: "Remove Bundled Lean Runtime" }));
-    expect(screen.getByText(/Existing sessions and Verifier Manifests are preserved/)).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Reinstall Bundled Lean Runtime" }));
-    expect(screen.getByText("Installed and ready.")).toBeTruthy();
   });
 
   it("offers keyboard-accessible explicit resumption for a checkpointed Agent Task", async () => {
@@ -927,10 +901,6 @@ function quickStudyApi(state: LearningApplicationState): typeof window.quickStud
     shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
     verifyClaim: vi.fn().mockResolvedValue(state),
     cancelClaimVerification: vi.fn().mockResolvedValue(undefined),
-    getVerifierEnvironmentStatus: vi.fn().mockResolvedValue({
-      environmentId: "test", installed: true, ready: true, diagnostics: "Ready."
-    }),
-    removeVerifierEnvironment: vi.fn(), installVerifierEnvironment: vi.fn(),
     onStateChanged: vi.fn().mockReturnValue(() => undefined), openExternal: vi.fn()
   };
 }

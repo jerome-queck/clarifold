@@ -145,6 +145,7 @@ function invalidEnvironmentIdentity(): VerificationEnvironment {
     sourceArchive: "unknown",
     sourceSha256: "unknown",
     supportProfile: "unknown",
+    mathlibModules: [],
     runtimeFormat: 0
   };
 }

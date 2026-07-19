@@ -1247,6 +1247,9 @@ export class LearningApplication {
     const revision = claimCheckRevision(session, request.target, request.targetId);
     const claim = requireClaimVerification(revision, request.claimId);
     const runId = requireVerifierRunId(request.runId);
+    if (this.state.verifierManifests.some((manifest) => manifest.id === runId)) {
+      throw new Error("Verifier run identifier has already been used.");
+    }
     const formalization = formalizationForClaim(claim.claimStatement);
     const result = !formalization
       ? {
@@ -5710,6 +5713,8 @@ function validVerifierManifest(value: unknown): value is VerifierManifest {
     && typeof value.environment.sourceArchive === "string" && Boolean(value.environment.sourceArchive.trim())
     && typeof value.environment.sourceSha256 === "string" && Boolean(value.environment.sourceSha256.trim())
     && typeof value.environment.supportProfile === "string" && Boolean(value.environment.supportProfile.trim())
+    && Array.isArray(value.environment.mathlibModules)
+    && value.environment.mathlibModules.every((module) => typeof module === "string" && Boolean(module.trim()))
     && typeof value.environment.runtimeFormat === "number";
 }
 

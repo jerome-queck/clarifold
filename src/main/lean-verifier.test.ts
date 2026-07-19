@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BUNDLED_LEAN_ENVIRONMENT, formalizationForClaim } from "../shared/verifier-runtime";
+import { BUNDLED_LEAN_ENVIRONMENT, formalizationForClaim, validVerificationEnvironment } from "../shared/verifier-runtime";
 import { LeanVerifierRuntime, type LeanCommandExecutor } from "./lean-verifier";
 
 const directories: string[] = [];
@@ -95,5 +95,10 @@ describe("LeanVerifierRuntime", () => {
       outcome: "versionMismatch",
       environment: { id: "untrusted-environment" }
     });
+  });
+
+  it("requires the architecture-specific pinned archive digest in the environment identity", () => {
+    expect(validVerificationEnvironment({ ...installedEnvironment, sourceSha256: "0".repeat(64) })).toBe(false);
+    expect(validVerificationEnvironment(installedEnvironment)).toBe(true);
   });
 });

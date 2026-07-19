@@ -13,8 +13,10 @@ if (process.platform !== "darwin" || !(process.arch in specification.releases)) 
 const release = specification.releases[process.arch];
 const verifiersDirectory = join(projectRoot, "dist", "verifiers");
 const destination = join(verifiersDirectory, specification.id);
-const destinationLean = join(destination, "bin", "lean");
-if (await preparedRuntimeIsCurrent(destination)) process.exit(0);
+if (await preparedRuntimeIsCurrent(destination)) {
+  await makeFilesReadOnly(destination);
+  process.exit(0);
+}
 
 const cacheDirectory = join(projectRoot, "node_modules", ".cache", "quick-study-lean");
 const archivePath = join(cacheDirectory, release.archive);
@@ -58,7 +60,7 @@ if (!await mathlibCheckoutIsCurrent(mathlibDirectory)) {
 }
 
 const lake = join(leanSource, "bin", "lake");
-await run(lake, ["exe", "cache", "get", "Mathlib/Data/Nat/Basic.lean"], false, mathlibDirectory);
+await run(lake, ["exe", "cache", "get", ...specification.mathlibModules], false, mathlibDirectory);
 
 await rm(staging, { recursive: true, force: true });
 await copySelectedLeanRuntime(leanSource, staging);
@@ -77,6 +79,7 @@ await writeFile(join(staging, "manifest.json"), `${JSON.stringify({
   sourceArchive: release.archive,
   sourceSha256: release.sha256,
   supportProfile: specification.supportProfile,
+  mathlibModules: specification.mathlibModules,
   runtimeFormat: specification.runtimeFormat,
   components: ["Lean toolchain", "mathlib precompiled cache", "Quick Study app support"]
 }, null, 2)}\n`, "utf8");
@@ -84,6 +87,7 @@ await writeFile(join(staging, "manifest.json"), `${JSON.stringify({
 if (!await preparedRuntimeIsCurrent(staging)) {
   throw new Error("Staged Verification Environment failed version, manifest, or real-proof validation.");
 }
+await makeFilesReadOnly(staging);
 
 const backup = `${destination}.superseded-${process.pid}`;
 let hadDestination = false;
@@ -134,7 +138,7 @@ async function copyMathlibSupport(lakePath, leanRoot, mathlibRoot, destinationRo
     });
   }
 
-  const queue = [join(mathlibRoot, "Mathlib", "Data", "Nat", "Basic.lean")];
+  const queue = specification.mathlibModules.map((module) => join(mathlibRoot, `${module.replaceAll(".", "/")}.lean`));
   const visited = new Set();
   while (queue.length > 0) {
     const source = queue.shift();
@@ -191,6 +195,14 @@ async function collectCompiledFiles(directory, sourceRoot, paths) {
   }
 }
 
+async function makeFilesReadOnly(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await makeFilesReadOnly(path);
+    else await chmod(path, path.endsWith(join("bin", "lean")) ? 0o555 : 0o444);
+  }
+}
+
 async function fileHasDigest(path, expected) {
   try { await access(path); } catch { return false; }
   const hash = createHash("sha256");
@@ -213,6 +225,8 @@ async function preparedRuntimeIsCurrent(root) {
       && manifest.leanVersion === specification.leanVersion
       && manifest.mathlibVersion === specification.mathlibVersion
       && manifest.mathlibCommit === specification.mathlibCommit
+      && Array.isArray(manifest.mathlibModules)
+      && manifest.mathlibModules.join("\n") === specification.mathlibModules.join("\n")
       && manifest.architecture === process.arch
       && manifest.sourceSha256 === release.sha256
       && manifest.runtimeFormat === specification.runtimeFormat;

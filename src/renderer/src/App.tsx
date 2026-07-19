@@ -17,7 +17,6 @@ import type {
 } from "../../shared/learning-application";
 import { annotationPurposeLabel } from "../../shared/annotations";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
-import type { VerifierEnvironmentStatus } from "../../shared/verifier-runtime";
 import { SourceLayer } from "./SourceLayer";
 import { ContextualInspector } from "./ContextualInspector";
 import { ClaimTrust } from "./ClaimTrust";
@@ -96,13 +95,6 @@ function Dashboard({ state, onState }: { state: LearningApplicationState; onStat
 }
 
 function ApplicationSettings({ state, onState }: { state: LearningApplicationState; onState: StateHandler }) {
-  const [verifierStatus, setVerifierStatus] = useState<VerifierEnvironmentStatus | null>(null);
-  const [updatingVerifier, setUpdatingVerifier] = useState(false);
-  useEffect(() => { void window.quickStudy.getVerifierEnvironmentStatus().then(setVerifierStatus); }, []);
-  const updateVerifier = async (action: () => Promise<VerifierEnvironmentStatus>) => {
-    setUpdatingVerifier(true);
-    try { setVerifierStatus(await action()); } finally { setUpdatingVerifier(false); }
-  };
   return (
     <section className="settings-card" aria-labelledby="application-settings-title">
       <p className="eyebrow">Settings</p>
@@ -119,20 +111,6 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
         Allow Personal Notes during artifact synthesis
       </label>
       <small>Enabled by default. Personal Notes remain excluded from ordinary Teaching Moves.</small>
-      <div className="verifier-environment-setting">
-        <h3>Bundled Lean Runtime</h3>
-        <p>{verifierStatus?.diagnostics ?? "Checking the local Verification Environment…"}</p>
-        {verifierStatus?.installed
-          ? <button className="secondary" disabled={updatingVerifier}
-            onClick={() => void updateVerifier(window.quickStudy.removeVerifierEnvironment)}>
-            Remove Bundled Lean Runtime
-          </button>
-          : <button className="secondary" disabled={updatingVerifier || !verifierStatus}
-            onClick={() => void updateVerifier(window.quickStudy.installVerifierEnvironment)}>
-            Reinstall Bundled Lean Runtime
-          </button>}
-        <small>Removing the runtime preserves sessions, proof source, and historical Verifier Manifests. New formal checks remain unavailable until reinstallation.</small>
-      </div>
     </section>
   );
 }
