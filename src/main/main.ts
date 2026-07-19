@@ -17,6 +17,7 @@ import type { ModelRuntime } from "../shared/model-runtime";
 import { MacOsSourceAccess } from "./source-access";
 import { MacOsArtifactSharing } from "./artifact-sharing";
 import { BrowserExternalResearch } from "./browser-external-research";
+import { LeanVerifierRuntime } from "./lean-verifier";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
@@ -300,6 +301,13 @@ function registerLearningApplicationHandlers(): void {
     }
     return learningApplication.shareLearningArtifact(sessionId, artifactId);
   });
+  ipcMain.handle("verifier:run", async (event, sessionId: unknown, request: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    if (typeof sessionId !== "string" || !isFormalVerificationRequest(request)) {
+      throw new Error("Invalid formal verification request.");
+    }
+    return learningApplication.runFormalVerification(sessionId, request);
+  });
   ipcMain.handle("source:linkPrimaryFolder", async (event, workspaceId: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
     if (typeof workspaceId !== "string") throw new Error("Invalid Study Workspace.");
@@ -399,6 +407,18 @@ function createWindow(): void {
   }
 }
 
+function isFormalVerificationRequest(value: unknown): value is import("../shared/learning-application").FormalVerificationRequest {
+  if (!value || typeof value !== "object") return false;
+  const request = value as Record<string, unknown>;
+  return (request.target === "teachingCard" || request.target === "learningArtifact")
+    && typeof request.targetId === "string" && typeof request.claimId === "string";
+}
+
+function bundledLeanPath(): string {
+  const root = app.isPackaged ? process.resourcesPath : join(process.cwd(), "dist");
+  return join(root, "verifiers", "lean-4.29.1-core-v1", "bin", "lean");
+}
+
 void app.whenReady().then(async () => {
   const dataDirectory = process.env.QUICK_STUDY_DATA_DIR ?? app.getPath("userData");
   try {
@@ -413,7 +433,9 @@ void app.whenReady().then(async () => {
     new MacOsArtifactSharing(app.getPath("temp")),
     new BrowserExternalResearch(process.env.QUICK_STUDY_TEST_EXTERNAL_RESEARCH === "stub"
       ? async () => undefined
-      : (url) => shell.openExternal(url))
+      : (url) => shell.openExternal(url)),
+    null,
+    new LeanVerifierRuntime(process.env.QUICK_STUDY_LEAN_PATH ?? bundledLeanPath())
   );
   registerLearningApplicationHandlers();
   createWindow();

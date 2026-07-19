@@ -1,0 +1,146 @@
+import { execFile } from "node:child_process";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
+import {
+  BUNDLED_LEAN_ENVIRONMENT,
+  type VerifierCommandOutcome,
+  type VerifierRunRequest,
+  type VerifierRunResult,
+  type VerifierRuntime
+} from "../shared/verifier-runtime";
+
+export interface LeanCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | string | null;
+  timedOut?: boolean;
+  cancelled?: boolean;
+}
+
+export type LeanCommandExecutor = (
+  executable: string,
+  args: string[],
+  options: { timeoutMs: number; signal?: AbortSignal }
+) => Promise<LeanCommandResult>;
+
+const executeLean: LeanCommandExecutor = (executable, args, options) => new Promise((resolve, reject) => {
+  execFile(executable, args, {
+    timeout: options.timeoutMs,
+    signal: options.signal,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024
+  }, (error, stdout, stderr) => {
+    if (!error) {
+      resolve({ stdout, stderr, exitCode: 0, signal: null });
+      return;
+    }
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals };
+    if (failure.code === "ENOENT") {
+      reject(failure);
+      return;
+    }
+    resolve({
+      stdout: typeof stdout === "string" ? stdout : "",
+      stderr: typeof stderr === "string" ? stderr : failure.message,
+      exitCode: typeof failure.code === "number" ? failure.code : null,
+      signal: failure.signal ?? null,
+      timedOut: failure.killed === true && failure.code === null,
+      cancelled: failure.name === "AbortError" || options.signal?.aborted === true
+    });
+  });
+});
+
+export class LeanVerifierRuntime implements VerifierRuntime {
+  constructor(
+    private readonly executablePath: string,
+    private readonly execute: LeanCommandExecutor = executeLean,
+    private readonly timeoutMs = 15_000
+  ) {}
+
+  async run(request: VerifierRunRequest, signal?: AbortSignal): Promise<VerifierRunResult> {
+    await mkdir(request.evidenceDirectory, { recursive: true });
+    const evidenceLocation = join(request.evidenceDirectory, `${safeRunId(request.runId)}.lean`);
+    const stagingPath = `${evidenceLocation}.tmp`;
+    await writeFile(stagingPath, request.proofSource, { encoding: "utf8", mode: 0o600 });
+    await rename(stagingPath, evidenceLocation);
+    const command = `${basename(this.executablePath)} ${basename(evidenceLocation)}`;
+
+    let version: LeanCommandResult;
+    try {
+      version = await this.execute(this.executablePath, ["--version"], { timeoutMs: this.timeoutMs, signal });
+    } catch (error) {
+      return this.result("unavailable", usefulError(error), evidenceLocation, command);
+    }
+    if (!validCommandResult(version)) {
+      return this.result("malformedOutput", "Lean returned malformed version output.", evidenceLocation, command);
+    }
+    if (version.cancelled) return this.result("cancelled", diagnostics(version), evidenceLocation, command);
+    if (version.timedOut) return this.result("timedOut", diagnostics(version), evidenceLocation, command);
+    if (version.exitCode !== 0) return this.result("unavailable", diagnostics(version), evidenceLocation, command);
+    if (!version.stdout.includes(`version ${BUNDLED_LEAN_ENVIRONMENT.leanVersion}`)) {
+      return this.result(
+        "versionMismatch",
+        `Expected Lean ${BUNDLED_LEAN_ENVIRONMENT.leanVersion}; received ${version.stdout.trim() || "no version"}.`,
+        evidenceLocation,
+        command
+      );
+    }
+
+    let checked: LeanCommandResult;
+    try {
+      checked = await this.execute(this.executablePath, [evidenceLocation], { timeoutMs: this.timeoutMs, signal });
+    } catch (error) {
+      return this.result("unavailable", usefulError(error), evidenceLocation, command);
+    }
+    if (!validCommandResult(checked)) {
+      return this.result("malformedOutput", "Lean returned malformed command output.", evidenceLocation, command);
+    }
+    return this.result(outcomeFor(checked), diagnostics(checked), evidenceLocation, command);
+  }
+
+  private result(
+    outcome: VerifierCommandOutcome,
+    diagnosticsText: string,
+    evidenceLocation: string,
+    command: string
+  ): VerifierRunResult {
+    return {
+      outcome,
+      diagnostics: diagnosticsText,
+      evidenceLocation,
+      command,
+      environment: BUNDLED_LEAN_ENVIRONMENT
+    };
+  }
+}
+
+function outcomeFor(result: LeanCommandResult): VerifierCommandOutcome {
+  if (result.cancelled) return "cancelled";
+  if (result.timedOut) return "timedOut";
+  if (result.signal) return "crashed";
+  return result.exitCode === 0 ? "accepted" : "rejected";
+}
+
+function diagnostics(result: LeanCommandResult): string {
+  return [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n") || "Lean completed without diagnostics.";
+}
+
+function validCommandResult(value: unknown): value is LeanCommandResult {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Partial<LeanCommandResult>;
+  return typeof result.stdout === "string" && typeof result.stderr === "string"
+    && (typeof result.exitCode === "number" || result.exitCode === null)
+    && (typeof result.signal === "string" || result.signal === null);
+}
+
+function safeRunId(value: string): string {
+  const normalized = value.trim();
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(normalized)) throw new Error("Verifier run identifier is invalid.");
+  return normalized;
+}
+
+function usefulError(error: unknown): string {
+  return error instanceof Error ? error.message : "Lean could not be launched.";
+}
+

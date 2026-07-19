@@ -4,6 +4,7 @@ import type {
   AgentWorkLogEvidence,
   ArtifactExportResult,
   ArtifactShareResult,
+  FormalVerificationRequest,
   LearningApplicationState,
   LinkedSourceView,
   OpenedSourceSearchResult,
@@ -35,6 +36,8 @@ contextBridge.exposeInMainWorld("quickStudy", {
     ipcRenderer.invoke("artifact:export", sessionId, artifactId),
   shareLearningArtifact: (sessionId: string, artifactId: string): Promise<ArtifactShareResult> =>
     ipcRenderer.invoke("artifact:share", sessionId, artifactId),
+  verifyClaim: (sessionId: string, request: FormalVerificationRequest): Promise<LearningApplicationState> =>
+    ipcRenderer.invoke("verifier:run", sessionId, request),
   onStateChanged: (listener: (state: LearningApplicationState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: LearningApplicationState) => listener(state);
     ipcRenderer.on("learning:stateChanged", handler);

@@ -321,6 +321,17 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await expect(claimTrust).toContainText("Not independently checked");
     await expect(claimTrust).toContainText("Current");
     await expect(claimTrust).toContainText("Agent Work");
+    await reformulatedProof.getByLabel("Exact claim 1").fill("For every natural number n, n + 0 = n.");
+    await reformulatedProof.getByRole("button", { name: /Save Learning Artifact revision/ }).press("Enter");
+    await expect(claimTrust.getByRole("region", { name: "Formalization for mathematical claim 1" }))
+      .toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
+    await expect(claimTrust).toContainText("Formally verified", { timeout: 20_000 });
+    const manifest = claimTrust.getByRole("article", { name: "Verifier Manifest" });
+    await expect(manifest).toContainText("accepted");
+    await expect(manifest).toContainText("lean-4.29.1-core-v1 · Lean 4.29.1");
+    await expect(manifest).toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    await expect(claimTrust).toContainText("Formal verification covers only the exact accepted statement");
     await reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ }).press("Enter");
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await expect(reformulatedProof).toContainText("The learner connects the equation with a finite-choice insight.");
@@ -330,7 +341,9 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     const exportedArtifact = await readFile(artifactExportPath, "utf8");
     expect(exportedArtifact).toContain("# Reformulated Proof");
     expect(exportedArtifact).toContain("- Exact Claim:");
-    expect(exportedArtifact).toContain("- Verification Currency: Current");
+    expect(exportedArtifact).toContain("- Verification Currency: Changed since check");
+    expect(exportedArtifact).toContain("### Formal verification · Supports");
+    expect(exportedArtifact).toContain("- Evidence link: Lean · Verification Environment lean-4.29.1-core-v1");
     expect(exportedArtifact).toContain("`$a=b$`");
     expect(exportedArtifact).toContain("Start from the key definition, then preserve the learner's finite-choice insight.");
     expect(exportedArtifact).toContain("  My exact finite-choice insight.\n");

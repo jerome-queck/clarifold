@@ -153,6 +153,7 @@ describe("anchored teaching workbench", () => {
       openSourceSearchResult: vi.fn(),
       exportLearningArtifact: vi.fn().mockResolvedValue({ status: "exported", path: "/tmp/artifact.md" }),
       shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
+      verifyClaim: vi.fn().mockResolvedValue(state),
       onStateChanged: vi.fn().mockReturnValue(() => undefined),
       openExternal: vi.fn()
     };
@@ -181,6 +182,24 @@ describe("anchored teaching workbench", () => {
     vi.mocked(window.quickStudy.submit).mockRejectedValueOnce(new Error("The Source Anchor is stale."));
     await user.click(marker);
     expect((await screen.findByRole("alert")).textContent).toContain("The Source Anchor is stale.");
+  });
+
+  it("shows the exact formal statement before running bundled Lean for only the current claim", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    const artifact = state.sessions[0].learningArtifacts[0];
+    artifact.currentRevision.claims[0].claimStatement = "For every natural number n, n + 0 = n.";
+    window.quickStudy = quickStudyApi(state);
+
+    render(<App />);
+
+    const formalization = await screen.findByRole("region", { name: "Formalization for mathematical claim 1" });
+    expect(formalization.textContent).toContain("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    expect(formalization.textContent).toContain("n : Nat");
+    await user.click(within(formalization).getByRole("button", { name: "Check exact claim 1 with bundled Lean" }));
+    expect(window.quickStudy.verifyClaim).toHaveBeenCalledWith(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifact.id, claimId: artifact.currentRevision.claims[0].claimId
+    });
   });
 
   it("opens anchored annotations from the Anchor Marker and keyboard-converts their purpose", async () => {
@@ -859,6 +878,7 @@ function quickStudyApi(state: LearningApplicationState): typeof window.quickStud
     searchSourceIndex: vi.fn().mockResolvedValue([]), openSourceSearchResult: vi.fn(),
     exportLearningArtifact: vi.fn().mockResolvedValue({ status: "exported", path: "/tmp/artifact.md" }),
     shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
+    verifyClaim: vi.fn().mockResolvedValue(state),
     onStateChanged: vi.fn().mockReturnValue(() => undefined), openExternal: vi.fn()
   };
 }
@@ -1017,7 +1037,8 @@ function workbenchState(): LearningApplicationState {
     }],
     sourceIndexes: [],
     sourceRevisions: [],
-    reanchoringDecisions: [],
+  reanchoringDecisions: [],
+  verifierManifests: [],
     activeSessionId: "session-1",
     resumeSessionId: "session-1",
     navigation: { workspaceId: "quick-study-workspace", missionId: "quick-study-unfiled-mission" },

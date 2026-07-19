@@ -3,6 +3,7 @@ import type {
   AgentWorkLogEvidence,
   ArtifactExportResult,
   ArtifactShareResult,
+  FormalVerificationRequest,
   LearningApplicationState,
   LinkedSourceView,
   OpenedSourceSearchResult,
@@ -29,6 +30,7 @@ declare global {
       openSourceSearchResult(resultId: string): Promise<OpenedSourceSearchResult>;
       exportLearningArtifact(sessionId: string, artifactId: string): Promise<ArtifactExportResult>;
       shareLearningArtifact(sessionId: string, artifactId: string): Promise<ArtifactShareResult>;
+      verifyClaim(sessionId: string, request: FormalVerificationRequest): Promise<LearningApplicationState>;
       onStateChanged(listener: (state: LearningApplicationState) => void): () => void;
       openExternal(url: string): Promise<void>;
     };
