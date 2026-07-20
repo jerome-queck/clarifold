@@ -186,6 +186,7 @@ function isLearnerAction(value: unknown): value is LearnerAction {
           || action.artifactKind === "learningArtifact" || action.artifactKind === "reformulatedProof");
     case "synthesizeLearningArtifact":
       return "artifactId" in action && typeof action.artifactId === "string"
+        && "confirmWholeArtifact" in action && action.confirmWholeArtifact === true
         && (!("sessionId" in action) || action.sessionId === undefined || typeof action.sessionId === "string");
     case "editLearningArtifact":
       return "artifactId" in action && typeof action.artifactId === "string"
@@ -194,6 +195,33 @@ function isLearnerAction(value: unknown): value is LearnerAction {
     case "restoreLearningArtifactRevision":
       return "artifactId" in action && typeof action.artifactId === "string"
         && "revisionId" in action && typeof action.revisionId === "string";
+    case "previewLearningArtifactRegeneration":
+      return "artifactId" in action && typeof action.artifactId === "string"
+        && "scope" in action && ["section", "wholeArtifact"].includes(String(action.scope))
+        && "instruction" in action && typeof action.instruction === "string"
+        && (action.scope !== "section" || ("selection" in action && Boolean(action.selection)
+          && typeof action.selection === "object"
+          && "startOffset" in action.selection! && Number.isInteger(action.selection.startOffset)
+          && "endOffset" in action.selection! && Number.isInteger(action.selection.endOffset)))
+        && (action.scope !== "wholeArtifact" || ("confirmWholeArtifact" in action
+          && typeof action.confirmWholeArtifact === "boolean"));
+    case "applyLearningArtifactRegeneration":
+      return "artifactId" in action && typeof action.artifactId === "string"
+        && "proposalId" in action && typeof action.proposalId === "string"
+        && "confirmClaimImpact" in action && action.confirmClaimImpact === true;
+    case "discardLearningArtifactRegeneration":
+      return "artifactId" in action && typeof action.artifactId === "string"
+        && "proposalId" in action && typeof action.proposalId === "string";
+    case "requestLearningArtifactClaimRecheck":
+      return "artifactId" in action && typeof action.artifactId === "string"
+        && "claimId" in action && typeof action.claimId === "string"
+        && (!("sessionId" in action) || action.sessionId === undefined || typeof action.sessionId === "string");
+    case "setLearningArtifactTextProtected":
+      return "artifactId" in action && typeof action.artifactId === "string"
+        && "selection" in action && Boolean(action.selection) && typeof action.selection === "object"
+        && "startOffset" in action.selection! && Number.isInteger(action.selection.startOffset)
+        && "endOffset" in action.selection! && Number.isInteger(action.selection.endOffset)
+        && "protected" in action && typeof action.protected === "boolean";
     case "addTrailItem":
       return "kind" in action && isTrailItemKind(action.kind)
         && "content" in action && typeof action.content === "string";

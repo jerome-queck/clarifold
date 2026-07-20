@@ -472,6 +472,110 @@ describe("anchored teaching workbench", () => {
       .toBe("Artifact Export handed to macOS sharing.");
   });
 
+  it("selects an Artifact section, previews repair work, and applies the proposed revision", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.runtimeAvailable = true;
+    state.modelAccess = { status: "available" };
+    const artifact = state.sessions[0].learningArtifacts[0];
+    artifact.currentRevision.content = "## Strategy\nUse a finite subcover.\n\n## Conclusion\nThe complement is open.";
+    const selectedText = "Use a finite subcover.";
+    const startOffset = artifact.currentRevision.content.indexOf(selectedText);
+    const previewed = structuredClone(state);
+    previewed.sessions[0].learningArtifacts[0].pendingRegenerationProposal = {
+      id: "proposal-1", baseRevisionId: artifact.currentRevision.id, scope: "section",
+      selection: { startOffset, endOffset: startOffset + selectedText.length },
+      instruction: "Name the selected neighbourhoods.",
+      replacementContent: "Use a finite subcover of the selected neighbourhoods.",
+      proposedContent: "## Strategy\nUse a finite subcover of the selected neighbourhoods.\n\n## Conclusion\nThe complement is open.",
+      claimEdits: [{ claimId: "claim-1", statement: "Use a finite subcover of the selected neighbourhoods." }],
+      claimImpacts: [{ claimId: "claim-1", effect: "changed", changedAspects: ["text", "dependencies"] }],
+      agentWorkLogReference: { sessionId: "session-1", fromSequence: 3, toSequence: 5 },
+      unresolvedRepairs: [{ kind: "citation", description: "Restore the source citation." }],
+      createdAt: "2026-07-20T00:00:00.000Z"
+    };
+    const applied = structuredClone(previewed);
+    applied.sessions[0].learningArtifacts[0].pendingRegenerationProposal = null;
+    applied.sessions[0].learningArtifacts[0].currentRevision.content =
+      previewed.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.proposedContent;
+    applied.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationCurrency = "changedSinceCheck";
+    const api = quickStudyApi(state);
+    vi.mocked(api.submit).mockImplementation(async (action) => {
+      if (action.type === "previewLearningArtifactRegeneration") return previewed;
+      if (action.type === "applyLearningArtifactRegeneration") return applied;
+      return state;
+    });
+    window.quickStudy = api;
+
+    render(<App />);
+    const artifactRegion = await screen.findByRole("article", { name: "Pinned Learning Artifact Explain compact subset" });
+    const content = within(artifactRegion).getByLabelText("Learning Artifact content for Explain compact subset");
+    (content as HTMLTextAreaElement).setSelectionRange(startOffset, startOffset + selectedText.length);
+    fireEvent.select(content);
+    await user.click(within(artifactRegion).getByRole("button", { name: "Use selected text as regeneration section" }));
+    expect(within(artifactRegion).getByText(`Selected section: ${selectedText}`)).toBeTruthy();
+    await user.type(within(artifactRegion).getByLabelText("Requested change for selected Artifact section"),
+      "Name the selected neighbourhoods.");
+    await user.click(within(artifactRegion).getByRole("button", { name: "Preview Section Regeneration" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "previewLearningArtifactRegeneration", artifactId: "artifact-1", scope: "section",
+      selection: { startOffset, endOffset: startOffset + selectedText.length },
+      instruction: "Name the selected neighbourhoods."
+    });
+
+    const preview = await screen.findByRole("region", { name: "Section Regeneration preview" });
+    expect(preview.textContent).toContain("Use a finite subcover of the selected neighbourhoods.");
+    expect(preview.textContent).toContain("Unresolved repair work");
+    expect(preview.textContent).toContain("Restore the source citation.");
+    expect(preview.textContent).toContain("Current claim 1 changes text, dependencies and will lose current Verification Currency until rechecked.");
+    await user.click(within(preview).getByRole("checkbox", {
+      name: "I reviewed which claim text, assumptions, dependencies, and evidence change"
+    }));
+    await user.click(within(preview).getByRole("button", { name: "Apply Section Regeneration preview" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "applyLearningArtifactRegeneration", artifactId: "artifact-1", proposalId: "proposal-1",
+      confirmClaimImpact: true
+    });
+    await user.click(await within(artifactRegion).findByRole("button", { name: "Request targeted reasoning recheck" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "requestLearningArtifactClaimRecheck", sessionId: "session-1", artifactId: "artifact-1", claimId: "claim-1"
+    });
+  });
+
+  it("shows durable Artifact regeneration Agent Task controls", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.modelAccess = { status: "available" };
+    state.runtimeAvailable = true;
+    state.sessions[0].learningArtifacts[0].regenerationTask = {
+      id: "task-1", status: "working", retryable: false,
+      statusMessage: "Preparing the regeneration preview with Codex.",
+      request: {
+        scope: "section", selection: { startOffset: 0, endOffset: 4 },
+        instruction: "Clarify this step.", confirmWholeArtifact: false
+      }
+    };
+    const api = quickStudyApi(state);
+    const stopped = structuredClone(state);
+    stopped.sessions[0].learningArtifacts[0].regenerationTask = {
+      ...stopped.sessions[0].learningArtifacts[0].regenerationTask!,
+      status: "stopped", retryable: true, statusMessage: "Regeneration stopped. The current revision remains unchanged."
+    };
+    vi.mocked(api.submit).mockImplementation(async (action) => action.type === "cancelSessionModelWork" ? stopped : state);
+    window.quickStudy = api;
+    render(<App />);
+    const status = await screen.findByRole("status", { name: "Artifact regeneration Agent Task Status" });
+    expect(status.textContent).toContain("Preparing the regeneration preview with Codex.");
+    await user.click(within(status).getByRole("button", { name: "Stop Artifact regeneration" }));
+    expect(api.submit).toHaveBeenCalledWith({ type: "cancelSessionModelWork", sessionId: "session-1" });
+    const stoppedStatus = await screen.findByRole("status", { name: "Artifact regeneration Agent Task Status" });
+    await user.click(within(stoppedStatus).getByRole("button", { name: "Retry Artifact regeneration" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "previewLearningArtifactRegeneration", sessionId: "session-1", artifactId: "artifact-1",
+      scope: "section", selection: { startOffset: 0, endOffset: 4 }, instruction: "Clarify this step."
+    });
+  });
+
   it("shows the compact Argument Roadmap and lets the learner edit or choose a Learning Slice before teaching", async () => {
     const user = userEvent.setup();
     const state = workbenchState();
@@ -1558,9 +1662,13 @@ function workbenchState(): LearningApplicationState {
             verificationEscalation: { recommended: false, reasons: [] }
           }],
           personalNoteContributions: [],
+          unresolvedRepairs: [],
           provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
         },
         revisions: [],
+        protectedContent: [],
+        pendingRegenerationProposal: null,
+        regenerationTask: null,
         sourceAnchorIds: ["anchor-1"],
         pinned: true
       }],

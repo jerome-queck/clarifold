@@ -16,18 +16,22 @@ export interface ClaimTrustRevision {
   claims?: ClaimVerificationState[];
 }
 
-export function ClaimTrust({ revision, revisionId, verifierManifests = [], verifierEnvironmentStatus = "installed", onVerify, onCancel }: {
+export function ClaimTrust({ revision, revisionId, verifierManifests = [], verifierEnvironmentStatus = "installed", onVerify, onCancel,
+  onReasoningRecheck, onCancelReasoningRecheck }: {
   revision: ClaimTrustRevision;
   revisionId?: string;
   verifierManifests?: VerifierManifest[];
   verifierEnvironmentStatus?: VerifierEnvironmentState["status"];
   onVerify?: (claimId: string, runId: string) => Promise<void>;
   onCancel?: (runId: string) => Promise<void>;
+  onReasoningRecheck?: (claimId: string) => Promise<void>;
+  onCancelReasoningRecheck?: () => Promise<void>;
 }) {
   const claims = revision.claims ?? [];
   const [runningClaimId, setRunningClaimId] = useState<string | null>(null);
   const [runningRunId, setRunningRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recheckingClaimId, setRecheckingClaimId] = useState<string | null>(null);
   const verifierAvailable = verifierEnvironmentStatus === "installed";
   const verify = async (claimId: string) => {
     if (!onVerify) return;
@@ -42,6 +46,18 @@ export function ClaimTrust({ revision, revisionId, verifierManifests = [], verif
     } finally {
       setRunningClaimId(null);
       setRunningRunId(null);
+    }
+  };
+  const recheck = async (claimId: string) => {
+    if (!onReasoningRecheck) return;
+    setError(null);
+    setRecheckingClaimId(claimId);
+    try {
+      await onReasoningRecheck(claimId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The targeted reasoning recheck could not be completed.");
+    } finally {
+      setRecheckingClaimId(null);
     }
   };
   return (
@@ -79,6 +95,16 @@ export function ClaimTrust({ revision, revisionId, verifierManifests = [], verif
         <strong>Verification Escalation recommended</strong>
         <ul>{claim.verificationEscalation.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       </div>}
+      {claim.verificationCurrency === "changedSinceCheck" && onReasoningRecheck && <section
+        aria-label={`Targeted recheck for mathematical claim ${index + 1}`}>
+        <p className="subtle">This exact revised claim needs fresh evidence. A reasoning recheck is separate from source, corroboration, and formal checks.</p>
+        <button type="button" className="secondary" disabled={recheckingClaimId !== null}
+          onClick={() => void recheck(claim.claimId)}>
+          {recheckingClaimId === claim.claimId ? "Rechecking exact claim…" : "Request targeted reasoning recheck"}
+        </button>
+        {recheckingClaimId === claim.claimId && onCancelReasoningRecheck && <button type="button" className="secondary"
+          onClick={() => void onCancelReasoningRecheck()}>Stop targeted reasoning recheck</button>}
+      </section>}
       <section className="formalization-preview" aria-label={`Formalization for mathematical claim ${index + 1}`}>
         <h3>Exact formal statement</h3>
         {formalization ? <>

@@ -376,7 +376,13 @@ test("packaged Quick Study organizes durable work and resumes the latest session
     await claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter");
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 60_000 });
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" }).nth(1)).toContainText("accepted");
-    await reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ }).press("Enter");
+    const synthesizeArtifact = reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ });
+    await expect(synthesizeArtifact).toBeDisabled();
+    await reformulatedProof.getByRole("checkbox", {
+      name: "Confirm this proposal may replace the whole Learning Artifact"
+    }).check();
+    await expect(synthesizeArtifact).toBeEnabled();
+    await synthesizeArtifact.press("Enter");
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await expect(reformulatedProof).toContainText("The learner connects the equation with a finite-choice insight.");
     await expect(reformulatedProof.getByText(/Learning Artifact synthesized/)).toBeVisible();
