@@ -149,6 +149,7 @@ describe("Contextual Inspector", () => {
       revisions: [],
       protectedContent: [],
       pendingRegenerationProposal: null,
+      regenerationTask: null,
       sourceAnchorIds: ["anchor-1"],
       pinned: true
     };

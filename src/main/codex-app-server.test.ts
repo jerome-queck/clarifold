@@ -547,6 +547,7 @@ describe("Codex app-server contract", () => {
           delta: JSON.stringify({
             replacementContent: "Use the selected finite subcover while retaining $x \\in K$.",
             claimEdits: [{ claimId: "claim-1", statement: "Use the selected finite subcover." }],
+            claimImpacts: [{ claimId: "claim-1", effect: "changed", changedAspects: ["text", "dependencies"] }],
             unresolvedRepairs: [{ kind: "citation", description: "Confirm the source page." }]
           })
         });
@@ -566,14 +567,49 @@ describe("Codex app-server contract", () => {
     })).resolves.toEqual({
       replacementContent: "Use the selected finite subcover while retaining $x \\in K$.",
       claimEdits: [{ claimId: "claim-1", statement: "Use the selected finite subcover." }],
+      claimImpacts: [{ claimId: "claim-1", effect: "changed", changedAspects: ["text", "dependencies"] }],
       unresolvedRepairs: [{ kind: "citation", description: "Confirm the source page." }]
     });
     const turn = transport.messages.find((message) => message.method === "turn/start")!;
     expect(turn).toMatchObject({ params: { outputSchema: {
-      required: ["replacementContent", "claimEdits", "unresolvedRepairs"]
+      required: ["replacementContent", "claimEdits", "claimImpacts", "unresolvedRepairs"]
     } } });
     expect(JSON.stringify(turn.params)).toContain("learnerProtected");
     expect(JSON.stringify(turn.params)).toContain("Name the selected cover.");
+  });
+
+  it("requests a bounded reasoning recheck for one exact regenerated claim", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "recheck-thread" } });
+      if (message.method === "turn/start") {
+        const params = message.params as { threadId: string };
+        transport.respond(message.id, { turn: { id: "recheck-turn" } });
+        transport.notify("item/agentMessage/delta", {
+          threadId: params.threadId, turnId: "recheck-turn", itemId: "recheck-result",
+          delta: JSON.stringify({ outcome: "supports", summary: "The exact claim follows from its stated assumptions." })
+        });
+        transport.notify("turn/completed", {
+          threadId: params.threadId, turn: { id: "recheck-turn", status: "completed", error: null }
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    await expect(runtime.recheckArtifactClaim({
+      sessionId: "session-1", learningGoal: "Understand compactness", artifactTitle: "Compactness proof",
+      exactClaim: "Compactness gives a finite subcover.",
+      priorEvidence: [{ method: "reasoningReview", outcome: "supports", summary: "Prior pass.", changedBecause: "Text changed." }],
+      signal: new AbortController().signal
+    })).resolves.toEqual({ outcome: "supports", summary: "The exact claim follows from its stated assumptions." });
+    const turn = transport.messages.find((message) => message.method === "turn/start")!;
+    expect(turn).toMatchObject({ params: { outputSchema: { required: ["outcome", "summary"] } } });
+    expect(JSON.stringify(turn.params)).toContain("Compactness gives a finite subcover.");
+    expect(JSON.stringify(turn.params)).toContain("Do not claim source grounding");
   });
 
   it("generates, clarifies, and assesses a delayed task through bounded structured turns", async () => {

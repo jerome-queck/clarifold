@@ -489,6 +489,8 @@ describe("anchored teaching workbench", () => {
       replacementContent: "Use a finite subcover of the selected neighbourhoods.",
       proposedContent: "## Strategy\nUse a finite subcover of the selected neighbourhoods.\n\n## Conclusion\nThe complement is open.",
       claimEdits: [{ claimId: "claim-1", statement: "Use a finite subcover of the selected neighbourhoods." }],
+      claimImpacts: [{ claimId: "claim-1", effect: "changed", changedAspects: ["text", "dependencies"] }],
+      agentWorkLogReference: { sessionId: "session-1", fromSequence: 3, toSequence: 5 },
       unresolvedRepairs: [{ kind: "citation", description: "Restore the source citation." }],
       createdAt: "2026-07-20T00:00:00.000Z"
     };
@@ -496,6 +498,7 @@ describe("anchored teaching workbench", () => {
     applied.sessions[0].learningArtifacts[0].pendingRegenerationProposal = null;
     applied.sessions[0].learningArtifacts[0].currentRevision.content =
       previewed.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.proposedContent;
+    applied.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationCurrency = "changedSinceCheck";
     const api = quickStudyApi(state);
     vi.mocked(api.submit).mockImplementation(async (action) => {
       if (action.type === "previewLearningArtifactRegeneration") return previewed;
@@ -524,10 +527,52 @@ describe("anchored teaching workbench", () => {
     expect(preview.textContent).toContain("Use a finite subcover of the selected neighbourhoods.");
     expect(preview.textContent).toContain("Unresolved repair work");
     expect(preview.textContent).toContain("Restore the source citation.");
-    expect(preview.textContent).toContain("Current claim 1 changed and will lose current Verification Currency until rechecked.");
+    expect(preview.textContent).toContain("Current claim 1 changes text, dependencies and will lose current Verification Currency until rechecked.");
+    await user.click(within(preview).getByRole("checkbox", {
+      name: "I reviewed which claim text, assumptions, dependencies, and evidence change"
+    }));
     await user.click(within(preview).getByRole("button", { name: "Apply Section Regeneration preview" }));
     expect(api.submit).toHaveBeenCalledWith({
-      type: "applyLearningArtifactRegeneration", artifactId: "artifact-1", proposalId: "proposal-1"
+      type: "applyLearningArtifactRegeneration", artifactId: "artifact-1", proposalId: "proposal-1",
+      confirmClaimImpact: true
+    });
+    await user.click(await within(artifactRegion).findByRole("button", { name: "Request targeted reasoning recheck" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "requestLearningArtifactClaimRecheck", sessionId: "session-1", artifactId: "artifact-1", claimId: "claim-1"
+    });
+  });
+
+  it("shows durable Artifact regeneration Agent Task controls", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.modelAccess = { status: "available" };
+    state.runtimeAvailable = true;
+    state.sessions[0].learningArtifacts[0].regenerationTask = {
+      id: "task-1", status: "working", retryable: false,
+      statusMessage: "Preparing the regeneration preview with Codex.",
+      request: {
+        scope: "section", selection: { startOffset: 0, endOffset: 4 },
+        instruction: "Clarify this step.", confirmWholeArtifact: false
+      }
+    };
+    const api = quickStudyApi(state);
+    const stopped = structuredClone(state);
+    stopped.sessions[0].learningArtifacts[0].regenerationTask = {
+      ...stopped.sessions[0].learningArtifacts[0].regenerationTask!,
+      status: "stopped", retryable: true, statusMessage: "Regeneration stopped. The current revision remains unchanged."
+    };
+    vi.mocked(api.submit).mockImplementation(async (action) => action.type === "cancelSessionModelWork" ? stopped : state);
+    window.quickStudy = api;
+    render(<App />);
+    const status = await screen.findByRole("status", { name: "Artifact regeneration Agent Task Status" });
+    expect(status.textContent).toContain("Preparing the regeneration preview with Codex.");
+    await user.click(within(status).getByRole("button", { name: "Stop Artifact regeneration" }));
+    expect(api.submit).toHaveBeenCalledWith({ type: "cancelSessionModelWork", sessionId: "session-1" });
+    const stoppedStatus = await screen.findByRole("status", { name: "Artifact regeneration Agent Task Status" });
+    await user.click(within(stoppedStatus).getByRole("button", { name: "Retry Artifact regeneration" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "previewLearningArtifactRegeneration", sessionId: "session-1", artifactId: "artifact-1",
+      scope: "section", selection: { startOffset: 0, endOffset: 4 }, instruction: "Clarify this step."
     });
   });
 
@@ -1623,6 +1668,7 @@ function workbenchState(): LearningApplicationState {
         revisions: [],
         protectedContent: [],
         pendingRegenerationProposal: null,
+        regenerationTask: null,
         sourceAnchorIds: ["anchor-1"],
         pinned: true
       }],

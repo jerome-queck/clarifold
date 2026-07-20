@@ -1,6 +1,8 @@
 import { ModelAccessError, isCompleteEvidenceTransferContext, type
   ArtifactRegenerationRequest,
   ArtifactRegenerationResult,
+  ArtifactClaimRecheckRequest,
+  ArtifactClaimRecheckResult,
   ArtifactSynthesisRequest,
   ArtifactSynthesisResult,
   AuthenticationState,
@@ -517,6 +519,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
           "The application constructs the preview and enforces protected content. Return replacementContent only for the selected scope.",
           "Preserve mathematical notation, citations, Markdown structure, and every protected fragment exactly. List any preservation uncertainty as unresolved repair work.",
           "Retain each unchanged claimId and exact statement. Reuse an existing claimId with a changed statement only for that changed claim; use null only for a genuinely new claim.",
+          "Classify every current claim exactly once in claimImpacts. Mark changed when its text, assumptions, dependencies, or evidence changes, even if the displayed statement stays identical. List every changed aspect. Mark removed only when claimEdits omits it.",
           `Learning Goal: ${request.learningGoal}`,
           `Artifact title: ${request.artifactTitle}`,
           `Requested change: ${request.instruction}`,
@@ -535,6 +538,28 @@ export class CodexAppServerRuntime implements ModelRuntime {
       return parseArtifactRegeneration(content);
     } catch (error) {
       request.onRuntimeEvent?.({ type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error) });
+      throw error;
+    }
+  }
+
+  async recheckArtifactClaim(request: ArtifactClaimRecheckRequest): Promise<ArtifactClaimRecheckResult> {
+    if (request.signal.aborted) throw new Error("Learning Artifact claim recheck was stopped.");
+    try {
+      const content = await this.runTurn([
+        "Perform a bounded reasoning recheck of exactly one mathematical claim after an artifact revision.",
+        "Return only the requested JSON. Do not claim source grounding, independent corroboration, or formal verification.",
+        "Choose supports only if the exact claim follows under assumptions stated inside that exact claim; otherwise choose disagrees or unresolved and explain the gap.",
+        `Learning Goal: ${request.learningGoal}`,
+        `Artifact title: ${request.artifactTitle}`,
+        `Exact claim: ${request.exactClaim}`,
+        `Prior evidence, which may be stale: ${JSON.stringify(request.priorEvidence)}`
+      ].join("\n\n"), ARTIFACT_CLAIM_RECHECK_SCHEMA, undefined, request.sessionId, request.onRuntimeEvent);
+      if (request.signal.aborted) throw new Error("Learning Artifact claim recheck was stopped.");
+      return parseArtifactClaimRecheck(content);
+    } catch (error) {
+      request.onRuntimeEvent?.({
+        type: "turnFailed", threadId: "unavailable", turnId: null, detail: diagnosticMessage(error)
+      });
       throw error;
     }
   }
@@ -1353,7 +1378,7 @@ const ARTIFACT_SYNTHESIS_SCHEMA = {
 const ARTIFACT_REGENERATION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["replacementContent", "claimEdits", "unresolvedRepairs"],
+  required: ["replacementContent", "claimEdits", "claimImpacts", "unresolvedRepairs"],
   properties: {
     replacementContent: { type: "string" },
     claimEdits: {
@@ -1362,6 +1387,21 @@ const ARTIFACT_REGENERATION_SCHEMA = {
         type: "object", additionalProperties: false,
         required: ["claimId", "statement"],
         properties: { claimId: { type: ["string", "null"] }, statement: { type: "string" } }
+      }
+    },
+    claimImpacts: {
+      type: "array", minItems: 1,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["claimId", "effect", "changedAspects"],
+        properties: {
+          claimId: { type: "string" },
+          effect: { type: "string", enum: ["unchanged", "changed", "removed"] },
+          changedAspects: {
+            type: "array", uniqueItems: true,
+            items: { type: "string", enum: ["text", "assumptions", "dependencies", "evidence"] }
+          }
+        }
       }
     },
     unresolvedRepairs: {
@@ -1375,6 +1415,16 @@ const ARTIFACT_REGENERATION_SCHEMA = {
         }
       }
     }
+  }
+} as const;
+
+const ARTIFACT_CLAIM_RECHECK_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["outcome", "summary"],
+  properties: {
+    outcome: { type: "string", enum: ["supports", "disagrees", "unresolved"] },
+    summary: { type: "string" }
   }
 } as const;
 
@@ -1499,6 +1549,11 @@ function parseArtifactRegeneration(content: string): ArtifactRegenerationResult 
     || !value.claimEdits.every((edit) => isRecord(edit)
       && (edit.claimId === null || typeof edit.claimId === "string")
       && typeof edit.statement === "string" && Boolean(edit.statement.trim()))
+    || !Array.isArray(value.claimImpacts)
+    || !value.claimImpacts.every((impact) => isRecord(impact) && typeof impact.claimId === "string"
+      && ["unchanged", "changed", "removed"].includes(String(impact.effect))
+      && Array.isArray(impact.changedAspects)
+      && impact.changedAspects.every((aspect) => ["text", "assumptions", "dependencies", "evidence"].includes(String(aspect))))
     || !Array.isArray(value.unresolvedRepairs)
     || !value.unresolvedRepairs.every((repair) => isRecord(repair)
       && ["mathematicalNotation", "citation", "structure"].includes(String(repair.kind))
@@ -1506,6 +1561,20 @@ function parseArtifactRegeneration(content: string): ArtifactRegenerationResult 
     throw new Error("Codex returned a malformed Learning Artifact regeneration proposal. Retry to request a fresh preview.");
   }
   return value as unknown as ArtifactRegenerationResult;
+}
+
+function parseArtifactClaimRecheck(content: string): ArtifactClaimRecheckResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("Codex returned a malformed claim recheck. Retry to request a fresh reasoning review.");
+  }
+  if (!isRecord(value) || !["supports", "disagrees", "unresolved"].includes(String(value.outcome))
+    || typeof value.summary !== "string" || !value.summary.trim()) {
+    throw new Error("Codex returned a malformed claim recheck. Retry to request a fresh reasoning review.");
+  }
+  return value as unknown as ArtifactClaimRecheckResult;
 }
 
 function parseSpecialistAgentResult(content: string): SpecialistAgentResult {

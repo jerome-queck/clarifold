@@ -429,10 +429,32 @@ export interface LearningArtifact {
   originatingSessionId: string;
   currentRevision: LearningArtifactRevision;
   revisions: LearningArtifactRevision[];
-  protectedContent: string[];
+  protectedContent: ProtectedArtifactFragment[];
   pendingRegenerationProposal: ArtifactRegenerationProposal | null;
+  regenerationTask: ArtifactRegenerationTask | null;
   sourceAnchorIds: string[];
   pinned: true;
+}
+
+export interface ArtifactRegenerationTask {
+  id: string;
+  status: "working" | "stopped" | "failed";
+  statusMessage: string;
+  retryable: boolean;
+  request: {
+    scope: "section" | "wholeArtifact";
+    selection: { startOffset: number; endOffset: number } | null;
+    instruction: string;
+    confirmWholeArtifact: boolean;
+  };
+}
+
+export interface ProtectedArtifactFragment {
+  id: string;
+  revisionId: string;
+  startOffset: number;
+  endOffset: number;
+  content: string;
 }
 
 export interface LearningArtifactRevision {
@@ -462,6 +484,8 @@ export interface ArtifactRegenerationProposal {
   replacementContent: string;
   proposedContent: string;
   claimEdits: Array<{ claimId: string | null; statement: string }>;
+  claimImpacts: ArtifactRegenerationResult["claimImpacts"];
+  agentWorkLogReference: TeachingCardRevision["agentWorkLogReference"];
   unresolvedRepairs: ArtifactRepairIssue[];
   createdAt: string;
 }
@@ -1279,13 +1303,20 @@ export type LearnerAction =
       instruction: string;
       confirmWholeArtifact?: boolean;
     }
-  | { type: "applyLearningArtifactRegeneration"; sessionId?: string; artifactId: string; proposalId: string }
+  | {
+      type: "applyLearningArtifactRegeneration";
+      sessionId?: string;
+      artifactId: string;
+      proposalId: string;
+      confirmClaimImpact: boolean;
+    }
   | { type: "discardLearningArtifactRegeneration"; sessionId?: string; artifactId: string; proposalId: string }
+  | { type: "requestLearningArtifactClaimRecheck"; sessionId?: string; artifactId: string; claimId: string }
   | {
       type: "setLearningArtifactTextProtected";
       sessionId?: string;
       artifactId: string;
-      content: string;
+      selection: { startOffset: number; endOffset: number };
       protected: boolean;
     }
   | { type: "addTrailItem"; kind: TrailItemKind; content: string }
@@ -2532,8 +2563,8 @@ export class LearningApplication {
 
   async waitForModelWork(): Promise<void> {
     do {
-      await Promise.all([...this.modelWorks.values()].map((work) => work.promise));
-      await Promise.all([...this.researchWorks.values()].map((work) => work.promise));
+      await Promise.allSettled([...this.modelWorks.values()].map((work) => work.promise));
+      await Promise.allSettled([...this.researchWorks.values()].map((work) => work.promise));
       await this.persistence;
     } while (this.modelWorks.size > 0 || this.researchWorks.size > 0);
   }
@@ -3048,6 +3079,7 @@ export class LearningApplication {
             revisions: [],
             protectedContent: [],
             pendingRegenerationProposal: null,
+            regenerationTask: null,
             sourceAnchorIds: [card.sourceAnchorId],
             pinned: true
           };
@@ -3154,11 +3186,15 @@ export class LearningApplication {
             priorRevisionId: artifact.revisions.at(-1)!.id
           }
         };
+        artifact.protectedContent = rebaseProtectedFragmentsAfterDirectRevision(
+          artifact.protectedContent, artifact.currentRevision, true
+        );
         artifact.sourceAnchorIds = [...new Set([
           ...artifact.sourceAnchorIds,
           ...personalNotes.map((note) => note.sourceAnchorId)
         ])];
         artifact.pendingRegenerationProposal = null;
+        artifact.regenerationTask = null;
         break;
       }
       case "editLearningArtifact": {
@@ -3188,8 +3224,11 @@ export class LearningApplication {
             priorRevisionId: artifact.revisions.at(-1)!.id
           }
         };
-        artifact.protectedContent = (artifact.protectedContent ?? []).filter((item) => content.includes(item));
+        artifact.protectedContent = rebaseProtectedFragmentsAfterDirectRevision(
+          artifact.protectedContent, artifact.currentRevision, false
+        );
         artifact.pendingRegenerationProposal = null;
+        artifact.regenerationTask = null;
         break;
       }
       case "restoreLearningArtifactRevision": {
@@ -3209,7 +3248,11 @@ export class LearningApplication {
             priorRevisionId: restored.id
           }
         };
+        artifact.protectedContent = rebaseProtectedFragmentsAfterDirectRevision(
+          artifact.protectedContent, artifact.currentRevision, false
+        );
         artifact.pendingRegenerationProposal = null;
+        artifact.regenerationTask = null;
         break;
       }
       case "previewLearningArtifactRegeneration": {
@@ -3241,6 +3284,7 @@ export class LearningApplication {
         const protectedContent = artifactProtectedContent(session, artifact);
         const controller = new AbortController();
         const log = this.agentWorkLogs[session.id] ??= [];
+        const regenerationFromSequence = log.length + 1;
         const promise = Promise.resolve().then(() => this.modelRuntime!.regenerateArtifact({
           sessionId: session.id,
           learningGoal: session.learningGoal,
@@ -3249,7 +3293,7 @@ export class LearningApplication {
           scope: action.scope,
           selectedContent,
           instruction,
-          protectedContent,
+          protectedContent: protectedContent.map((item) => ({ kind: item.kind, content: item.content })),
           claims: artifact.currentRevision.claims.map((claim) => ({
             claimId: claim.claimId, statement: claim.claimStatement
           })),
@@ -3265,23 +3309,50 @@ export class LearningApplication {
           markUnconfirmed: () => undefined,
           restart: () => this.submit(action).then(() => undefined)
         });
+        artifact.regenerationTask = {
+          id: crypto.randomUUID(),
+          status: "working",
+          statusMessage: "Preparing the regeneration preview with Codex.",
+          retryable: false,
+          request: {
+            scope: action.scope,
+            selection,
+            instruction,
+            confirmWholeArtifact: action.scope === "wholeArtifact"
+          }
+        };
+        await this.publishAndPersist();
         let result: ArtifactRegenerationResult;
         try {
           result = validatedArtifactRegenerationResult(await promise, artifact.currentRevision.claims);
         } catch (error) {
-          if (controller.signal.aborted) throw new Error("Learning Artifact regeneration was stopped.");
+          if (controller.signal.aborted) {
+            artifact.regenerationTask = {
+              ...artifact.regenerationTask!, status: "stopped", retryable: true,
+              statusMessage: "Regeneration stopped. The current Artifact revision remains unchanged."
+            };
+            await this.publishAndPersist();
+            throw new Error("Learning Artifact regeneration was stopped.");
+          }
+          artifact.regenerationTask = {
+            ...artifact.regenerationTask!, status: "failed", retryable: true,
+            statusMessage: usefulRuntimeError(error)
+          };
           this.recordModelAccessLoss(error);
+          await this.publishAndPersist();
           throw error;
         } finally {
           if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
         }
+        artifact.regenerationTask = null;
+        await this.publishAndPersist();
         const proposedContent = selection === null
           ? result.replacementContent
           : artifact.currentRevision.content.slice(0, selection.startOffset)
             + result.replacementContent
             + artifact.currentRevision.content.slice(selection.endOffset);
         for (const protectedItem of protectedContent) {
-          if (!proposedContent.includes(protectedItem.content)) {
+          if (!locateProtectedFragmentInProposal(protectedItem, selection, result.replacementContent, proposedContent)) {
             const label = protectedItem.kind === "requiredTrailItem" ? "Required Trail Item"
               : protectedItem.kind === "personalNote" ? "verbatim Personal Note" : "learner-protected";
             throw new Error(`This regeneration proposal would remove protected ${label} content.`);
@@ -3300,6 +3371,12 @@ export class LearningApplication {
           replacementContent: result.replacementContent,
           proposedContent,
           claimEdits: result.claimEdits,
+          claimImpacts: result.claimImpacts,
+          agentWorkLogReference: log.length >= regenerationFromSequence ? {
+            sessionId: session.id,
+            fromSequence: regenerationFromSequence,
+            toSequence: log.length
+          } : null,
           unresolvedRepairs,
           createdAt: new Date().toISOString()
         };
@@ -3313,8 +3390,13 @@ export class LearningApplication {
         if (proposal.baseRevisionId !== artifact.currentRevision.id) {
           throw new Error("This regeneration preview is stale. Request a fresh preview for the current revision.");
         }
+        if (action.confirmClaimImpact !== true) {
+          throw new Error("Review and confirm the proposed claim impact before applying this regeneration.");
+        }
         for (const protectedItem of artifactProtectedContent(session, artifact)) {
-          if (!proposal.proposedContent.includes(protectedItem.content)) {
+          if (!locateProtectedFragmentInProposal(
+            protectedItem, proposal.selection, proposal.replacementContent, proposal.proposedContent
+          )) {
             throw new Error("This regeneration preview no longer satisfies the current protected-content policy.");
           }
         }
@@ -3324,7 +3406,7 @@ export class LearningApplication {
         artifact.currentRevision = {
           id: revisionId,
           content: proposal.proposedContent,
-          claims: curatedClaimEdits(previous.claims, proposal.claimEdits, revisionId, "Artifact"),
+          claims: regeneratedArtifactClaims(previous.claims, proposal),
           personalNoteContributions: structuredClone(previous.personalNoteContributions),
           unresolvedRepairs: structuredClone(proposal.unresolvedRepairs),
           provenance: {
@@ -3333,8 +3415,61 @@ export class LearningApplication {
             priorRevisionId: previous.id
           }
         };
+        artifact.protectedContent = rebaseLearnerProtectedFragments(
+          artifact.protectedContent, proposal, artifact.currentRevision
+        );
         artifact.pendingRegenerationProposal = null;
         break;
+      }
+      case "requestLearningArtifactClaimRecheck": {
+        this.requireModelAccess();
+        if (!this.modelRuntime) throw new Error("Codex runtime is unavailable for this claim recheck.");
+        const session = this.requireArtifactEditingSession(action.sessionId);
+        if (this.modelWorks.has(session.id)) {
+          throw new Error("Wait for the current model work to finish before rechecking this claim.");
+        }
+        const artifact = requireLearningArtifact(session, action.artifactId);
+        const claim = requireClaimVerification(artifact.currentRevision, action.claimId);
+        if (claim.verificationCurrency !== "changedSinceCheck") {
+          throw new Error("Request a targeted recheck only for a claim whose Verification Currency changed.");
+        }
+        const controller = new AbortController();
+        const log = this.agentWorkLogs[session.id] ??= [];
+        const fromSequence = log.length + 1;
+        const promise = Promise.resolve().then(() => this.modelRuntime!.recheckArtifactClaim({
+          sessionId: session.id,
+          learningGoal: session.learningGoal,
+          artifactTitle: artifact.title,
+          exactClaim: claim.claimStatement,
+          priorEvidence: claim.verificationEvidence.map((evidence) => ({
+            method: evidence.method, outcome: evidence.outcome, summary: evidence.summary,
+            changedBecause: evidence.changedBecause
+          })),
+          signal: controller.signal,
+          onRuntimeEvent: (event) => {
+            if (!controller.signal.aborted) log.push({ ...event, sequence: log.length + 1 });
+          }
+        }));
+        this.modelWorks.set(session.id, {
+          controller, promise, stop: () => undefined, markUnconfirmed: () => undefined,
+          restart: () => this.submit(action).then(() => undefined)
+        });
+        try {
+          const result = await promise;
+          if (log.length < fromSequence) throw new Error("The claim recheck produced no inspectable Agent Work evidence.");
+          if (controller.signal.aborted) throw new Error("Learning Artifact claim recheck was stopped.");
+          if (!result || !["supports", "disagrees", "unresolved"].includes(result.outcome)
+            || typeof result.summary !== "string" || !result.summary.trim()) {
+            throw new Error("Codex returned a malformed claim recheck. Retry to request a fresh reasoning review.");
+          }
+          return this.recordClaimCheck(session.id, {
+            target: "learningArtifact", targetId: artifact.id, claimId: claim.claimId,
+            method: "reasoningReview", outcome: result.outcome, summary: result.summary,
+            evidence: { kind: "agentWork", sessionId: session.id, fromSequence, toSequence: log.length }
+          });
+        } finally {
+          if (this.modelWorks.get(session.id)?.promise === promise) this.modelWorks.delete(session.id);
+        }
       }
       case "discardLearningArtifactRegeneration": {
         const session = this.requireArtifactEditingSession(action.sessionId);
@@ -3348,16 +3483,23 @@ export class LearningApplication {
       case "setLearningArtifactTextProtected": {
         const session = this.requireArtifactEditingSession(action.sessionId);
         const artifact = requireLearningArtifact(session, action.artifactId);
-        const content = requiredText(action.content, "Protected Artifact content");
         if (typeof action.protected !== "boolean") throw new Error("Choose whether this Artifact text is protected.");
-        if (!artifact.currentRevision.content.includes(content)) {
-          throw new Error("Protect exact text from the current Learning Artifact revision.");
-        }
-        const protectedContent = artifact.protectedContent ??= [];
+        const { startOffset, endOffset } = validatedArtifactSelection(action.selection, artifact.currentRevision.content);
+        const content = requiredText(
+          artifact.currentRevision.content.slice(startOffset, endOffset), "Protected Artifact content"
+        );
+        const protectedContent = artifact.protectedContent;
         if (action.protected) {
-          if (!protectedContent.includes(content)) protectedContent.push(content);
+          if (!protectedContent.some((item) => item.revisionId === artifact.currentRevision.id
+            && item.startOffset === startOffset && item.endOffset === endOffset)) {
+            protectedContent.push({
+              id: crypto.randomUUID(), revisionId: artifact.currentRevision.id,
+              startOffset, endOffset, content
+            });
+          }
         } else {
-          artifact.protectedContent = protectedContent.filter((item) => item !== content);
+          artifact.protectedContent = protectedContent.filter((item) => !(item.revisionId === artifact.currentRevision.id
+            && item.startOffset === startOffset && item.endOffset === endOffset));
         }
         artifact.pendingRegenerationProposal = null;
         break;
@@ -6426,6 +6568,89 @@ function editedArtifactClaims(
   }];
 }
 
+function regeneratedArtifactClaims(
+  claims: ClaimVerificationState[],
+  proposal: ArtifactRegenerationProposal
+): ClaimVerificationState[] {
+  const existing = new Map(claims.map((claim) => [claim.claimId, claim]));
+  const impactByClaim = new Map(proposal.claimImpacts.map((impact) => [impact.claimId, impact]));
+  const modelReference: ClaimEvidenceReference[] = proposal.agentWorkLogReference ? [{
+    kind: "agentWork",
+    sessionId: proposal.agentWorkLogReference.sessionId,
+    fromSequence: proposal.agentWorkLogReference.fromSequence,
+    toSequence: proposal.agentWorkLogReference.toSequence
+  }] : [];
+  return proposal.claimEdits.map((edit) => {
+    const statement = requiredText(edit.statement, "Exact claim");
+    if (edit.claimId === null) return {
+      claimId: crypto.randomUUID(),
+      claimStatement: statement,
+      claimOrigin: "modelGenerated" as const,
+      claimOriginReferences: structuredClone(modelReference),
+      ...emptyVerificationState()
+    };
+    const previous = existing.get(edit.claimId);
+    const impact = impactByClaim.get(edit.claimId);
+    if (!previous || !impact || impact.effect === "removed") {
+      throw new Error("The regeneration claim impact no longer matches the current Artifact revision.");
+    }
+    if (impact.effect === "unchanged") return structuredClone(previous);
+    const changedBecause = `Model-assisted Artifact regeneration changed this claim's ${impact.changedAspects.join(", ")}.`;
+    return {
+      ...previous,
+      claimId: crypto.randomUUID(),
+      claimStatement: statement,
+      claimOrigin: previous.claimOrigin === "modelGenerated" ? "modelGenerated" as const : "mixed" as const,
+      claimOriginReferences: [...structuredClone(previous.claimOriginReferences), ...structuredClone(modelReference)],
+      ...staleVerificationState(previous, changedBecause)
+    };
+  });
+}
+
+function rebaseLearnerProtectedFragments(
+  fragments: ProtectedArtifactFragment[],
+  proposal: ArtifactRegenerationProposal,
+  revision: LearningArtifactRevision
+): ProtectedArtifactFragment[] {
+  return fragments.map((fragment) => {
+    const location = locateProtectedFragmentInProposal(
+      { ...fragment, kind: "learnerProtected" },
+      proposal.selection,
+      proposal.replacementContent,
+      revision.content
+    );
+    if (!location) throw new Error("The applied regeneration lost learner-protected Artifact text.");
+    return {
+      ...fragment,
+      revisionId: revision.id,
+      startOffset: location.startOffset,
+      endOffset: location.endOffset
+    };
+  });
+}
+
+function rebaseProtectedFragmentsAfterDirectRevision(
+  fragments: ProtectedArtifactFragment[],
+  revision: LearningArtifactRevision,
+  requirePreservation: boolean
+): ProtectedArtifactFragment[] {
+  return fragments.flatMap((fragment) => {
+    const offsets = allStringOffsets(revision.content, fragment.content);
+    if (offsets.length !== 1) {
+      if (requirePreservation) {
+        throw new Error("The whole-artifact result did not preserve learner-protected text unambiguously.");
+      }
+      return [];
+    }
+    return [{
+      ...fragment,
+      revisionId: revision.id,
+      startOffset: offsets[0],
+      endOffset: offsets[0] + fragment.content.length
+    }];
+  });
+}
+
 function curatedClaimEdits(
   claims: ClaimVerificationState[],
   edits: Array<{ claimId: string | null; statement: string }>,
@@ -6722,6 +6947,11 @@ function validatedArtifactRegenerationResult(
     || !value.claimEdits.every((edit) => isRecord(edit)
       && (edit.claimId === null || typeof edit.claimId === "string")
       && typeof edit.statement === "string" && Boolean(edit.statement.trim()))
+    || !Array.isArray(value.claimImpacts)
+    || !value.claimImpacts.every((impact) => isRecord(impact) && typeof impact.claimId === "string"
+      && ["unchanged", "changed", "removed"].includes(String(impact.effect))
+      && Array.isArray(impact.changedAspects)
+      && impact.changedAspects.every((aspect) => ["text", "assumptions", "dependencies", "evidence"].includes(String(aspect))))
     || !Array.isArray(value.unresolvedRepairs)
     || !value.unresolvedRepairs.every((repair) => isRecord(repair)
       && ["mathematicalNotation", "citation", "structure"].includes(String(repair.kind))
@@ -6734,45 +6964,146 @@ function validatedArtifactRegenerationResult(
     || returnedClaimIds.some((claimId) => !currentClaimIds.has(claimId))) {
     throw new Error("Codex returned claim changes that do not match the current Artifact revision.");
   }
+  const impacts = value.claimImpacts as ArtifactRegenerationResult["claimImpacts"];
+  const impactIds = impacts.map((impact) => impact.claimId);
+  if (impactIds.length !== currentClaims.length || new Set(impactIds).size !== impactIds.length
+    || impactIds.some((claimId) => !currentClaimIds.has(claimId))) {
+    throw new Error("Codex must classify the impact on every current Artifact claim exactly once.");
+  }
+  const edits = value.claimEdits as ArtifactRegenerationResult["claimEdits"];
+  for (const claim of currentClaims) {
+    const impact = impacts.find((candidate) => candidate.claimId === claim.claimId)!;
+    const edit = edits.find((candidate) => candidate.claimId === claim.claimId);
+    if (impact.effect === "removed" ? edit !== undefined : edit === undefined) {
+      throw new Error("Codex returned inconsistent Artifact claim removal impact.");
+    }
+    const textChanged = edit !== undefined && edit.statement.trim() !== claim.claimStatement;
+    if (impact.effect === "unchanged" && (textChanged || impact.changedAspects.length > 0)) {
+      throw new Error("Codex returned an inconsistent unchanged Artifact claim impact.");
+    }
+    if (impact.effect === "changed" && impact.changedAspects.length === 0) {
+      throw new Error("Codex must identify why an Artifact claim changed.");
+    }
+    if (textChanged !== impact.changedAspects.includes("text")) {
+      throw new Error("Codex must classify changed exact claim text explicitly.");
+    }
+  }
   return structuredClone(value) as unknown as ArtifactRegenerationResult;
+}
+
+interface RegenerationProtectedFragment extends ProtectedArtifactFragment {
+  kind: "requiredTrailItem" | "personalNote" | "learnerProtected";
 }
 
 function artifactProtectedContent(
   session: LearningSession,
   artifact: LearningArtifact
-): Array<{ kind: "requiredTrailItem" | "personalNote" | "learnerProtected"; content: string }> {
+): RegenerationProtectedFragment[] {
   return [
-    ...session.trailDraft.items
-      .filter((item) => item.required && artifact.currentRevision.content.includes(item.content))
-      .map((item) => ({ kind: "requiredTrailItem" as const, content: item.content })),
-    ...artifact.currentRevision.personalNoteContributions
-      .filter((note) => artifact.currentRevision.content.includes(note.verbatim))
-      .map((note) => ({ kind: "personalNote" as const, content: note.verbatim })),
-    ...(artifact.protectedContent ?? []).map((content) => ({ kind: "learnerProtected" as const, content }))
+    ...session.trailDraft.items.filter((item) => item.required).flatMap((item) =>
+      locatedArtifactFragments(artifact.currentRevision, item.content, `trail-${item.id}`, "requiredTrailItem")),
+    ...artifact.currentRevision.personalNoteContributions.flatMap((note) =>
+      locatedArtifactFragments(artifact.currentRevision, note.verbatim, `note-${note.annotationId}`, "personalNote")),
+    ...artifact.protectedContent.map((fragment) => ({ ...fragment, kind: "learnerProtected" as const }))
   ];
+}
+
+function locatedArtifactFragments(
+  revision: LearningArtifactRevision,
+  content: string,
+  idPrefix: string,
+  kind: RegenerationProtectedFragment["kind"]
+): RegenerationProtectedFragment[] {
+  const fragments: RegenerationProtectedFragment[] = [];
+  let startOffset = revision.content.indexOf(content);
+  let occurrence = 0;
+  while (startOffset >= 0) {
+    fragments.push({
+      id: `${idPrefix}-${occurrence}`, revisionId: revision.id, kind, content,
+      startOffset, endOffset: startOffset + content.length
+    });
+    occurrence += 1;
+    startOffset = revision.content.indexOf(content, startOffset + Math.max(content.length, 1));
+  }
+  return fragments;
+}
+
+function locateProtectedFragmentInProposal(
+  fragment: RegenerationProtectedFragment,
+  selection: ArtifactRegenerationProposal["selection"],
+  replacementContent: string,
+  proposedContent: string
+): { startOffset: number; endOffset: number } | null {
+  if (selection !== null && fragment.endOffset <= selection.startOffset) {
+    return proposedContent.slice(fragment.startOffset, fragment.endOffset) === fragment.content
+      ? { startOffset: fragment.startOffset, endOffset: fragment.endOffset } : null;
+  }
+  if (selection !== null && fragment.startOffset >= selection.endOffset) {
+    const shift = replacementContent.length - (selection.endOffset - selection.startOffset);
+    const startOffset = fragment.startOffset + shift;
+    const endOffset = fragment.endOffset + shift;
+    return proposedContent.slice(startOffset, endOffset) === fragment.content ? { startOffset, endOffset } : null;
+  }
+  if (selection !== null && fragment.startOffset >= selection.startOffset && fragment.endOffset <= selection.endOffset) {
+    const occurrences = allStringOffsets(replacementContent, fragment.content);
+    return occurrences.length === 1 ? {
+      startOffset: selection.startOffset + occurrences[0],
+      endOffset: selection.startOffset + occurrences[0] + fragment.content.length
+    } : null;
+  }
+  if (selection !== null) return null;
+  const occurrences = allStringOffsets(proposedContent, fragment.content);
+  return occurrences.length === 1
+    ? { startOffset: occurrences[0], endOffset: occurrences[0] + fragment.content.length }
+    : null;
+}
+
+function allStringOffsets(content: string, fragment: string): number[] {
+  const offsets: number[] = [];
+  let offset = content.indexOf(fragment);
+  while (offset >= 0) {
+    offsets.push(offset);
+    offset = content.indexOf(fragment, offset + Math.max(fragment.length, 1));
+  }
+  return offsets;
+}
+
+function validatedArtifactSelection(
+  selection: { startOffset: number; endOffset: number } | undefined,
+  content: string
+): { startOffset: number; endOffset: number } {
+  if (!selection || !Number.isInteger(selection.startOffset) || !Number.isInteger(selection.endOffset)
+    || selection.startOffset < 0 || selection.endOffset <= selection.startOffset || selection.endOffset > content.length) {
+    throw new Error("Select exact text from the current Learning Artifact revision.");
+  }
+  return selection;
 }
 
 function detectedArtifactRepairIssues(selectedContent: string, replacementContent: string): ArtifactRepairIssue[] {
   const issues: ArtifactRepairIssue[] = [];
-  const notation = selectedContent.match(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g) ?? [];
+  const notation = selectedContent.match(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g) ?? [];
   for (const token of notation) {
     if (!replacementContent.includes(token)) issues.push({
       kind: "mathematicalNotation",
       description: `Restore or resolve the missing mathematical notation: ${token}.`
     });
   }
-  const citations = selectedContent.match(/\[[^\]]+\]\([^)]+\)|\[\^[^\]]+\]/g) ?? [];
+  const citations = selectedContent.match(
+    /\[[^\]]+\]\([^)]+\)|\[\^[^\]]+\]|\[[^\]]+\]\[[^\]]+\]|^\[[^\]]+\]:\s+\S+|Source Anchor\s+[A-Za-z0-9_-]+/gm
+  ) ?? [];
   for (const token of citations) {
     if (!replacementContent.includes(token)) issues.push({
       kind: "citation",
       description: `Restore or resolve the missing citation: ${token}.`
     });
   }
-  const headings = selectedContent.match(/^#{1,6}\s+.+$/gm) ?? [];
-  for (const token of headings) {
+  const structures = selectedContent.split("\n").filter((line) =>
+    /^(?:#{1,6}\s+.+|\s*(?:[-*+]\s+.+|\d+[.)]\s+.+|>\s+.+|```.*|~~~.*|\|.*\|\s*|={3,}\s*|-{3,}\s*|\*{3,}\s*|_{3,}\s*))$/.test(line)
+  );
+  for (const token of structures) {
     if (!replacementContent.includes(token)) issues.push({
       kind: "structure",
-      description: `Restore or resolve the missing structural heading: ${token}.`
+      description: `Restore or resolve the missing structural formatting: ${token}${/[.!?]$/.test(token) ? "" : "."}`
     });
   }
   return issues;
@@ -9234,18 +9565,60 @@ function migrateLearningArtifacts(value: unknown, sessionId: string): LearningAr
     const originatingSessionId = sessionId;
     const protectedContent = candidate.protectedContent === undefined ? [] : candidate.protectedContent;
     if (!Array.isArray(protectedContent)
-      || !protectedContent.every((content) => typeof content === "string" && Boolean(content.trim()))) {
+      || !protectedContent.every((fragment) => isRecord(fragment)
+        && typeof fragment.id === "string" && Boolean(fragment.id)
+        && fragment.revisionId === currentRevision.id
+        && Number.isInteger(fragment.startOffset) && Number.isInteger(fragment.endOffset)
+        && Number(fragment.startOffset) >= 0 && Number(fragment.endOffset) > Number(fragment.startOffset)
+        && Number(fragment.endOffset) <= currentRevision.content.length
+        && typeof fragment.content === "string" && Boolean(fragment.content)
+        && currentRevision.content.slice(Number(fragment.startOffset), Number(fragment.endOffset)) === fragment.content)) {
       throw new Error("Stored learner-protected Artifact content is invalid.");
     }
     const pendingRegenerationProposal = candidate.pendingRegenerationProposal === undefined
       || candidate.pendingRegenerationProposal === null
       ? null
       : migrateArtifactRegenerationProposal(candidate.pendingRegenerationProposal, currentRevision);
+    const regenerationTask = migrateArtifactRegenerationTask(candidate.regenerationTask, currentRevision);
     return {
       ...candidate, kind, originatingSessionId, currentRevision, revisions,
-      protectedContent: structuredClone(protectedContent), pendingRegenerationProposal
+      protectedContent: structuredClone(protectedContent) as ProtectedArtifactFragment[], pendingRegenerationProposal,
+      regenerationTask
     } as LearningArtifact;
   });
+}
+
+function migrateArtifactRegenerationTask(
+  value: unknown,
+  currentRevision: LearningArtifactRevision
+): ArtifactRegenerationTask | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id
+    || !["working", "stopped", "failed"].includes(String(value.status))
+    || typeof value.statusMessage !== "string" || !value.statusMessage.trim()
+    || typeof value.retryable !== "boolean" || !isRecord(value.request)
+    || (value.request.scope !== "section" && value.request.scope !== "wholeArtifact")
+    || typeof value.request.instruction !== "string" || !value.request.instruction.trim()
+    || typeof value.request.confirmWholeArtifact !== "boolean") {
+    throw new Error("Stored Learning Artifact regeneration task is invalid.");
+  }
+  const request = value.request;
+  if (request.scope === "section" && (!isRecord(request.selection)
+    || !Number.isInteger(request.selection.startOffset) || !Number.isInteger(request.selection.endOffset)
+    || Number(request.selection.startOffset) < 0 || Number(request.selection.endOffset) <= Number(request.selection.startOffset)
+    || Number(request.selection.endOffset) > currentRevision.content.length)) {
+    throw new Error("Stored Learning Artifact regeneration task is invalid.");
+  }
+  if (request.scope === "wholeArtifact" && (request.selection !== null || request.confirmWholeArtifact !== true)) {
+    throw new Error("Stored Learning Artifact regeneration task is invalid.");
+  }
+  const migrated = structuredClone(value) as unknown as ArtifactRegenerationTask;
+  return migrated.status === "working" ? {
+    ...migrated,
+    status: "stopped",
+    retryable: true,
+    statusMessage: "Regeneration was interrupted when the app closed. Retry it explicitly to continue."
+  } : migrated;
 }
 
 function migrateArtifactRegenerationProposal(
@@ -9262,6 +9635,11 @@ function migrateArtifactRegenerationProposal(
     || !value.claimEdits.every((edit) => isRecord(edit)
       && (edit.claimId === null || typeof edit.claimId === "string")
       && typeof edit.statement === "string" && Boolean(edit.statement.trim()))
+    || !Array.isArray(value.claimImpacts)
+    || !(value.agentWorkLogReference === null || (isRecord(value.agentWorkLogReference)
+      && typeof value.agentWorkLogReference.sessionId === "string"
+      && Number.isInteger(value.agentWorkLogReference.fromSequence)
+      && Number.isInteger(value.agentWorkLogReference.toSequence)))
     || typeof value.createdAt !== "string" || Number.isNaN(Date.parse(value.createdAt))
     || new Date(value.createdAt).toISOString() !== value.createdAt) {
     throw new Error("Stored Learning Artifact regeneration preview is invalid.");
@@ -9291,6 +9669,12 @@ function migrateArtifactRegenerationProposal(
     throw new Error("Stored Learning Artifact regeneration preview is invalid.");
   }
   const unresolvedRepairs = migrateArtifactRepairIssues(value.unresolvedRepairs);
+  validatedArtifactRegenerationResult({
+    replacementContent: value.replacementContent,
+    claimEdits: value.claimEdits,
+    claimImpacts: value.claimImpacts,
+    unresolvedRepairs
+  }, currentRevision.claims);
   return { ...structuredClone(value), unresolvedRepairs } as unknown as ArtifactRegenerationProposal;
 }
 

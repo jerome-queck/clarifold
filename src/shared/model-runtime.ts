@@ -176,7 +176,27 @@ export interface ArtifactRegenerationRequest {
 export interface ArtifactRegenerationResult {
   replacementContent: string;
   claimEdits: Array<{ claimId: string | null; statement: string }>;
+  claimImpacts: Array<{
+    claimId: string;
+    effect: "unchanged" | "changed" | "removed";
+    changedAspects: Array<"text" | "assumptions" | "dependencies" | "evidence">;
+  }>;
   unresolvedRepairs: Array<{ kind: "mathematicalNotation" | "citation" | "structure"; description: string }>;
+}
+
+export interface ArtifactClaimRecheckRequest {
+  sessionId: string;
+  learningGoal: string;
+  artifactTitle: string;
+  exactClaim: string;
+  priorEvidence: Array<{ method: string; outcome: string; summary: string; changedBecause: string | null }>;
+  signal: AbortSignal;
+  onRuntimeEvent?(event: ModelRuntimeEvent): void;
+}
+
+export interface ArtifactClaimRecheckResult {
+  outcome: "supports" | "disagrees" | "unresolved";
+  summary: string;
 }
 
 export interface DelayedTransferTask {
@@ -300,6 +320,7 @@ export interface ModelRuntime {
   createConceptPeek(request: ConceptPeekRequest): Promise<string>;
   synthesizeArtifact(request: ArtifactSynthesisRequest): Promise<ArtifactSynthesisResult>;
   regenerateArtifact(request: ArtifactRegenerationRequest): Promise<ArtifactRegenerationResult>;
+  recheckArtifactClaim(request: ArtifactClaimRecheckRequest): Promise<ArtifactClaimRecheckResult>;
   runSpecialistAgent(request: SpecialistAgentRequest): Promise<SpecialistAgentResult>;
   streamTeaching(request: TeachingRequest): Promise<void>;
   cancelTeaching(sessionId: string): Promise<void>;

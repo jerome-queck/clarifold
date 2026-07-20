@@ -961,6 +961,10 @@ describe("Learning Application", () => {
         claimId: synthesizedArtifact.currentRevision.claims[0].claimId,
         statement: `${synthesizedArtifact.currentRevision.claims[0].claimStatement} Clarified.`
       }],
+      claimImpacts: [{
+        claimId: synthesizedArtifact.currentRevision.claims[0].claimId,
+        effect: "changed", changedAspects: ["text"]
+      }],
       unresolvedRepairs: []
     };
     state = await application.submit({
@@ -970,7 +974,8 @@ describe("Learning Application", () => {
     });
     state = await application.submit({
       type: "applyLearningArtifactRegeneration", artifactId,
-      proposalId: state.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.id
+      proposalId: state.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.id,
+      confirmClaimImpact: true
     });
     expect(state.sessions[0].annotations[0]).toEqual(originalAnnotation);
     expect(state.sessions[0].learningArtifacts[0].currentRevision.personalNoteContributions)
@@ -1752,6 +1757,10 @@ describe("Learning Application", () => {
         { claimId: before.claims[0].claimId, statement: "Use a finite subcover of the selected neighbourhoods." },
         { claimId: before.claims[1].claimId, statement: "The complement is open." }
       ],
+      claimImpacts: [
+        { claimId: before.claims[0].claimId, effect: "changed", changedAspects: ["text", "dependencies"] },
+        { claimId: before.claims[1].claimId, effect: "unchanged", changedAspects: [] }
+      ],
       unresolvedRepairs: []
     };
 
@@ -1775,9 +1784,16 @@ describe("Learning Application", () => {
     expect(relaunchedPreview.getState().sessions[0].learningArtifacts[0].pendingRegenerationProposal)
       .toEqual(previewArtifact.pendingRegenerationProposal);
 
+    await expect(application.submit({
+      type: "applyLearningArtifactRegeneration", artifactId,
+      proposalId: previewArtifact.pendingRegenerationProposal!.id,
+      confirmClaimImpact: false
+    })).rejects.toThrow("Review and confirm the proposed claim impact");
+
     const applied = await application.submit({
       type: "applyLearningArtifactRegeneration", artifactId,
-      proposalId: previewArtifact.pendingRegenerationProposal!.id
+      proposalId: previewArtifact.pendingRegenerationProposal!.id,
+      confirmClaimImpact: true
     });
     const revised = applied.sessions[0].learningArtifacts[0];
     expect(revised.revisions.at(-1)).toEqual(before);
@@ -1788,12 +1804,56 @@ describe("Learning Application", () => {
     expect(revised.pendingRegenerationProposal).toBeNull();
     expect(revised.currentRevision.claims[0]).toMatchObject({
       claimStatement: "Use a finite subcover of the selected neighbourhoods.",
-      verificationLevel: "notIndependentlyChecked", verificationCurrency: "changedSinceCheck"
+      claimOrigin: "mixed", verificationLevel: "notIndependentlyChecked", verificationCurrency: "changedSinceCheck",
+      claimOriginReferences: expect.arrayContaining([expect.objectContaining({ kind: "agentWork" })])
     });
+    expect(revised.currentRevision.claims[0].claimOriginReferences)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "learnerRevision", revisionId: revised.currentRevision.id })]));
     expect(revised.currentRevision.claims[1]).toMatchObject({
       claimId: before.claims[1].claimId, claimStatement: "The complement is open.",
       verificationLevel: "reasoningReviewed", verificationCurrency: "current"
     });
+  });
+
+  it("invalidates a claim when regeneration changes assumptions without changing its displayed statement", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Make assumptions explicit",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const { artifactId } = await createPinnedArtifact(application, runtime);
+    let artifact = application.getState().sessions[0].learningArtifacts[0];
+    const claimId = artifact.currentRevision.claims[0].claimId;
+    await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId,
+      method: "reasoningReview", outcome: "supports", summary: "The current assumptions support the exact claim.",
+      evidence: { kind: "agentWork", sessionId: artifact.originatingSessionId, fromSequence: 1, toSequence: 2 }
+    });
+    artifact = application.getState().sessions[0].learningArtifacts[0];
+    runtime.artifactRegenerationResult = {
+      replacementContent: `${artifact.currentRevision.content}\nAssume the space is Hausdorff.`,
+      claimEdits: [{ claimId, statement: artifact.currentRevision.claims[0].claimStatement }],
+      claimImpacts: [{ claimId, effect: "changed", changedAspects: ["assumptions"] }],
+      unresolvedRepairs: []
+    };
+    let state = await application.submit({
+      type: "previewLearningArtifactRegeneration", artifactId, scope: "section",
+      selection: { startOffset: 0, endOffset: artifact.currentRevision.content.length },
+      instruction: "State the separation assumption."
+    });
+    state = await application.submit({
+      type: "applyLearningArtifactRegeneration", artifactId,
+      proposalId: state.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.id,
+      confirmClaimImpact: true
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
+      claimStatement: artifact.currentRevision.claims[0].claimStatement,
+      verificationLevel: "notIndependentlyChecked", verificationCurrency: "changedSinceCheck",
+      verificationEvidence: [expect.objectContaining({
+        currency: "changedSinceCheck", changedBecause: expect.stringContaining("assumptions")
+      })]
+    });
+    expect(state.sessions[0].learningArtifacts[0].currentRevision.claims[0].claimId).not.toBe(claimId);
   });
 
   it("enforces protected Artifact content and requires explicit whole-replacement confirmation", async () => {
@@ -1807,12 +1867,20 @@ describe("Learning Application", () => {
     const protectedSentence = artifact.currentRevision.content;
     await application.submit({ type: "addTrailItem", kind: "reasoningStep", content: protectedSentence });
     await application.submit({
-      type: "setLearningArtifactTextProtected", artifactId, content: protectedSentence, protected: true
+      type: "setLearningArtifactTextProtected", artifactId,
+      selection: { startOffset: 0, endOffset: protectedSentence.length }, protected: true
     });
+    expect(application.getState().sessions[0].learningArtifacts[0].protectedContent).toMatchObject([{
+      revisionId: artifact.currentRevision.id, startOffset: 0, endOffset: protectedSentence.length,
+      content: protectedSentence
+    }]);
     runtime.artifactRegenerationResult = {
       replacementContent: "A replacement that drops the protected argument.",
       claimEdits: artifact.currentRevision.claims.map((claim) => ({
         claimId: claim.claimId, statement: claim.claimStatement
+      })),
+      claimImpacts: artifact.currentRevision.claims.map((claim) => ({
+        claimId: claim.claimId, effect: "unchanged" as const, changedAspects: []
       })),
       unresolvedRepairs: []
     };
@@ -1835,6 +1903,51 @@ describe("Learning Application", () => {
     expect(artifact.pendingRegenerationProposal).toBeNull();
   });
 
+  it("preserves the learner-selected occurrence when protected text is duplicated", async () => {
+    const runtime = new DeterministicModelRuntime({
+      learningGoal: "Understand compactness", scope: "Clarify one step",
+      initialTeachingDirection: "Start locally", requiresConfirmation: false, confirmationReason: null
+    }, true);
+    const { application } = await launchWithRuntime(runtime);
+    const { artifactId } = await createPinnedArtifact(application, runtime);
+    let artifact = application.getState().sessions[0].learningArtifacts[0];
+    const content = "Repeated claim.\nMiddle step.\nRepeated claim.";
+    await application.submit({
+      type: "editLearningArtifact", artifactId, content, mathematicalChange: "formattingOnly"
+    });
+    artifact = application.getState().sessions[0].learningArtifacts[0];
+    const protectedStart = content.lastIndexOf("Repeated claim.");
+    await application.submit({
+      type: "setLearningArtifactTextProtected", artifactId,
+      selection: { startOffset: protectedStart, endOffset: protectedStart + "Repeated claim.".length }, protected: true
+    });
+    const middleStart = content.indexOf("Middle step.");
+    runtime.artifactRegenerationResult = {
+      replacementContent: "Expanded middle step with detail.",
+      claimEdits: artifact.currentRevision.claims.map((claim) => ({ claimId: claim.claimId, statement: claim.claimStatement })),
+      claimImpacts: artifact.currentRevision.claims.map((claim) => ({
+        claimId: claim.claimId, effect: "unchanged" as const, changedAspects: []
+      })),
+      unresolvedRepairs: []
+    };
+    let state = await application.submit({
+      type: "previewLearningArtifactRegeneration", artifactId, scope: "section",
+      selection: { startOffset: middleStart, endOffset: middleStart + "Middle step.".length },
+      instruction: "Expand only the middle step."
+    });
+    state = await application.submit({
+      type: "applyLearningArtifactRegeneration", artifactId,
+      proposalId: state.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.id,
+      confirmClaimImpact: true
+    });
+    const revised = state.sessions[0].learningArtifacts[0];
+    const selectedOccurrence = revised.protectedContent[0];
+    expect(selectedOccurrence.revisionId).toBe(revised.currentRevision.id);
+    expect(selectedOccurrence.startOffset).toBe(revised.currentRevision.content.lastIndexOf("Repeated claim."));
+    expect(revised.currentRevision.content.slice(selectedOccurrence.startOffset, selectedOccurrence.endOffset))
+      .toBe("Repeated claim.");
+  });
+
   it("surfaces lost mathematical formatting as repair work and attaches a targeted recheck to the new revision", async () => {
     const runtime = new DeterministicModelRuntime({
       learningGoal: "Understand compactness", scope: "Clarify notation",
@@ -1846,13 +1959,23 @@ describe("Learning Application", () => {
     const currentClaimId = artifact.currentRevision.claims[0].claimId;
     await application.submit({
       type: "editLearningArtifact", artifactId,
-      content: "## Claim\nFor $x \\in K$, use compactness [source](https://example.test/source).",
+      content: "## Claim\n- For \\(x \\in K\\), use compactness [source][compact].\n\n| Step | Reason |\n| --- | --- |\n| 1 | Source Anchor anchor-1 |\n\n[compact]: https://example.test/source",
       claimEdits: [{ claimId: currentClaimId, statement: "For x in K, use compactness." }]
+    });
+    artifact = application.getState().sessions[0].learningArtifacts[0];
+    await application.recordClaimCheck(artifact.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId, claimId: artifact.currentRevision.claims[0].claimId,
+      method: "reasoningReview", outcome: "supports", summary: "The earlier exact claim has a separate reasoning pass.",
+      evidence: { kind: "agentWork", sessionId: artifact.originatingSessionId, fromSequence: 1, toSequence: 2 }
     });
     artifact = application.getState().sessions[0].learningArtifacts[0];
     runtime.artifactRegenerationResult = {
       replacementContent: "Explain the compactness step more directly.",
       claimEdits: [{ claimId: artifact.currentRevision.claims[0].claimId, statement: "Compactness gives a finite subcover." }],
+      claimImpacts: [{
+        claimId: artifact.currentRevision.claims[0].claimId,
+        effect: "changed", changedAspects: ["text", "assumptions"]
+      }],
       unresolvedRepairs: []
     };
     const previewed = await application.submit({
@@ -1862,26 +1985,39 @@ describe("Learning Application", () => {
     });
     const proposal = previewed.sessions[0].learningArtifacts[0].pendingRegenerationProposal!;
     expect(proposal.unresolvedRepairs).toEqual([
-      { kind: "mathematicalNotation", description: "Restore or resolve the missing mathematical notation: $x \\in K$." },
-      { kind: "citation", description: "Restore or resolve the missing citation: [source](https://example.test/source)." },
-      { kind: "structure", description: "Restore or resolve the missing structural heading: ## Claim." }
+      { kind: "mathematicalNotation", description: "Restore or resolve the missing mathematical notation: \\(x \\in K\\)." },
+      { kind: "citation", description: "Restore or resolve the missing citation: [source][compact]." },
+      { kind: "citation", description: "Restore or resolve the missing citation: Source Anchor anchor-1." },
+      { kind: "citation", description: "Restore or resolve the missing citation: [compact]: https://example.test/source." },
+      { kind: "structure", description: "Restore or resolve the missing structural formatting: ## Claim." },
+      { kind: "structure", description: "Restore or resolve the missing structural formatting: - For \\(x \\in K\\), use compactness [source][compact]." },
+      { kind: "structure", description: "Restore or resolve the missing structural formatting: | Step | Reason |." },
+      { kind: "structure", description: "Restore or resolve the missing structural formatting: | --- | --- |." },
+      { kind: "structure", description: "Restore or resolve the missing structural formatting: | 1 | Source Anchor anchor-1 |." }
     ]);
     const applied = await application.submit({
-      type: "applyLearningArtifactRegeneration", artifactId, proposalId: proposal.id
+      type: "applyLearningArtifactRegeneration", artifactId, proposalId: proposal.id, confirmClaimImpact: true
     });
     const changedClaim = applied.sessions[0].learningArtifacts[0].currentRevision.claims[0];
     expect(applied.sessions[0].learningArtifacts[0].sourceAnchorIds).toEqual(artifact.sourceAnchorIds);
     expect(applied.sessions[0].learningArtifacts[0].currentRevision.unresolvedRepairs).toEqual(proposal.unresolvedRepairs);
     expect(application.createArtifactPortableCopy(artifact.originatingSessionId, artifactId).content)
       .toContain("## Unresolved Artifact Repair Work");
-    const rechecked = await application.recordClaimCheck(artifact.originatingSessionId, {
-      target: "learningArtifact", targetId: artifactId, claimId: changedClaim.claimId,
-      method: "reasoningReview", outcome: "supports", summary: "A targeted pass supports the regenerated claim.",
-      evidence: { kind: "agentWork", sessionId: artifact.originatingSessionId, fromSequence: 3, toSequence: 4 }
+    runtime.artifactClaimRecheckResult = {
+      outcome: "supports", summary: "A targeted pass supports the regenerated claim."
+    };
+    const rechecked = await application.submit({
+      type: "requestLearningArtifactClaimRecheck", artifactId, claimId: changedClaim.claimId
+    });
+    expect(runtime.artifactClaimRecheckRequests[0]).toMatchObject({
+      exactClaim: changedClaim.claimStatement,
+      priorEvidence: expect.arrayContaining([expect.objectContaining({ changedBecause: expect.any(String) })])
     });
     expect(rechecked.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
       claimId: changedClaim.claimId, verificationLevel: "reasoningReviewed", verificationCurrency: "current",
-      verificationEvidence: [expect.objectContaining({ summary: "A targeted pass supports the regenerated claim." })]
+      verificationEvidence: expect.arrayContaining([
+        expect.objectContaining({ summary: "A targeted pass supports the regenerated claim.", currency: "current" })
+      ])
     });
   });
 
@@ -1900,15 +2036,23 @@ describe("Learning Application", () => {
       selection: { startOffset: 0, endOffset: artifact.currentRevision.content.length },
       instruction: "Clarify the section."
     });
-    const stopped = expect(preview).rejects.toThrow("Learning Artifact regeneration was stopped");
+    const stopped = preview.catch((error: unknown) => error);
     await vi.waitFor(() => expect(runtime.artifactRegenerationRequests).toHaveLength(1));
     await application.shutdown();
-    await stopped;
-    expect(application.getState().sessions[0].learningArtifacts[0].pendingRegenerationProposal).toBeNull();
+    expect(await stopped).toEqual(expect.objectContaining({
+      message: "Learning Artifact regeneration was stopped."
+    }));
+    expect(application.getState().sessions[0].learningArtifacts[0]).toMatchObject({
+      pendingRegenerationProposal: null,
+      regenerationTask: { status: "stopped", retryable: true, statusMessage: expect.stringContaining("unchanged") }
+    });
     const relaunched = await LearningApplication.launch(dataDirectory);
     applications.push(relaunched);
     expect(relaunched.getState().sessions[0].learningArtifacts[0].currentRevision).toEqual(artifact.currentRevision);
     expect(relaunched.getState().sessions[0].learningArtifacts[0].pendingRegenerationProposal).toBeNull();
+    expect(relaunched.getState().sessions[0].learningArtifacts[0].regenerationTask).toMatchObject({
+      status: "stopped", retryable: true
+    });
   });
 
   it("stops in-flight synthesis on shutdown without stranding or partially persisting a revision", async () => {
@@ -8038,8 +8182,12 @@ class DeterministicModelRuntime implements ModelRuntime {
   readonly specialistRequests: SpecialistAgentRequest[] = [];
   readonly artifactSynthesisRequests: ArtifactSynthesisRequest[] = [];
   readonly artifactRegenerationRequests: ArtifactRegenerationRequest[] = [];
+  readonly artifactClaimRecheckRequests: Parameters<ModelRuntime["recheckArtifactClaim"]>[0][] = [];
+  artifactClaimRecheckResult: Awaited<ReturnType<ModelRuntime["recheckArtifactClaim"]>> = {
+    outcome: "supports", summary: "The exact revised claim follows from its stated assumptions."
+  };
   artifactRegenerationResult: Awaited<ReturnType<ModelRuntime["regenerateArtifact"]>> = {
-    replacementContent: "A regenerated section.", claimEdits: [], unresolvedRepairs: []
+    replacementContent: "A regenerated section.", claimEdits: [], claimImpacts: [], unresolvedRepairs: []
   };
   readonly conceptPeekRequests: Parameters<ModelRuntime["createConceptPeek"]>[0][] = [];
   readonly delayedTransferTaskRequests: Parameters<ModelRuntime["createDelayedTransferTask"]>[0][] = [];
@@ -8217,13 +8365,32 @@ class DeterministicModelRuntime implements ModelRuntime {
 
   async regenerateArtifact(request: ArtifactRegenerationRequest) {
     this.artifactRegenerationRequests.push(request);
+    request.onRuntimeEvent?.({
+      type: "threadStarted", threadId: "artifact-regeneration-thread", turnId: null, detail: "Thread started."
+    });
     if (this.holdArtifactRegeneration) {
       if (request.signal.aborted) throw new Error("Learning Artifact regeneration aborted.");
       await new Promise<void>((_resolve, reject) => {
         request.signal.addEventListener("abort", () => reject(new Error("Learning Artifact regeneration aborted.")), { once: true });
       });
     }
+    request.onRuntimeEvent?.({
+      type: "turnCompleted", threadId: "artifact-regeneration-thread", turnId: "artifact-regeneration-turn",
+      detail: "Regeneration proposal completed."
+    });
     return structuredClone(this.artifactRegenerationResult);
+  }
+
+  async recheckArtifactClaim(request: Parameters<ModelRuntime["recheckArtifactClaim"]>[0]) {
+    this.artifactClaimRecheckRequests.push(request);
+    request.onRuntimeEvent?.({
+      type: "threadStarted", threadId: "artifact-claim-recheck-thread", turnId: null, detail: "Thread started."
+    });
+    request.onRuntimeEvent?.({
+      type: "turnCompleted", threadId: "artifact-claim-recheck-thread", turnId: "artifact-claim-recheck-turn",
+      detail: "Reasoning recheck completed."
+    });
+    return structuredClone(this.artifactClaimRecheckResult);
   }
 
   emitTeaching(delta: string) {
