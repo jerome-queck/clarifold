@@ -60,7 +60,7 @@ function parseJson(text: string, path: string): unknown {
 }
 
 function readOptions(arguments_: string[]): QualityGateOptions {
-  let benchmarkPath = resolve("evaluation/benchmarks/v1/benchmark.json");
+  let benchmarkPath = resolve("evaluation/benchmarks/v2/benchmark.json");
   let evidencePath: string | undefined;
   let outputDirectory = resolve("quality-gate-report");
   for (let index = 0; index < arguments_.length; index += 1) {

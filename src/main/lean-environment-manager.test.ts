@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import bundledEnvironment from "../shared/bundled-verifier-environment.json";
-import { LeanEnvironmentManager } from "./lean-environment-manager";
+import { LeanEnvironmentManager, validateReferenceProof } from "./lean-environment-manager";
 
 describe("LeanEnvironmentManager", () => {
   const directories: string[] = [];
@@ -41,7 +41,7 @@ describe("LeanEnvironmentManager", () => {
   }
 
   it("installs through staging, reports storage, removes the active environment, and reinstalls it", async () => {
-    const { registry, manager } = await fixture();
+    const { registry, seedRoot, manager } = await fixture();
     expect(await manager.inspect()).toMatchObject({
       installed: false, installedBytes: 0, cleanupRequired: false, activeEnvironmentId: null, environments: []
     });
@@ -49,7 +49,7 @@ describe("LeanEnvironmentManager", () => {
 
     const installed = await manager.install();
 
-    expect(installed.installedBytes).toBe(0);
+    expect(installed.installedBytes).toBeGreaterThan(0);
     expect(JSON.parse(await readFile(join(registry, bundledEnvironment.id, "manifest.json"), "utf8"))).toMatchObject({
       id: bundledEnvironment.id,
       leanVersion: bundledEnvironment.leanVersion
@@ -63,6 +63,13 @@ describe("LeanEnvironmentManager", () => {
     expect((await stat(join(registry, bundledEnvironment.id))).mode & 0o222).toBe(0);
     expect((await stat(join(registry, bundledEnvironment.id, "bin", "lean"))).mode & 0o222).toBe(0);
 
+    const restartedManager = new LeanEnvironmentManager(
+      registry, seedRoot, async () => undefined
+    );
+    expect(await restartedManager.inspect()).toMatchObject({
+      installed: true, installedBytes: installed.installedBytes, cleanupRequired: false
+    });
+
     const removed = await manager.remove();
     expect(removed.removedLogicalBytes).toBeGreaterThan(0);
     expect(await manager.inspect()).toMatchObject({
@@ -72,6 +79,26 @@ describe("LeanEnvironmentManager", () => {
 
     await manager.install();
     expect((await manager.inspect()).installed).toBe(true);
+  });
+
+  it("rejects staged activation when the supported mathlib dependency cannot resolve", async () => {
+    const root = await mkdtemp(join(tmpdir(), "quick-study-lean-validation-"));
+    directories.push(root);
+    await mkdir(join(root, "bin"), { recursive: true });
+    await mkdir(join(root, "app-support"), { recursive: true });
+    await writeFile(join(root, "bin", "lean"), [
+      "#!/bin/sh",
+      "if [ \"$1\" = \"--deps\" ]; then",
+      "  echo 'missing Mathlib.Data.Nat.Basic' >&2",
+      "  exit 1",
+      "fi",
+      "exit 0",
+      ""
+    ].join("\n"), "utf8");
+    await chmod(join(root, "bin", "lean"), 0o700);
+    await expect(validateReferenceProof(root)).rejects.toThrow(
+      /failed mathlib dependency resolution.*missing Mathlib\.Data\.Nat\.Basic/i
+    );
   });
 
   it("reports and cleans interrupted staging without activating a half-installed checker", async () => {
@@ -143,6 +170,21 @@ describe("LeanEnvironmentManager", () => {
 
     await expect(manager.assertInstalledIntegrity()).rejects.toThrow("does not match the signed application payload");
     expect(await manager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });
+  });
+
+  it("defers a deep immutability walk until integrity enforcement", async () => {
+    const { registry, seedRoot, manager } = await fixture();
+    await manager.install();
+    const component = join(registry, bundledEnvironment.id, "component.txt");
+    await chmod(join(registry, bundledEnvironment.id), 0o700);
+    await writeFile(component, "unexpected mutable component", { encoding: "utf8", mode: 0o600 });
+    await chmod(join(registry, bundledEnvironment.id), 0o500);
+
+    const restartedManager = new LeanEnvironmentManager(registry, seedRoot, async () => undefined);
+    expect(await restartedManager.inspect()).toMatchObject({ installed: true, cleanupRequired: false });
+    await expect(restartedManager.assertInstalledIntegrity()).rejects.toThrow(
+      "does not match the signed application payload"
+    );
   });
 
   it("does not follow an active-environment symlink while preparing a managed move", async () => {

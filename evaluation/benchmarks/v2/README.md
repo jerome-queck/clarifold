@@ -1,0 +1,9 @@
+# Benchmark v2 rationale
+
+Version 2 keeps the v1 corpus, recovery procedures, scenario thresholds, and all non-disk numerical ceilings unchanged. It names the cost metric as incremental metered spend so a fixed ChatGPT subscription entitlement is disclosed separately instead of being misrepresented as a zero-dollar usage receipt.
+
+The installed macOS beta measurement found that the pinned Lean 4.29.1 and mathlib 4.29.1 environment occupies about 3.3 GiB of logical file content. Quick Study retains the immutable verifier inside the signed application while installing a separately validated, read-only active copy so removal, interrupted upgrades, and integrity checks cannot mutate the application payload. The v1 2.5 GiB verifier-footprint and 5 GiB whole-application ceilings could therefore not describe the approved architecture even when no unnecessary build cache was packaged.
+
+The v2 ceilings are 7.5 GiB for retained plus active verifier content and 8.5 GiB for the installed application plus isolated application data after the critical-journey suite. They are release ceilings, not target sizes, and do not expand the supported verifier profile. Future reductions remain desirable and any further threshold change requires another benchmark version.
+
+The pinned large-source latency fixture is generated deterministically by `tests/packaged-quick-study.spec.ts` as 100 ordered `reference-NNN.txt` files. Each file contains exactly 500 numbered UTF-8 lines using the checked-in sentence template about continuity on a compact metric space. The folder Source Layer represents the ordered corpus as one embedded-text extraction, the derived index is cleared before every one of five timed repetitions, every raw duration is retained, and every fixture byte is verified again after the complete installed journey.

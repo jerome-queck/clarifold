@@ -758,6 +758,7 @@ export interface AgentTaskSpecialistProgress {
   status: "pending" | "working" | "waiting" | "complete" | "retained";
   checkpoint: string;
   result: SpecialistAgentResult | null;
+  /** Generated output tokens consumed. The durable field name is retained for stored-state compatibility. */
   usedTokens: number;
   usedLatencyMs: number;
 }
@@ -5203,17 +5204,17 @@ export class LearningApplication {
           if (!prior) throw new Error("Dependent Specialist Agent work is missing its prerequisite result.");
           brief.constraints.push(`Earlier Specialist Agent conclusion: ${prior.content}`);
         }
-        const totalTokenBudget = specialistTokenBudget(task);
+        const totalOutputTokenBudget = specialistOutputTokenBudget(task);
         const totalLatencyBudget = specialistLatencyBudget(task);
-        const remainingTokens = totalTokenBudget - progress.usedTokens;
+        const remainingOutputTokens = totalOutputTokenBudget - progress.usedTokens;
         const remainingLatencyMs = totalLatencyBudget - progress.usedLatencyMs;
-        if (remainingTokens < 1) throw new Error("Specialist Agent reached its token budget before resumption.");
+        if (remainingOutputTokens < 1) throw new Error("Specialist Agent reached its output-token budget before resumption.");
         if (remainingLatencyMs < 1) throw new Error("Specialist Agent reached its latency budget before resumption.");
         const perAgentBudget: AgentBudget = {
           ...structuredClone(task.budget),
           agentCount: 1,
           concurrency: 1,
-          maxTokens: remainingTokens,
+          maxTokens: remainingOutputTokens,
           maxLatencyMs: remainingLatencyMs
         };
         progress.status = "working";
@@ -5258,10 +5259,10 @@ export class LearningApplication {
               this.emitState();
               this.queuePersistence();
             },
-            onTokenUsage: (totalTokens) => {
-              if (controller.signal.aborted || !Number.isInteger(totalTokens) || totalTokens < 0) return;
+            onTokenUsage: (outputTokens) => {
+              if (controller.signal.aborted || !Number.isInteger(outputTokens) || outputTokens < 0) return;
               accountLatency();
-              progress.usedTokens = Math.max(progress.usedTokens, tokenUsageAtStart + totalTokens);
+              progress.usedTokens = Math.max(progress.usedTokens, tokenUsageAtStart + outputTokens);
               this.queuePersistence();
             },
             onRuntimeEvent: (event) => {
@@ -6429,7 +6430,7 @@ function agentBudgetLimitMessage(error: unknown, preservedPartialOutput: boolean
   return null;
 }
 
-function specialistTokenBudget(task: AgentTask): number {
+function specialistOutputTokenBudget(task: AgentTask): number {
   return Math.floor(task.budget.maxTokens / task.budget.agentCount);
 }
 
@@ -6443,7 +6444,7 @@ function agentTaskHasRemainingBudget(task: AgentTask): boolean {
   const unfinished = task.specialistProgress.filter((progress) =>
     progress.status !== "complete" && progress.status !== "retained");
   return unfinished.length > 0 && unfinished.every((progress) =>
-    progress.usedTokens < specialistTokenBudget(task)
+    progress.usedTokens < specialistOutputTokenBudget(task)
     && progress.usedLatencyMs < specialistLatencyBudget(task));
 }
 

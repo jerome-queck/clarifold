@@ -81,7 +81,7 @@ export function formalizationForClaim(exactClaim: string): Formalization | null 
     exactClaim: KNOWN_CLAIM,
     formalStatement: "theorem quickStudyNatAddZero (n : Nat) : n + 0 = n",
     assumptions: ["n : Nat"],
-    proofSource: "import Mathlib.Data.Nat.Basic\n\ntheorem quickStudyNatAddZero (n : Nat) : n + 0 = n := by\n  simpa using Nat.add_zero n\n"
+    proofSource: "theorem quickStudyNatAddZero (n : Nat) : n + 0 = n := by\n  rfl\n"
   };
 }
 

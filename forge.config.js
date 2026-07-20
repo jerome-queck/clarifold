@@ -1,8 +1,10 @@
-const { chmod, readdir } = require("node:fs/promises");
+const { chmod, readdir, rm } = require("node:fs/promises");
 const { join } = require("node:path");
 
 module.exports = {
   packagerConfig: {
+    appBundleId: "com.jeromequeck.quick-study",
+    appCategoryType: "public.app-category.education",
     asar: { unpackDir: "dist/helpers" },
     icon: undefined,
     osxSign: {
@@ -15,6 +17,7 @@ module.exports = {
     ignore: [
       /^\/src($|\/)/,
       /^\/tests($|\/)/,
+      /^\/test-results($|\/)/,
       /^\/docs($|\/)/,
       /^\/native($|\/)/,
       /^\/scripts($|\/)/,
@@ -23,12 +26,17 @@ module.exports = {
       /^\/.agents($|\/)/,
       /^\/.claude($|\/)/,
       /^\/.github($|\/)/,
+      /^\/node_modules\/.cache($|\/)/,
       /^\/out($|\/)/
     ]
   },
-  makers: [],
+  makers: [{
+    name: "@electron-forge/maker-zip",
+    platforms: ["darwin"]
+  }],
   hooks: {
     prePackage: async (_forgeConfig, platform, arch) => {
+      await removeMetadataFiles(join(__dirname, "dist", "verifiers"));
       const priorVerifierDirectory = join(__dirname, "out", `Quick Study-${platform}-${arch}`,
         "Quick Study.app", "Contents", "Resources", "verifiers");
       await makeVerifierFilesWritable(priorVerifierDirectory);
@@ -62,5 +70,20 @@ async function makeVerifierFilesWritable(directory) {
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) await makeVerifierFilesWritable(path);
+  }
+}
+
+async function removeMetadataFiles(directory) {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await removeMetadataFiles(path);
+    else if (entry.name === ".DS_Store") await rm(path, { force: true });
   }
 }

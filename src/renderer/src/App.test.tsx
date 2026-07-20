@@ -10,6 +10,28 @@ import { toDateTimeLocal } from "./date-time";
 describe("anchored teaching workbench", () => {
   afterEach(cleanup);
 
+  it("shows beta support, privacy, recovery, limitations, and feedback guidance", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    const api = quickStudyApi(state);
+    window.quickStudy = api;
+
+    render(<App />);
+
+    const release = await screen.findByRole("region", { name: "Quick Study beta support" });
+    expect(release.textContent).toContain("install and hardware requirements are documented with the release artifact");
+    expect(release.textContent).toContain("Linked Sources stay in their original locations");
+    expect(release.textContent).toContain("Local Working Mode");
+    expect(release.textContent).toContain("not a public distribution");
+    const feedback = within(release).getByRole("link", { name: "Report beta feedback" });
+    expect(feedback.getAttribute("href"))
+      .toBe("https://github.com/jerome-queck/openai-build-week/issues/new");
+    await user.click(feedback);
+    expect(api.openExternal).toHaveBeenCalledWith("https://github.com/jerome-queck/openai-build-week/issues/new");
+  });
+
   it("confirms Lean removal with capability and storage impact, then offers reinstall", async () => {
     const user = userEvent.setup();
     const installed = workbenchState();
@@ -702,6 +724,22 @@ describe("anchored teaching workbench", () => {
     expect(window.quickStudy.submit).toHaveBeenCalledWith({
       type: "cancelSessionModelWork", sessionId: "session-1"
     });
+  });
+
+  it("labels the Specialist Agent budget as generated output rather than total context", async () => {
+    const state = workbenchState();
+    const session = state.sessions[0];
+    session.agentTasks = [agentTaskFixture(session)];
+    session.activeAgentTaskId = session.agentTasks[0].id;
+    window.quickStudy = quickStudyApi(state);
+
+    render(<App />);
+
+    const agentTask = await screen.findByRole("region", { name: "Agent Task Status" });
+    expect(within(agentTask).getByText(
+      "512 generated output tokens; input context and runtime reasoning are not charged"
+    )).toBeTruthy();
+    expect(agentTask.textContent).not.toContain("total input, output, and reasoning tokens");
   });
 
   it("offers keyboard-accessible explicit resumption for a checkpointed Agent Task", async () => {

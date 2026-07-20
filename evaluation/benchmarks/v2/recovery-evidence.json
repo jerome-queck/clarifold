@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "scenarioId": "recovery-runtime-loss",
+      "initialCondition": {
+        "kind": "runtime-unavailable",
+        "evidenceTitle": "launches into an honest authentication failure instead of hanging when Codex is unavailable"
+      },
+      "testTitles": [
+        "launches into an honest authentication failure instead of hanging when Codex is unavailable",
+        "surfaces honest runtime failures and retries the same Teaching Card"
+      ],
+      "installedValidations": [
+        "installed-critical-journeys"
+      ],
+      "failureBlocker": "unrecoverable-work"
+    },
+    {
+      "scenarioId": "recovery-interrupted-agent-work",
+      "initialCondition": {
+        "kind": "unfinished-agent-work-at-quit",
+        "evidenceTitle": "checkpoints an unfinished Agent Task on quit and resumes it only after an explicit learner action"
+      },
+      "testTitles": [
+        "checkpoints an unfinished Agent Task on quit and resumes it only after an explicit learner action"
+      ],
+      "installedValidations": [
+        "agent-recovery-journeys"
+      ],
+      "failureBlocker": "unrecoverable-work"
+    },
+    {
+      "scenarioId": "recovery-stale-source",
+      "initialCondition": {
+        "kind": "linked-source-revision-changed",
+        "evidenceTitle": "creates a visible Source Revision, rebuilds its Source Index, and never snapshots a change automatically"
+      },
+      "testTitles": [
+        "creates a visible Source Revision, rebuilds its Source Index, and never snapshots a change automatically"
+      ],
+      "installedValidations": [
+        "installed-critical-journeys"
+      ],
+      "failureBlocker": "source-mutation"
+    },
+    {
+      "scenarioId": "recovery-reanchoring-uncertainty",
+      "initialCondition": {
+        "kind": "anchor-match-uncertain-or-missing",
+        "evidenceTitle": "keeps uncertain and missing matches unresolved until the learner confirms a replacement, across relaunch"
+      },
+      "testTitles": [
+        "keeps uncertain and missing matches unresolved until the learner confirms a replacement, across relaunch"
+      ],
+      "installedValidations": [],
+      "failureBlocker": "unrecoverable-work"
+    },
+    {
+      "scenarioId": "recovery-privacy-denial",
+      "initialCondition": {
+        "kind": "session-access-denied",
+        "evidenceTitle": "denies app-server approval requests under Focused Access"
+      },
+      "testTitles": [
+        "denies app-server approval requests under Focused Access",
+        "supplies only authorized source content to the Model Runtime"
+      ],
+      "installedValidations": [
+        "installed-critical-journeys"
+      ],
+      "failureBlocker": "hidden-data-egress"
+    },
+    {
+      "scenarioId": "recovery-verifier-failure",
+      "initialCondition": {
+        "kind": "checker-unavailable",
+        "evidenceTitle": "reports an unavailable checker"
+      },
+      "testTitles": [
+        "reports an unavailable checker"
+      ],
+      "installedValidations": [
+        "installed-critical-journeys"
+      ],
+      "failureBlocker": "dishonest-verification"
+    },
+    {
+      "scenarioId": "recovery-verifier-upgrade",
+      "initialCondition": {
+        "kind": "verifier-staging-interrupted",
+        "evidenceTitle": "reports and cleans interrupted staging without activating a half-installed checker"
+      },
+      "testTitles": [
+        "reports and cleans interrupted staging without activating a half-installed checker",
+        "keeps a failed validation in inactive staging for explicit cleanup"
+      ],
+      "installedValidations": [],
+      "failureBlocker": "dishonest-verification"
+    },
+    {
+      "scenarioId": "recovery-artifact-invalidation",
+      "initialCondition": {
+        "kind": "artifact-claim-revision-changed",
+        "evidenceTitle": "stales only the exact changed claim in a multi-claim Artifact revision"
+      },
+      "testTitles": [
+        "stales only the exact changed claim in a multi-claim Artifact revision",
+        "invalidates a claim when regeneration changes assumptions without changing its displayed statement"
+      ],
+      "installedValidations": [],
+      "failureBlocker": "dishonest-verification"
+    },
+    {
+      "scenarioId": "recovery-critical-journey-accessibility",
+      "initialCondition": {
+        "kind": "accessible-action-failed",
+        "evidenceTitle": "announces Ask Bar action failures"
+      },
+      "testTitles": [
+        "announces Ask Bar action failures",
+        "restores a closed Contextual Inspector only through its Anchor Marker and returns focus on close",
+        "offers keyboard-accessible explicit resumption for a checkpointed Agent Task",
+        "opens keyboard-accessible Session Consolidation controls and requires an explicit Target Disposition",
+        "closes the Selection Palette with Escape and restores focus to the selected source control"
+      ],
+      "installedValidations": [
+        "installed-critical-journeys",
+        "agent-recovery-journeys"
+      ],
+      "failureBlocker": "inaccessible-critical-journey"
+    }
+  ]
+}

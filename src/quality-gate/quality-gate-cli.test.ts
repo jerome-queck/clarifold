@@ -20,8 +20,8 @@ describe("runQualityGate", () => {
     temporaryDirectories.push(outputDirectory);
 
     const result = await runQualityGate({
-      benchmarkPath: resolve("evaluation/benchmarks/v1/benchmark.json"),
-      evidencePath: resolve("evaluation/fixtures/passing-evidence-v1.json"),
+      benchmarkPath: resolve("evaluation/benchmarks/v2/benchmark.json"),
+      evidencePath: resolve("evaluation/fixtures/passing-evidence-v2.json"),
       outputDirectory
     });
 
@@ -31,7 +31,7 @@ describe("runQualityGate", () => {
       benchmarkVersion: string;
       benchmarkReliability: { scenarios: unknown[] };
     };
-    expect(jsonReport.benchmarkVersion).toBe("1.0.0");
+    expect(jsonReport.benchmarkVersion).toBe("2.0.0");
     expect(jsonReport.benchmarkReliability.scenarios).toHaveLength(16);
     expect(await readFile(result.markdownPath, "utf8")).toContain(
       "Causal educational impact: not supported"
