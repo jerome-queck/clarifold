@@ -143,9 +143,12 @@ describe("Contextual Inspector", () => {
           verificationEscalation: { recommended: false, reasons: [] }
         }],
         personalNoteContributions: [],
+        unresolvedRepairs: [],
         provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
       },
       revisions: [],
+      protectedContent: [],
+      pendingRegenerationProposal: null,
       sourceAnchorIds: ["anchor-1"],
       pinned: true
     };

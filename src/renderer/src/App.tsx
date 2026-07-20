@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   AgentWorkLogEvidence,
   AnnotationPurpose,
@@ -2226,6 +2226,12 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
   const [portabilityStatus, setPortabilityStatus] = useState<string | null>(null);
   const [portabilityError, setPortabilityError] = useState<string | null>(null);
   const [synthesisStatus, setSynthesisStatus] = useState<string | null>(null);
+  const [selectedSection, setSelectedSection] = useState<{ startOffset: number; endOffset: number; content: string } | null>(null);
+  const [regenerationInstruction, setRegenerationInstruction] = useState("");
+  const [wholeReplacementConfirmed, setWholeReplacementConfirmed] = useState(false);
+  const [regenerationStatus, setRegenerationStatus] = useState<string | null>(null);
+  const [regenerationError, setRegenerationError] = useState<string | null>(null);
+  const contentRef = useRef<HTMLTextAreaElement>(null);
   const artifactLabel = artifact.kind === "reformulatedProof" ? "Reformulated Proof" : "Learning Artifact";
   const originatingSessionId = sessionId ?? artifact.originatingSessionId;
   useEffect(() => {
@@ -2233,6 +2239,9 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
     setClaimEdits(artifact.currentRevision.claims.map(
       (claim) => ({ claimId: claim.claimId, statement: claim.claimStatement })
     ));
+    setSelectedSection(null);
+    setRegenerationInstruction("");
+    setWholeReplacementConfirmed(false);
   }, [artifact.currentRevision.id, artifact.currentRevision.content, artifact.currentRevision.claims]);
   const claimsChanged = claimEdits.length !== artifact.currentRevision.claims.length
     || claimEdits.some((edit, index) => edit.claimId !== artifact.currentRevision.claims[index]?.claimId
@@ -2261,12 +2270,63 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
       onState(await window.quickStudy.submit({
         type: "synthesizeLearningArtifact",
         ...(sessionId ? { sessionId } : {}),
-        artifactId: artifact.id
+        artifactId: artifact.id,
+        confirmWholeArtifact: wholeReplacementConfirmed
       }));
       setSynthesisStatus("Learning Artifact synthesized with the current Personal Note Synthesis Preference.");
     } catch (cause) {
       setSynthesisStatus(null);
       setPortabilityError(cause instanceof Error ? cause.message : "The Learning Artifact could not be synthesized.");
+    }
+  };
+  const captureSelectedSection = () => {
+    const field = contentRef.current;
+    if (!field || field.selectionEnd <= field.selectionStart) {
+      setRegenerationError("Select one non-empty section in the current Learning Artifact content.");
+      return;
+    }
+    setRegenerationError(null);
+    setSelectedSection({
+      startOffset: field.selectionStart,
+      endOffset: field.selectionEnd,
+      content: artifact.currentRevision.content.slice(field.selectionStart, field.selectionEnd)
+    });
+  };
+  const submitRegeneration = async (scope: "section" | "wholeArtifact") => {
+    setRegenerationError(null);
+    setRegenerationStatus(`Preparing ${scope === "section" ? "Section Regeneration" : "whole-artifact replacement"} preview…`);
+    try {
+      onState(await window.quickStudy.submit({
+        type: "previewLearningArtifactRegeneration",
+        ...(sessionId ? { sessionId } : {}),
+        artifactId: artifact.id,
+        scope,
+        ...(scope === "section" && selectedSection ? {
+          selection: { startOffset: selectedSection.startOffset, endOffset: selectedSection.endOffset }
+        } : {}),
+        instruction: regenerationInstruction,
+        ...(scope === "wholeArtifact" ? { confirmWholeArtifact: wholeReplacementConfirmed } : {})
+      }));
+      setRegenerationStatus("Regeneration preview ready. Review it before applying.");
+    } catch (cause) {
+      setRegenerationStatus(null);
+      setRegenerationError(cause instanceof Error ? cause.message : "The regeneration preview could not be prepared.");
+    }
+  };
+  const setSelectedTextProtected = async () => {
+    if (!selectedSection) return;
+    setRegenerationError(null);
+    try {
+      onState(await window.quickStudy.submit({
+        type: "setLearningArtifactTextProtected",
+        ...(sessionId ? { sessionId } : {}),
+        artifactId: artifact.id,
+        content: selectedSection.content,
+        protected: true
+      }));
+      setRegenerationStatus("Selected Artifact text is protected from regeneration.");
+    } catch (cause) {
+      setRegenerationError(cause instanceof Error ? cause.message : "The selected Artifact text could not be protected.");
     }
   };
   const runPortableAction = (action: () => Promise<void>) => void action().catch((cause: unknown) => {
@@ -2280,8 +2340,48 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
         <span className="saved">{statusLabel}</span>
       </div>
       <label htmlFor={`artifact-content-${artifact.id}`}>Learning Artifact content for {artifact.title}</label>
-      <textarea id={`artifact-content-${artifact.id}`} className="artifact-content" value={content}
+      <textarea ref={contentRef} id={`artifact-content-${artifact.id}`} className="artifact-content" value={content}
         onChange={(event) => setContent(event.target.value)} />
+      <section className="artifact-regeneration" aria-label={`Regenerate ${artifact.title}`}>
+        <h3>Regenerate with model help</h3>
+        <p className="subtle">Section Regeneration changes only selected text. Whole-artifact replacement is a separate confirmed scope.</p>
+        <button type="button" className="secondary" disabled={content !== artifact.currentRevision.content}
+          onClick={captureSelectedSection}>Use selected text as regeneration section</button>
+        {selectedSection && <>
+          <p className="record-link">Selected section: {selectedSection.content}</p>
+          <button type="button" className="text-button" onClick={() => void setSelectedTextProtected()}>
+            Protect selected text from regeneration
+          </button>
+        </>}
+        {(artifact.protectedContent?.length ?? 0) > 0 && <section aria-label="Learner-protected Artifact text">
+          <h4>Learner-protected text</h4>
+          <ul>{artifact.protectedContent!.map((protectedText) => <li key={protectedText}>
+            <span>{protectedText}</span>
+            <button type="button" className="text-button" aria-label={`Remove regeneration protection from ${protectedText}`}
+              onClick={() => void window.quickStudy.submit({
+                type: "setLearningArtifactTextProtected",
+                ...(sessionId ? { sessionId } : {}),
+                artifactId: artifact.id,
+                content: protectedText,
+                protected: false
+              }).then(onState)}>Remove protection</button>
+          </li>)}</ul>
+        </section>}
+        <label htmlFor={`artifact-regeneration-instruction-${artifact.id}`}>Requested change for selected Artifact section</label>
+        <textarea id={`artifact-regeneration-instruction-${artifact.id}`} value={regenerationInstruction}
+          onChange={(event) => setRegenerationInstruction(event.target.value)} />
+        <button type="button" className="secondary" disabled={!modelAvailable || !selectedSection
+          || !regenerationInstruction.trim() || content !== artifact.currentRevision.content}
+          onClick={() => void submitRegeneration("section")}>Preview Section Regeneration</button>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={wholeReplacementConfirmed}
+            onChange={(event) => setWholeReplacementConfirmed(event.target.checked)} />
+          Confirm this proposal may replace the whole Learning Artifact
+        </label>
+        <button type="button" className="secondary" disabled={!modelAvailable || !wholeReplacementConfirmed
+          || !regenerationInstruction.trim() || content !== artifact.currentRevision.content}
+          onClick={() => void submitRegeneration("wholeArtifact")}>Preview whole-artifact replacement</button>
+      </section>
       <fieldset className="artifact-claims">
         <legend>Exact mathematical claims</legend>
         {claimEdits.map((claim, index) => <div key={claim.claimId ?? `new-claim-${index}`}>
@@ -2305,7 +2405,7 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
           || (content === artifact.currentRevision.content && !claimsChanged)}
         onClick={() => void save()}>Save Learning Artifact revision</button>
       <button className="secondary" aria-label={`Synthesize Learning Artifact ${artifact.title}`}
-        disabled={!modelAvailable || synthesisStatus === "Synthesizing Learning Artifact…"}
+        disabled={!modelAvailable || !wholeReplacementConfirmed || synthesisStatus === "Synthesizing Learning Artifact…"}
         onClick={() => void synthesize()}>Synthesize artifact</button>
       <div className="artifact-portability-actions">
         <button className="secondary" aria-label={`Export ${artifactLabel} ${artifact.title}`}
@@ -2339,8 +2439,46 @@ function PinnedLearningArtifact({ artifact, onState, sessionId, verifierManifest
         </section>
       )}
       {synthesisStatus && <p className="saved" role="status">{synthesisStatus}</p>}
+      {regenerationStatus && <p className="saved" role="status">{regenerationStatus}</p>}
       {portabilityStatus && <p className="saved" role="status">{portabilityStatus}</p>}
       {portabilityError && <p className="failure-message" role="alert">{portabilityError}</p>}
+      {regenerationError && <p className="failure-message" role="alert">{regenerationError}</p>}
+      {artifact.pendingRegenerationProposal && <section className="artifact-regeneration-preview"
+        aria-label={`${artifact.pendingRegenerationProposal.scope === "section" ? "Section Regeneration" : "Whole-artifact replacement"} preview`}>
+        <h3>{artifact.pendingRegenerationProposal.scope === "section" ? "Section Regeneration" : "Whole-artifact replacement"} preview</h3>
+        <p className="subtle">Current revision remains unchanged until you apply this preview.</p>
+        <pre>{artifact.pendingRegenerationProposal.proposedContent}</pre>
+        <section aria-label="Regeneration verification impact">
+          <h4>Verification impact</h4>
+          <ul>{artifactRegenerationVerificationImpact(artifact).map((impact) => <li key={impact}>{impact}</li>)}</ul>
+        </section>
+        {artifact.pendingRegenerationProposal.unresolvedRepairs.length > 0 && <section aria-label="Unresolved repair work">
+          <h4>Unresolved repair work</h4>
+          <ul>{artifact.pendingRegenerationProposal.unresolvedRepairs.map((repair, index) =>
+            <li key={`${repair.kind}-${index}`}>{repair.description}</li>)}</ul>
+        </section>}
+        <button type="button" className="secondary"
+          aria-label={`Apply ${artifact.pendingRegenerationProposal.scope === "section" ? "Section Regeneration" : "whole-artifact replacement"} preview`}
+          onClick={() => void window.quickStudy.submit({
+            type: "applyLearningArtifactRegeneration",
+            ...(sessionId ? { sessionId } : {}),
+            artifactId: artifact.id,
+            proposalId: artifact.pendingRegenerationProposal!.id
+          }).then(onState).catch((cause: unknown) => setRegenerationError(
+            cause instanceof Error ? cause.message : "The regeneration preview could not be applied."
+          ))}>Apply preview</button>
+        <button type="button" className="text-button" onClick={() => void window.quickStudy.submit({
+          type: "discardLearningArtifactRegeneration",
+          ...(sessionId ? { sessionId } : {}),
+          artifactId: artifact.id,
+          proposalId: artifact.pendingRegenerationProposal!.id
+        }).then(onState)}>Discard preview</button>
+      </section>}
+      {(artifact.currentRevision.unresolvedRepairs?.length ?? 0) > 0 && <section aria-label="Current Artifact unresolved repair work">
+        <h3>Unresolved repair work</h3>
+        <ul>{artifact.currentRevision.unresolvedRepairs!.map((repair, index) =>
+          <li key={`${repair.kind}-${index}`}>{repair.description}</li>)}</ul>
+      </section>}
       {artifact.revisions.length > 0 && <details className="artifact-history">
         <summary>Learning Artifact revision history</summary>
         <ol>{artifact.revisions.map((revision, index) => <li key={revision.id}>
@@ -2369,13 +2507,33 @@ function artifactRevisionProvenance(revision: LearningArtifact["currentRevision"
   const action = revision.provenance.action === "promoted"
     ? "Promoted"
     : revision.provenance.action === "edited" ? "Edited"
-      : revision.provenance.action === "synthesized" ? "Synthesized" : "Restored";
+      : revision.provenance.action === "synthesized" ? "Synthesized"
+        : revision.provenance.action === "regenerated" ? "Regenerated" : "Restored";
   const created = revision.provenance.createdAt
     ? new Date(revision.provenance.createdAt).toLocaleDateString("en-GB", {
         day: "numeric", month: "short", year: "numeric", timeZone: "UTC"
       })
     : "Date unavailable";
   return `${action} · ${created}`;
+}
+
+function artifactRegenerationVerificationImpact(artifact: LearningArtifact): string[] {
+  const proposal = artifact.pendingRegenerationProposal;
+  if (!proposal) return [];
+  const current = new Map(artifact.currentRevision.claims.map((claim, index) => [claim.claimId, { claim, index }]));
+  const retainedIds = new Set(proposal.claimEdits.flatMap((edit) => edit.claimId ? [edit.claimId] : []));
+  return [
+    ...proposal.claimEdits.map((edit, index) => {
+      if (edit.claimId === null) return `New claim ${index + 1} starts Not independently checked.`;
+      const prior = current.get(edit.claimId)!;
+      return edit.statement.trim() === prior.claim.claimStatement
+        ? `Current claim ${prior.index + 1} is unchanged and retains its Verification Currency.`
+        : `Current claim ${prior.index + 1} changed and will lose current Verification Currency until rechecked.`;
+    }),
+    ...artifact.currentRevision.claims.flatMap((claim, index) => retainedIds.has(claim.claimId) ? [] : [
+      `Current claim ${index + 1} is removed from the proposed revision; its evidence remains on the prior revision.`
+    ])
+  ];
 }
 
 function SessionAccessPanel({ state, session, onState }: {

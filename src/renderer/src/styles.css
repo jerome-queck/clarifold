@@ -312,6 +312,8 @@ input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px so
 .math-canvas > .model-access { margin-top: 4px; }
 .learning-artifact { margin: 6px 0 18px; padding: 24px; border: 2px solid #b8cfbd; border-radius: 16px; background: #f7fbf4; }
 .learning-artifact h2 { font-size: 25px; }
+.artifact-regeneration, .artifact-regeneration-preview { margin-top: 16px; padding: 16px; border: 1px solid #c8d9cc; border-radius: 12px; background: #fff; }
+.artifact-regeneration-preview pre { overflow: auto; white-space: pre-wrap; font: inherit; }
 .trail-draft { margin: 6px 0 18px; padding: 24px; border: 1px solid #c9d8cd; border-radius: 16px; background: #f7f4e9; }
 .trail-draft h2 { font-size: 25px; }
 .session-consolidation { margin-bottom: 22px; padding: 24px; border: 2px solid #7eaa91; border-radius: 18px; background: #eef4ec; }

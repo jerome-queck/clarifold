@@ -159,6 +159,26 @@ export interface ArtifactSynthesisResult {
   }>;
 }
 
+export interface ArtifactRegenerationRequest {
+  sessionId: string;
+  learningGoal: string;
+  artifactTitle: string;
+  artifactContent: string;
+  scope: "section" | "wholeArtifact";
+  selectedContent: string;
+  instruction: string;
+  protectedContent: Array<{ kind: "requiredTrailItem" | "personalNote" | "learnerProtected"; content: string }>;
+  claims: Array<{ claimId: string; statement: string }>;
+  signal: AbortSignal;
+  onRuntimeEvent?(event: ModelRuntimeEvent): void;
+}
+
+export interface ArtifactRegenerationResult {
+  replacementContent: string;
+  claimEdits: Array<{ claimId: string | null; statement: string }>;
+  unresolvedRepairs: Array<{ kind: "mathematicalNotation" | "citation" | "structure"; description: string }>;
+}
+
 export interface DelayedTransferTask {
   prompt: string;
   concept: string;
@@ -279,6 +299,7 @@ export interface ModelRuntime {
   assessDelayedTransferWork(request: DelayedTransferAssessmentRequest): Promise<DelayedTransferAssessment>;
   createConceptPeek(request: ConceptPeekRequest): Promise<string>;
   synthesizeArtifact(request: ArtifactSynthesisRequest): Promise<ArtifactSynthesisResult>;
+  regenerateArtifact(request: ArtifactRegenerationRequest): Promise<ArtifactRegenerationResult>;
   runSpecialistAgent(request: SpecialistAgentRequest): Promise<SpecialistAgentResult>;
   streamTeaching(request: TeachingRequest): Promise<void>;
   cancelTeaching(sessionId: string): Promise<void>;

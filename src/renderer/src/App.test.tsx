@@ -472,6 +472,65 @@ describe("anchored teaching workbench", () => {
       .toBe("Artifact Export handed to macOS sharing.");
   });
 
+  it("selects an Artifact section, previews repair work, and applies the proposed revision", async () => {
+    const user = userEvent.setup();
+    const state = workbenchState();
+    state.runtimeAvailable = true;
+    state.modelAccess = { status: "available" };
+    const artifact = state.sessions[0].learningArtifacts[0];
+    artifact.currentRevision.content = "## Strategy\nUse a finite subcover.\n\n## Conclusion\nThe complement is open.";
+    const selectedText = "Use a finite subcover.";
+    const startOffset = artifact.currentRevision.content.indexOf(selectedText);
+    const previewed = structuredClone(state);
+    previewed.sessions[0].learningArtifacts[0].pendingRegenerationProposal = {
+      id: "proposal-1", baseRevisionId: artifact.currentRevision.id, scope: "section",
+      selection: { startOffset, endOffset: startOffset + selectedText.length },
+      instruction: "Name the selected neighbourhoods.",
+      replacementContent: "Use a finite subcover of the selected neighbourhoods.",
+      proposedContent: "## Strategy\nUse a finite subcover of the selected neighbourhoods.\n\n## Conclusion\nThe complement is open.",
+      claimEdits: [{ claimId: "claim-1", statement: "Use a finite subcover of the selected neighbourhoods." }],
+      unresolvedRepairs: [{ kind: "citation", description: "Restore the source citation." }],
+      createdAt: "2026-07-20T00:00:00.000Z"
+    };
+    const applied = structuredClone(previewed);
+    applied.sessions[0].learningArtifacts[0].pendingRegenerationProposal = null;
+    applied.sessions[0].learningArtifacts[0].currentRevision.content =
+      previewed.sessions[0].learningArtifacts[0].pendingRegenerationProposal!.proposedContent;
+    const api = quickStudyApi(state);
+    vi.mocked(api.submit).mockImplementation(async (action) => {
+      if (action.type === "previewLearningArtifactRegeneration") return previewed;
+      if (action.type === "applyLearningArtifactRegeneration") return applied;
+      return state;
+    });
+    window.quickStudy = api;
+
+    render(<App />);
+    const artifactRegion = await screen.findByRole("article", { name: "Pinned Learning Artifact Explain compact subset" });
+    const content = within(artifactRegion).getByLabelText("Learning Artifact content for Explain compact subset");
+    (content as HTMLTextAreaElement).setSelectionRange(startOffset, startOffset + selectedText.length);
+    fireEvent.select(content);
+    await user.click(within(artifactRegion).getByRole("button", { name: "Use selected text as regeneration section" }));
+    expect(within(artifactRegion).getByText(`Selected section: ${selectedText}`)).toBeTruthy();
+    await user.type(within(artifactRegion).getByLabelText("Requested change for selected Artifact section"),
+      "Name the selected neighbourhoods.");
+    await user.click(within(artifactRegion).getByRole("button", { name: "Preview Section Regeneration" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "previewLearningArtifactRegeneration", artifactId: "artifact-1", scope: "section",
+      selection: { startOffset, endOffset: startOffset + selectedText.length },
+      instruction: "Name the selected neighbourhoods."
+    });
+
+    const preview = await screen.findByRole("region", { name: "Section Regeneration preview" });
+    expect(preview.textContent).toContain("Use a finite subcover of the selected neighbourhoods.");
+    expect(preview.textContent).toContain("Unresolved repair work");
+    expect(preview.textContent).toContain("Restore the source citation.");
+    expect(preview.textContent).toContain("Current claim 1 changed and will lose current Verification Currency until rechecked.");
+    await user.click(within(preview).getByRole("button", { name: "Apply Section Regeneration preview" }));
+    expect(api.submit).toHaveBeenCalledWith({
+      type: "applyLearningArtifactRegeneration", artifactId: "artifact-1", proposalId: "proposal-1"
+    });
+  });
+
   it("shows the compact Argument Roadmap and lets the learner edit or choose a Learning Slice before teaching", async () => {
     const user = userEvent.setup();
     const state = workbenchState();
@@ -1558,9 +1617,12 @@ function workbenchState(): LearningApplicationState {
             verificationEscalation: { recommended: false, reasons: [] }
           }],
           personalNoteContributions: [],
+          unresolvedRepairs: [],
           provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null }
         },
         revisions: [],
+        protectedContent: [],
+        pendingRegenerationProposal: null,
         sourceAnchorIds: ["anchor-1"],
         pinned: true
       }],

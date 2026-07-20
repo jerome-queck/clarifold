@@ -530,6 +530,52 @@ describe("Codex app-server contract", () => {
     expect(JSON.stringify(synthesisTurn.params)).toContain("authorized only for this artifact synthesis");
   });
 
+  it("requests a bounded section-regeneration proposal with protected content and exact claim edits", async () => {
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "regeneration-thread" } });
+      if (message.method === "turn/start") {
+        const params = message.params as { threadId: string };
+        transport.respond(message.id, { turn: { id: "regeneration-turn" } });
+        transport.notify("item/agentMessage/delta", {
+          threadId: params.threadId, turnId: "regeneration-turn", itemId: "regeneration-proposal",
+          delta: JSON.stringify({
+            replacementContent: "Use the selected finite subcover while retaining $x \\in K$.",
+            claimEdits: [{ claimId: "claim-1", statement: "Use the selected finite subcover." }],
+            unresolvedRepairs: [{ kind: "citation", description: "Confirm the source page." }]
+          })
+        });
+        transport.notify("turn/completed", {
+          threadId: params.threadId, turn: { id: "regeneration-turn", status: "completed", error: null }
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+    await expect(runtime.regenerateArtifact({
+      sessionId: "session-1", learningGoal: "Understand compactness", artifactTitle: "Compactness proof",
+      artifactContent: "Use a finite subcover while retaining $x \\in K$.", scope: "section",
+      selectedContent: "Use a finite subcover", instruction: "Name the selected cover.",
+      protectedContent: [{ kind: "learnerProtected", content: "$x \\in K$" }],
+      claims: [{ claimId: "claim-1", statement: "Use a finite subcover." }],
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      replacementContent: "Use the selected finite subcover while retaining $x \\in K$.",
+      claimEdits: [{ claimId: "claim-1", statement: "Use the selected finite subcover." }],
+      unresolvedRepairs: [{ kind: "citation", description: "Confirm the source page." }]
+    });
+    const turn = transport.messages.find((message) => message.method === "turn/start")!;
+    expect(turn).toMatchObject({ params: { outputSchema: {
+      required: ["replacementContent", "claimEdits", "unresolvedRepairs"]
+    } } });
+    expect(JSON.stringify(turn.params)).toContain("learnerProtected");
+    expect(JSON.stringify(turn.params)).toContain("Name the selected cover.");
+  });
+
   it("generates, clarifies, and assesses a delayed task through bounded structured turns", async () => {
     let turnNumber = 0;
     const transport = new ScriptedTransport((message) => {

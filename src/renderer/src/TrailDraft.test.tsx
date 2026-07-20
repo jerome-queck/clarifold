@@ -126,8 +126,10 @@ function trailSession(): LearningSession {
         verificationEscalation: { recommended: false, reasons: [] }
       }],
         personalNoteContributions: [],
+        unresolvedRepairs: [],
         provenance: { action: "promoted", createdAt: "2026-07-19T00:00:00.000Z", priorRevisionId: null } },
-      revisions: [], sourceAnchorIds: ["anchor-1"], pinned: true
+      revisions: [], protectedContent: [], pendingRegenerationProposal: null,
+      sourceAnchorIds: ["anchor-1"], pinned: true
     }],
     trailDraft: { items: [{
       id: "trail-1", kind: "concept", content: "compact subset", required: true, origin: "learner", curationKey: null,
