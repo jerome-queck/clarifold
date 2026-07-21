@@ -23,3 +23,19 @@ jobs:
             dist/verifiers
           key: bundled-lean-4.29.1-mathlib-4.29.1-foundations-v4-${{ runner.arch }}
       - run: npm run verify
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: quick-study-macos-beta-${{ runner.arch }}
+          if-no-files-found: error
+          path: |
+            out/make/zip/darwin/*/Quick Study-darwin-*.zip
+            test-results/beta-install.json
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: quality-gate-harness-fixture-only
+          if-no-files-found: error
+          path: |
+            test-results/quality-gate/*.json
+            test-results/quality-gate/*.md

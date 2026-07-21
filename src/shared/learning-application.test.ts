@@ -8562,8 +8562,8 @@ class DeterministicModelRuntime implements ModelRuntime {
     request?.onRuntimeEvent?.({ type: "toolCalled", workKind: "specialist", threadId: "specialist-thread", turnId: "specialist-turn", detail: content });
   }
 
-  reportSpecialistTokenUsage(totalTokens: number) {
-    this.specialistRequests.at(-1)?.onTokenUsage?.(totalTokens);
+  reportSpecialistTokenUsage(outputTokens: number) {
+    this.specialistRequests.at(-1)?.onTokenUsage?.(outputTokens);
   }
 
   failSpecialist(error: Error) {

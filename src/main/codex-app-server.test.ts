@@ -94,7 +94,7 @@ describe("Codex app-server contract", () => {
         method: "initialize",
         params: {
           clientInfo: { name: "quick_study", title: "Quick Study", version: "0.1.0" },
-          capabilities: null
+          capabilities: { experimentalApi: true, requestAttestation: false }
         }
       },
       { method: "initialized", params: {} }
@@ -350,6 +350,17 @@ describe("Codex app-server contract", () => {
     expect(JSON.stringify(slicedTurn?.params)).toContain("Teach only the chosen Learning Slice");
     expect(JSON.stringify(slicedTurn?.params)).toContain("Future Learning Sessions, not part of this Teaching Card: Error estimate; Application");
     expect(JSON.stringify(slicedTurn?.params)).toContain("Adaptive next Teaching Move: demonstrate through a proofStructural route.");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("end by asking the smallest useful clarification");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("within 180 words");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("recompute every displayed example or counterexample");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("state every domain and index restriction");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("Check boundary values and the first permitted index");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("preserve the current Session Target");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("Separate each source's authority and relevance");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("audit its hypotheses object by object");
+    expect(JSON.stringify(slicedTurn?.params)).toContain("Never transfer measurability, continuity, integrability");
+    expect(JSON.stringify(slicedTurn?.params)).not.toContain("1/n in the open interval (0,1)");
+    expect(JSON.stringify(slicedTurn?.params)).not.toContain("measurability of an almost-everywhere limit");
     expect(JSON.stringify(slicedTurn?.params)).toContain("Why this move: Understanding Evidence indicates a specific gap");
     expect(JSON.stringify(slicedTurn?.params)).toContain("Evidence Transfer from source-session");
     expect(JSON.stringify(slicedTurn?.params)).toContain("Prior-session Understanding Evidence from same-mission-session");
@@ -791,6 +802,9 @@ describe("Codex app-server contract", () => {
     const turnStart = transport.messages.find((message) => message.method === "turn/start")!;
     expect(turnStart).toMatchObject({ params: { effort: "high" } });
     expect(JSON.stringify(turnStart.params)).toContain("Choose disjoint neighbourhoods.");
+    expect(JSON.stringify(turnStart.params)).toContain("512-output-token limit");
+    expect(JSON.stringify(turnStart.params)).toContain("not charged against this output budget");
+    expect(JSON.stringify(turnStart.params)).not.toContain("total task token use");
     expect(JSON.stringify(turnStart.params)).not.toContain("/workspace");
     expect(events).toContain("specialist:turnCompleted");
     expect(statuses).toEqual(["waiting", "working"]);
@@ -858,7 +872,58 @@ describe("Codex app-server contract", () => {
     ]);
   });
 
-  it("interrupts Specialist Agent work when Codex reports total token use beyond its limit", async () => {
+  it("does not charge a Specialist Agent's large input context against its output-token budget", async () => {
+    const reportedTokenUsage: number[] = [];
+    const transport = new ScriptedTransport((message) => {
+      if (!("id" in message)) return;
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "input-budget-thread" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "input-budget-turn" } });
+        queueMicrotask(() => {
+          transport.notify("thread/tokenUsage/updated", {
+            threadId: "input-budget-thread", turnId: "input-budget-turn",
+            tokenUsage: {
+              total: { inputTokens: 29_700, cachedInputTokens: 0, outputTokens: 120, reasoningOutputTokens: 180, totalTokens: 30_000 },
+              last: { inputTokens: 29_700, cachedInputTokens: 0, outputTokens: 120, reasoningOutputTokens: 180, totalTokens: 30_000 },
+              modelContextWindow: 100_000
+            }
+          });
+          transport.notify("item/agentMessage/delta", {
+            threadId: "input-budget-thread", turnId: "input-budget-turn", itemId: "input-budget-result",
+            delta: JSON.stringify({ title: "Bounded review", content: "The proof must distinguish the two topologies." })
+          });
+          transport.notify("turn/completed", {
+            threadId: "input-budget-thread",
+            turn: { id: "input-budget-turn", status: "completed", error: null }
+          });
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await expect(runtime.runSpecialistAgent({
+      sessionId: "session-1", purpose: "Review one hidden assumption",
+      brief: {
+        learningGoal: "Understand compactness", sourceAnchors: [], constraints: ["Review one card."],
+        learnerEvidence: [], expectedOutput: "One concise card.", verificationNeeds: ["Identify assumptions."]
+      },
+      budget: {
+        agentCount: 1, concurrency: 1, model: "runtimeDefault", reasoningEffort: "medium",
+        tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
+      },
+      signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined,
+      onTokenUsage: (outputTokens) => reportedTokenUsage.push(outputTokens)
+    })).resolves.toMatchObject({ content: "The proof must distinguish the two topologies." });
+    expect(reportedTokenUsage).toEqual([120]);
+    expect(transport.messages).not.toContainEqual(expect.objectContaining({ method: "turn/interrupt" }));
+  });
+
+  it("interrupts Specialist Agent work when Codex reports output token use beyond its limit", async () => {
     const reportedTokenUsage: number[] = [];
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;
@@ -873,8 +938,8 @@ describe("Codex app-server contract", () => {
         queueMicrotask(() => transport.notify("thread/tokenUsage/updated", {
           threadId: "budget-thread", turnId: "budget-turn",
           tokenUsage: {
-            total: { inputTokens: 300, cachedInputTokens: 0, outputTokens: 120, reasoningOutputTokens: 100, totalTokens: 520 },
-            last: { inputTokens: 300, cachedInputTokens: 0, outputTokens: 120, reasoningOutputTokens: 100, totalTokens: 520 },
+            total: { inputTokens: 29_300, cachedInputTokens: 0, outputTokens: 513, reasoningOutputTokens: 187, totalTokens: 30_000 },
+            last: { inputTokens: 29_300, cachedInputTokens: 0, outputTokens: 513, reasoningOutputTokens: 187, totalTokens: 30_000 },
             modelContextWindow: 100_000
           }
         }));
@@ -894,9 +959,9 @@ describe("Codex app-server contract", () => {
         tools: ["checkpointSpecialistResult"], maxTokens: 512, maxLatencyMs: 120_000
       },
       signal: new AbortController().signal, onStatus: () => undefined, onPartialResult: () => undefined,
-      onTokenUsage: (totalTokens) => reportedTokenUsage.push(totalTokens)
+      onTokenUsage: (outputTokens) => reportedTokenUsage.push(outputTokens)
     })).rejects.toThrow("exceeded its token budget");
-    expect(reportedTokenUsage).toEqual([520]);
+    expect(reportedTokenUsage).toEqual([513]);
     expect(transport.messages).toContainEqual(expect.objectContaining({
       method: "turn/interrupt", params: { threadId: "budget-thread", turnId: "budget-turn" }
     }));

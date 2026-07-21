@@ -44,6 +44,13 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     return join(this.registryPath, `.lean-environment-digest-${environmentId}`);
   }
 
+  private installedSizePath(environmentId: string): string {
+    if (!/^[a-zA-Z0-9._-]{1,200}$/.test(environmentId)) {
+      throw new Error("The Verifier Environment identifier is invalid.");
+    }
+    return join(this.registryPath, `.lean-environment-size-${environmentId}`);
+  }
+
   async defaultInstallationNeeded(): Promise<boolean> {
     const inspection = await this.inspect();
     return !inspection.installed && !inspection.cleanupRequired && !await exists(this.removalMarkerPath);
@@ -54,7 +61,10 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     const interrupted = entries.some((name) => /\.((installing)|(removing))-[a-zA-Z0-9-]+$/.test(name));
     const environments = (await Promise.all(entries
       .filter((name) => !name.startsWith("."))
-      .map((name) => installedEnvironment(join(this.registryPath, name), this.installedBytesById.get(name))))).filter((entry): entry is VerifierEnvironmentInstallation => entry !== null);
+      .map(async (name) => installedEnvironment(
+        join(this.registryPath, name),
+        this.installedBytesById.get(name) ?? await recordedInstalledBytes(this.installedSizePath(name))
+      )))).filter((entry): entry is VerifierEnvironmentInstallation => entry !== null);
     const recordedActive = await readActiveEnvironmentId(this.activeMarkerPath);
     const fallbackActive = environments.find((entry) => entry.environment.id === BUNDLED_LEAN_ENVIRONMENT.id)?.environment.id ?? null;
     const activeEnvironmentId = environments.some((entry) => entry.environment.id === recordedActive)
@@ -103,10 +113,14 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       throw error;
     }
     await removeWritableTree(this.registryPath, backupPath);
+    const installedBytes = await directorySize(this.environmentPath);
+    await writeFile(this.installedSizePath(BUNDLED_LEAN_ENVIRONMENT.id), `${installedBytes}\n`, {
+      encoding: "utf8", mode: 0o600
+    });
     void this.recordEnvironmentDigest(BUNDLED_LEAN_ENVIRONMENT.id);
     await rm(this.removalMarkerPath, { force: true });
-    this.installedBytesById.set(BUNDLED_LEAN_ENVIRONMENT.id, 0);
-    return { installedBytes: 0, environment: BUNDLED_LEAN_ENVIRONMENT };
+    this.installedBytesById.set(BUNDLED_LEAN_ENVIRONMENT.id, installedBytes);
+    return { installedBytes, environment: BUNDLED_LEAN_ENVIRONMENT };
   }
 
   async activate(environmentId: string): Promise<void> {
@@ -137,6 +151,7 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
     await removeWritableTree(this.registryPath, removalPath);
     this.installedBytesById.delete(environmentId);
     await rm(this.digestPath(environmentId), { force: true });
+    await rm(this.installedSizePath(environmentId), { force: true });
     if (this.activeEnvironmentId === environmentId) {
       await rm(this.activeMarkerPath, { force: true });
       this.activeEnvironmentId = null;
@@ -149,6 +164,10 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       if (/\.((installing)|(removing))-[a-zA-Z0-9-]+$/.test(name)
         || (name === BUNDLED_LEAN_ENVIRONMENT.id && !await this.installedIntegrityIsValid(name))) {
         await removeWritableTree(this.registryPath, join(this.registryPath, name));
+        if (name === BUNDLED_LEAN_ENVIRONMENT.id) {
+          await rm(this.digestPath(name), { force: true });
+          await rm(this.installedSizePath(name), { force: true });
+        }
       }
     }
     for (const environmentId of environmentIds) {
@@ -156,6 +175,7 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
       const path = join(this.registryPath, environmentId);
       if (await exists(path)) await removeWritableTree(this.registryPath, path);
       await rm(this.digestPath(environmentId), { force: true });
+      await rm(this.installedSizePath(environmentId), { force: true });
     }
     const inspection = await this.inspect();
     return { installed: inspection.installed, installedBytes: inspection.installedBytes };
@@ -214,15 +234,27 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
   }
 }
 
-function validateReferenceProof(environmentPath: string): Promise<void> {
+export async function validateReferenceProof(environmentPath: string): Promise<void> {
+  const executable = join(environmentPath, "bin", "lean");
+  await executeValidation(executable, [
+    "--deps", join(environmentPath, "app-support", "QuickStudyMathlibDependency.lean")
+  ], "mathlib dependency resolution");
+  await executeValidation(executable, [
+    join(environmentPath, "app-support", "QuickStudyRuntimeHealth.lean")
+  ], "runtime health proof");
+}
+
+function executeValidation(executable: string, args: string[], description: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(join(environmentPath, "bin", "lean"), [join(environmentPath, "app-support", "QuickStudyNatAddZero.lean")], {
+    execFile(executable, args, {
       timeout: 15_000,
       encoding: "utf8",
       maxBuffer: 1024 * 1024
     }, (error, _stdout, stderr) => {
       if (!error) resolve();
-      else reject(new Error(`The staged Lean environment failed its reference proof. ${stderr.trim() || error.message}`));
+      else reject(new Error(
+        `The staged Lean environment failed ${description}. ${stderr.trim() || error.message}`
+      ));
     });
   });
 }
@@ -232,14 +264,24 @@ async function validInstalledEnvironment(path: string): Promise<boolean> {
 }
 
 async function installedEnvironment(path: string, installedBytes?: number): Promise<VerifierEnvironmentInstallation | null> {
-  if (!await validInstalledEnvironment(path)) return null;
+  if (!await validInspectableEnvironment(path)) return null;
   try {
     return {
       environment: JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as VerificationEnvironment,
-      installedBytes: installedBytes ?? await directorySize(path)
+      installedBytes: installedBytes ?? 0
     };
   } catch {
     return null;
+  }
+}
+
+async function recordedInstalledBytes(path: string): Promise<number | undefined> {
+  try {
+    const value = Number((await readFile(path, "utf8")).trim());
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
 }
 
@@ -273,6 +315,17 @@ async function validEnvironmentIdentity(path: string): Promise<boolean> {
     if (!validRecordedVerificationEnvironment(manifest)) return false;
     const executable = await lstat(join(path, "bin", "lean"));
     return executable.isFile() && !executable.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function validInspectableEnvironment(path: string): Promise<boolean> {
+  if (!await validEnvironmentIdentity(path)) return false;
+  try {
+    const criticalPaths = [path, join(path, "manifest.json"), join(path, "bin"), join(path, "bin", "lean")];
+    return (await Promise.all(criticalPaths.map((criticalPath) => lstat(criticalPath))))
+      .every((info) => !info.isSymbolicLink() && (info.mode & 0o222) === 0);
   } catch {
     return false;
   }

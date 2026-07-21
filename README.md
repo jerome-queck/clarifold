@@ -13,6 +13,9 @@ Supported Linked Sources can build a separate local Source Index containing sear
 ## Requirements
 
 - macOS
+- Apple Silicon (validated beta baseline)
+- macOS 14 Sonoma or later
+- 16 GB memory and 12 GB free disk space
 - Node.js 22 or 24 and npm 11
 
 Node.js 26 is not currently supported by the Electron packaging toolchain.
@@ -42,20 +45,21 @@ npm run typecheck   # renderer, Learning Application, preload, and main process
 npm test            # deterministic Learning Application behavior
 npm run build       # production renderer and Electron main-process bundles
 npm run package     # ad-hoc-signed macOS .app under out/
-npm run test:smoke  # packaged start, persist, quit, relaunch, and resume
+npm run make:beta   # architecture-native beta zip from the packaged .app
+npm run test:smoke  # install the zip, then exercise start, persist, quit, relaunch, and resume
 npm run quality:gate -- --evidence /absolute/path/to/release-evidence.json --out /absolute/path/to/report
 npm run verify      # all of the above in release order
 ```
 
 The versioned mathematical and failure-recovery release gate, operational budgets, evidence-collection procedure, and moderated learning-study instruments live under [`evaluation/`](evaluation/README.md). `npm run verify` exercises the gate with a clearly labelled deterministic fixture; a real release decision must supply separately collected evidence and can never default to that fixture.
 
-The packaged smoke test expects `npm run package` to have completed first. Packaging targets the current Mac architecture and produces `out/Quick Study-darwin-<arch>/Quick Study.app`. The build is ad-hoc signed for local and CI execution; distribution signing and notarization are separate release work.
+The smoke test expects `npm run package` and `npm run make:beta` to have completed first. Packaging targets the current Mac architecture; the maker produces `out/make/zip/darwin/<arch>/Quick Study-darwin-<arch>-0.1.0.zip`. The smoke lane extracts that archive into an isolated installation directory, verifies its code signature and bundled verifier, and launches the installed copy. See the [macOS beta guide](docs/beta-release.md) for support, install, privacy, recovery, known-limitation, and feedback guidance. The build is ad-hoc signed for local and CI evaluation; Developer ID signing and notarization remain required before public internet distribution.
 
 ## Environment and demo evidence
 
 This walking skeleton needs no API keys or application secrets. `QUICK_STUDY_DATA_DIR` is the only supported user-facing runtime override; it selects an isolated local data directory and must not point at imported learner sources. Do not commit learner data or local `.env` files. `QUICK_STUDY_LEAN_PATH` exists only for deterministic adapter tests and diagnosis; normal installations always use the packaged, pinned verifier. The packaged smoke test supplies isolated `QUICK_STUDY_TEST_*` fixture paths and a stubbed external-research handoff; those variables are test harness inputs, not product configuration.
 
-There is no hosted preview or deployment for this local-first desktop slice. The packaged `.app` is the preview artifact. A successful `npm run test:smoke` is the expected demo evidence: it organizes and resumes durable study work; keeps Background Agent Tasks visible across navigation; preserves checkpoints through cancellation, failure, quit, and explicit post-relaunch resumption; builds, searches, clears, and rebuilds a local Source Index; recovers a moved Linked Source through Locate again; detects a changed source, records its revision, and rebuilds its index; creates an explicit Source Snapshot without mutating the original; enters and recovers from Local Working Mode without automatic submission; formally checks one exact natural-number claim with packaged Lean, removes Lean while preserving the historical Verifier Manifest, shows formal checking as unavailable, reinstalls the same supported environment, and accepts a post-reinstall check; and exports a source-linked Reformulated Proof by keyboard. GitHub's macOS CI runs the full `npm run verify` lane for pull requests.
+There is no hosted preview or deployment for this local-first desktop beta. The architecture-native zip is the evaluation artifact. A successful `npm run test:smoke` is the expected demo evidence: it validates and launches the installed artifact; organizes and resumes durable study work; keeps Background Agent Tasks visible across navigation; preserves checkpoints through cancellation, failure, quit, and explicit post-relaunch resumption; builds, searches, clears, and rebuilds a local Source Index; recovers a moved Linked Source through Locate again; detects a changed source, records its revision, and rebuilds its index; creates an explicit Source Snapshot without mutating the original; enters and recovers from Local Working Mode without automatic submission; formally checks one exact natural-number claim with packaged Lean, removes Lean while preserving the historical Verifier Manifest, shows formal checking as unavailable, reinstalls the same supported environment, and accepts a post-reinstall check; and exports a source-linked Reformulated Proof by keyboard. GitHub's macOS CI runs the full `npm run verify` lane for pull requests.
 
 ## Architecture
 

@@ -115,7 +115,7 @@ class AppServerClient {
   async initialize(): Promise<void> {
     const response = await this.request("initialize", {
       clientInfo: { name: "quick_study", title: "Quick Study", version: "0.1.0" },
-      capabilities: null
+      capabilities: { experimentalApi: true, requestAttestation: false }
     });
     if (!isInitializeResponse(response)) {
       throw new Error("Codex app-server uses an incompatible initialize response.");
@@ -572,7 +572,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
         const content = await this.runTurn(
           [
             "Act as one task-scoped mathematical review Specialist Agent.",
-            `Keep total task token use, including input, output, and reasoning, within the ${request.budget.maxTokens}-token limit. Identify a hidden assumption in the supplied evidence, or confirm concisely that none is needed for the stated step. Do not claim independent or formal verification.`,
+            `Keep generated output within the ${request.budget.maxTokens}-output-token limit. The supplied Agent Brief and runtime reasoning are not charged against this output budget. Identify a hidden assumption in the supplied evidence, or confirm concisely that none is needed for the stated step. Do not claim independent or formal verification.`,
             "Call checkpoint_specialist_result after each useful self-contained conclusion and before returning the same final structured JSON. Every later checkpoint must include all earlier checkpoint content as a prefix. Only checkpoint content suitable for the learner-facing Teaching Card.",
             `Purpose: ${request.purpose}`,
             `Agent Brief: ${JSON.stringify(request.brief)}`,
@@ -615,7 +615,14 @@ export class CodexAppServerRuntime implements ModelRuntime {
             teachingFocus(request),
             "Mathematics:",
             request.mathematics,
-            "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur."
+            "Explain the mathematical strategy clearly, surface assumptions, and do not claim verification that did not occur.",
+            "When the learner identifies a missing prerequisite, name that gap, preserve the current Session Target, and keep any detour bounded. Offer the learner an explicit choice to open a Prerequisite Branch or continue the current target; never redirect the session silently.",
+            "When supplied sources or claims materially disagree, keep every competing claim and the disagreement visible. Separate each source's authority and relevance from independent corroboration and from your mathematical assessment; never silently rewrite a source or collapse the conflict into one settled claim.",
+            "When notation admits materially different interpretations and the supplied context does not resolve them, state at least two interpretations and end by asking the smallest useful clarification instead of choosing silently.",
+            "Before returning, independently recompute every displayed example or counterexample and remove or qualify it if the calculation has not been checked.",
+            "For every definition, example, counterexample, or sequence, state every domain and index restriction needed to keep all objects in scope; preserve the order and dependence of mathematical quantifiers explicitly. Check boundary values and the first permitted index, and repair the restriction if any constructed term falls outside its declared domain.",
+            "When stating a named theorem, audit its hypotheses object by object: explicitly give every required structural property of each space, function, sequence term, limit, and operator. Never transfer measurability, continuity, integrability, membership, or boundedness between sequence terms and a limit merely from convergence; state required properties separately or give sufficient ambient assumptions that imply them.",
+            "Keep the complete Teaching Card within 180 words unless the learner explicitly requested a longer derivation."
           ].join("\n\n"),
           undefined,
           request.onDelta,
@@ -862,15 +869,15 @@ export class CodexAppServerRuntime implements ModelRuntime {
     budgetExceeded: boolean;
     onRuntimeEvent?: (event: ModelRuntimeEvent) => void;
     reject(error: Error): void;
-  }, totalTokens: number): void {
-    if (turn.budgetExceeded || !turn.specialistMaxTokens || totalTokens <= turn.specialistMaxTokens) return;
+  }, outputTokens: number): void {
+    if (turn.budgetExceeded || !turn.specialistMaxTokens || outputTokens <= turn.specialistMaxTokens) return;
     turn.budgetExceeded = true;
     turn.onRuntimeEvent?.({
       type: "turnFailed",
       workKind: "specialist",
       threadId: turn.threadId,
       turnId,
-      detail: `Specialist Agent used ${totalTokens} tokens and exceeded its ${turn.specialistMaxTokens}-token limit.`
+      detail: `Specialist Agent used ${outputTokens} output tokens and exceeded its ${turn.specialistMaxTokens}-token limit.`
     });
     void this.client.request("turn/interrupt", { threadId: turn.threadId, turnId }).catch(() => undefined);
     turn.reject(new Error("Specialist Agent exceeded its token budget. Retry with a smaller task or a larger budget."));
@@ -885,8 +892,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
         this.bufferEarlyTurnNotification(usage.turnId, message);
         return;
       }
-      turn.onSpecialistTokenUsage?.(usage.totalTokens);
-      this.enforceSpecialistTokenBudget(usage.turnId, turn, usage.totalTokens);
+      turn.onSpecialistTokenUsage?.(usage.outputTokens);
+      this.enforceSpecialistTokenBudget(usage.turnId, turn, usage.outputTokens);
       return;
     }
     if (message.method === "item/agentMessage/delta") {
@@ -1198,11 +1205,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseTokenUsageUpdate(value: unknown): { turnId: string; totalTokens: number } | null {
+function parseTokenUsageUpdate(value: unknown): { turnId: string; outputTokens: number; totalTokens: number } | null {
   if (!isRecord(value) || typeof value.turnId !== "string" || !isRecord(value.tokenUsage)
+    || !isRecord(value.tokenUsage.last) || !Number.isInteger(value.tokenUsage.last.outputTokens)
+    || (value.tokenUsage.last.outputTokens as number) < 0
     || !isRecord(value.tokenUsage.total) || !Number.isInteger(value.tokenUsage.total.totalTokens)
     || (value.tokenUsage.total.totalTokens as number) < 0) return null;
-  return { turnId: value.turnId, totalTokens: value.tokenUsage.total.totalTokens as number };
+  return {
+    turnId: value.turnId,
+    outputTokens: value.tokenUsage.last.outputTokens as number,
+    totalTokens: value.tokenUsage.total.totalTokens as number
+  };
 }
 
 function isModelListResponse(value: unknown): value is {

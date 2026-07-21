@@ -73,7 +73,8 @@ await copySelectedLeanRuntime(leanSource, staging);
 await copyMathlibSupport(mathlibWorkingDirectory, staging);
 await chmod(join(staging, "bin", "lean"), 0o755);
 await mkdir(join(staging, "app-support"), { recursive: true });
-await writeFile(join(staging, "app-support", "QuickStudyNatAddZero.lean"), proofSource(), "utf8");
+await writeFile(join(staging, "app-support", "QuickStudyRuntimeHealth.lean"), proofSource(), "utf8");
+await writeFile(join(staging, "app-support", "QuickStudyMathlibDependency.lean"), mathlibDependencySource(), "utf8");
 await writeFile(join(staging, "manifest.json"), `${JSON.stringify({
   id: specification.id,
   checker: specification.checker,
@@ -211,14 +212,19 @@ async function preparedRuntimeIsCurrent(root) {
     const lean = join(root, "bin", "lean");
     const versionOutput = await run(lean, ["--version"], true);
     if (!versionOutput.includes(`version ${specification.leanVersion}`)) return false;
-    const validationFile = join(root, "app-support", "QuickStudyNatAddZero.lean");
+    await run(lean, ["--deps", join(root, "app-support", "QuickStudyMathlibDependency.lean")], true);
+    const validationFile = join(root, "app-support", "QuickStudyRuntimeHealth.lean");
     await run(lean, [validationFile], true);
     return true;
   } catch { return false; }
 }
 
 function proofSource() {
-  return "import Mathlib.Data.Nat.Basic\n\ntheorem quickStudyNatAddZero (n : Nat) : n + 0 = n := by\n  simpa using Nat.add_zero n\n";
+  return "theorem quickStudyRuntimeHealth (n : Nat) : n + 0 = n := by\n  rfl\n";
+}
+
+function mathlibDependencySource() {
+  return "import Mathlib.Data.Nat.Basic\n";
 }
 
 function run(command, args, capture = false, cwd = projectRoot) {
