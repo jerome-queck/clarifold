@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { boundedProcessEnvironment } from "./bounded-process-environment";
 import {
   validRecordedVerificationEnvironment,
   type VerificationEnvironment,
@@ -27,6 +28,8 @@ export type LeanCommandExecutor = (
 
 const executeLean: LeanCommandExecutor = (executable, args, options) => new Promise((resolve, reject) => {
   execFile(executable, args, {
+    cwd: dirname(executable),
+    env: boundedProcessEnvironment(),
     timeout: options.timeoutMs,
     signal: options.signal,
     encoding: "utf8",

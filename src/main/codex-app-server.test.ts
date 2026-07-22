@@ -1,7 +1,42 @@
 import { describe, expect, it, vi } from "vitest";
-import { CodexAppServerRuntime, type AppServerTransport } from "./codex-app-server";
+import {
+  CodexAppServerRuntime,
+  codexProcessLaunchSpecification,
+  type AppServerTransport
+} from "./codex-app-server";
 
 describe("Codex app-server contract", () => {
+  it("keeps executable metacharacters as data and inherits only the bounded runtime environment", () => {
+    const specification = codexProcessLaunchSpecification(
+      "/Applications/Codex; touch PWNED/Contents/MacOS/codex",
+      "/Users/learner/Maths \u03c0",
+      {
+        HOME: "/Users/learner",
+        PATH: "/usr/bin:/bin",
+        CODEX_HOME: "/Users/learner/.codex",
+        HTTPS_PROXY: "https://proxy.example",
+        LEARNER_CONTROLLED_SECRET: "must-not-cross-boundary",
+        NODE_OPTIONS: "--require=/tmp/untrusted.cjs"
+      }
+    );
+
+    expect(specification).toEqual({
+      executable: "/Applications/Codex; touch PWNED/Contents/MacOS/codex",
+      args: ["app-server", "--stdio"],
+      options: {
+        cwd: "/Users/learner/Maths \u03c0",
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        env: {
+          HOME: "/Users/learner",
+          PATH: "/usr/bin:/bin",
+          CODEX_HOME: "/Users/learner/.codex",
+          HTTPS_PROXY: "https://proxy.example"
+        }
+      }
+    });
+  });
+
   it("discovers only models and reasoning efforts advertised by the active runtime", async () => {
     const transport = new ScriptedTransport((message) => {
       if (!("id" in message)) return;
@@ -77,7 +112,7 @@ describe("Codex app-server contract", () => {
             transport.respond(message.id, {
               type: "chatgpt",
               loginId: "login-1",
-              authUrl: "https://auth.openai.example/login-1"
+              authUrl: "https://auth.openai.com/oauth/authorize?login_id=login-1"
             });
           } else {
             account = { type: "apiKey" };
@@ -102,7 +137,10 @@ describe("Codex app-server contract", () => {
     expect(await runtime.getAuthentication()).toEqual({ status: "signedOut" });
 
     const login = await runtime.startChatGptLogin();
-    expect(login).toEqual({ loginId: "login-1", authUrl: "https://auth.openai.example/login-1" });
+    expect(login).toEqual({
+      loginId: "login-1",
+      authUrl: "https://auth.openai.com/oauth/authorize?login_id=login-1"
+    });
     expect(transport.messages.at(-1)).toMatchObject({
       method: "account/login/start",
       params: { type: "chatgpt", codexStreamlinedLogin: true, appBrand: "codex" }
@@ -118,6 +156,49 @@ describe("Codex app-server contract", () => {
       method: "apiKey",
       accountLabel: null
     });
+  });
+
+  it.each([
+    {},
+    { account: { type: "chatgpt", email: 42 } },
+    { account: { type: "unexpected", email: null } },
+    { account: "signed-in" }
+  ])("rejects an incompatible authentication-state response: %j", async (response) => {
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "account/read") transport.respond(message.id, response);
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await expect(runtime.getAuthentication()).rejects.toThrow(
+      "Codex returned an incompatible authentication response."
+    );
+  });
+
+  it.each([
+    [{ type: "chatgpt", loginId: "login-1", authUrl: "https://example.test/oauth/authorize" }],
+    [{ type: "chatgpt", loginId: "login-1", authUrl: "https://auth.opena\u0131.com/oauth/authorize" }],
+    [{ type: "chatgpt", loginId: "login-1", authUrl: "https://auth.openai.com/%6fAuth/authorize" }],
+    [{ type: "chatgpt", loginId: "login-1", authUrl: 42 }],
+    [{ type: "apiKey" }]
+  ])("rejects an incompatible ChatGPT login response: %j", async (response) => {
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "account/login/start") transport.respond(message.id, response);
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await expect(runtime.startChatGptLogin()).rejects.toThrow(
+      /incompatible ChatGPT login response|unsupported ChatGPT authentication URL/
+    );
   });
 
   it("maps stable thread and turn events into a proposal and streamed Teaching Card", async () => {
@@ -1318,6 +1399,170 @@ describe("Codex app-server contract", () => {
     expect(transport.messages).toContainEqual({ id: 900, result: { decision: "decline" } });
     expect(transport.messages).toContainEqual({ id: 901, result: { decision: "decline" } });
     expect(transport.messages).toContainEqual({ id: 902, result: { decision: "denied" } });
+  });
+
+  it.each(["item/tool/callUnexpected", "item/tool/call\uFF0Foverride", "toString"])(
+    "rejects an unsupported server request method without dynamic dispatch: %s",
+    async (method) => {
+      const transport = new ScriptedTransport((message) => {
+        if (message.method === "initialize") {
+          transport.respond(message.id, {
+            userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+          });
+        }
+      });
+      await CodexAppServerRuntime.connect(transport, "/workspace");
+
+      transport.request(903, method, { tool: "request_session_access" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(transport.messages).toContainEqual({
+        id: 903,
+        error: { code: -32601, message: "Focused Access does not permit server-initiated requests." }
+      });
+    }
+  );
+
+  it.each(["unexpected_tool", "request_session_access\u0000", "checkpoint_specialist_resu\u0131t"])(
+    "rejects an unsupported dynamic tool key: %s",
+    async (tool) => {
+      const transport = new ScriptedTransport((message) => {
+        if (message.method === "initialize") {
+          transport.respond(message.id, {
+            userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+          });
+        }
+      });
+      await CodexAppServerRuntime.connect(transport, "/workspace");
+
+      transport.request(904, "item/tool/call", { tool, turnId: "turn-1", arguments: {} });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(transport.messages).toContainEqual({
+        id: 904,
+        result: {
+          success: false,
+          contentItems: [{ type: "inputText", text: "Codex requested an unsupported dynamic tool." }]
+        }
+      });
+    }
+  );
+
+  it("rejects an exact access tool that the originating bounded turn did not advertise", async () => {
+    const onAccessRequest = vi.fn(async () => ({ status: "denied" as const, policy: "focused" as const }));
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "thread-bounded" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "turn-bounded" } });
+        transport.request(705, "item/tool/call", {
+          threadId: "thread-bounded",
+          turnId: "turn-bounded",
+          tool: "request_session_access",
+          arguments: {
+            requestedPolicy: "full",
+            reason: "Try a broader source.",
+            exactScope: "/Users/learner",
+            intendedAction: "Read another source."
+          }
+        });
+      }
+      if (message.id === 705 && message.result) {
+        transport.notify("turn/completed", {
+          threadId: "thread-bounded", turn: { id: "turn-bounded", status: "completed", error: null }
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await runtime.streamTeaching({
+      sessionId: "bounded-session",
+      mathematics: "bounded monotone sequence",
+      learningGoal: "Understand the selected claim",
+      scope: "Explain one Source Anchor",
+      initialTeachingDirection: "Use only the supplied source",
+      accessScope: focusedAccessScope(),
+      sourceContext: [{ sourceId: "source-1", name: "lemma.txt", mediaType: "text/plain", content: "A bounded monotone sequence converges." }],
+      focus: {
+        kind: "sourceAnchor",
+        sourceAnchorId: "anchor-1",
+        sourceId: "source-1",
+        selection: { kind: "text", startOffset: 2, endOffset: 27, exactText: "bounded monotone sequence", prefix: "A ", suffix: " converges." },
+        instruction: "Explain this anchor.",
+        previousContent: null,
+        variantName: null
+      },
+      onAccessRequest,
+      onDelta: () => undefined,
+      signal: new AbortController().signal
+    });
+
+    expect(onAccessRequest).not.toHaveBeenCalled();
+    expect(transport.messages).toContainEqual({
+      id: 705,
+      result: {
+        success: false,
+        contentItems: [{ type: "inputText", text: "This dynamic tool is not authorized for its originating turn." }]
+      }
+    });
+  });
+
+  it("rejects a dynamic tool envelope whose thread does not own the registered turn", async () => {
+    const onAccessRequest = vi.fn(async () => ({ status: "denied" as const, policy: "focused" as const }));
+    const transport = new ScriptedTransport((message) => {
+      if (message.method === "initialize") {
+        transport.respond(message.id, {
+          userAgent: "codex-cli/0.144.1", codexHome: "/tmp/codex-home", platformFamily: "unix", platformOs: "macos"
+        });
+      }
+      if (message.method === "thread/start") transport.respond(message.id, { thread: { id: "thread-victim" } });
+      if (message.method === "turn/start") {
+        transport.respond(message.id, { turn: { id: "turn-victim" } });
+        transport.request(706, "item/tool/call", {
+          threadId: "thread-attacker",
+          turnId: "turn-victim",
+          tool: "request_session_access",
+          arguments: {
+            requestedPolicy: "full",
+            reason: "Try a broader source.",
+            exactScope: "/Users/learner",
+            intendedAction: "Read another source."
+          }
+        });
+      }
+      if (message.id === 706 && message.result) {
+        transport.notify("turn/completed", {
+          threadId: "thread-victim", turn: { id: "turn-victim", status: "completed", error: null }
+        });
+      }
+    });
+    const runtime = await CodexAppServerRuntime.connect(transport, "/workspace");
+
+    await runtime.streamTeaching({
+      sessionId: "victim-session",
+      mathematics: "Explain the theorem.",
+      learningGoal: "Understand the theorem",
+      scope: "Use available context",
+      initialTeachingDirection: "Inspect the hypotheses",
+      accessScope: focusedAccessScope(),
+      sourceContext: [],
+      onAccessRequest,
+      onDelta: () => undefined,
+      signal: new AbortController().signal
+    });
+
+    expect(onAccessRequest).not.toHaveBeenCalled();
+    expect(transport.messages).toContainEqual({
+      id: 706,
+      result: {
+        success: false,
+        contentItems: [{ type: "inputText", text: "This dynamic tool is not authorized for its originating turn." }]
+      }
+    });
   });
 
   it("routes the request_session_access dynamic tool through the learner decision callback", async () => {

@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants, createReadStream } from "node:fs";
 import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { boundedProcessEnvironment } from "./bounded-process-environment";
 import {
   BUNDLED_LEAN_ENVIRONMENT,
   validRecordedVerificationEnvironment,
@@ -247,6 +248,8 @@ export async function validateReferenceProof(environmentPath: string): Promise<v
 function executeValidation(executable: string, args: string[], description: string): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(executable, args, {
+      cwd: dirname(dirname(executable)),
+      env: boundedProcessEnvironment(),
       timeout: 15_000,
       encoding: "utf8",
       maxBuffer: 1024 * 1024
