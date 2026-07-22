@@ -58,6 +58,19 @@ The private hardening portfolio evaluated six options across two qualified oppor
 
 The recommended designs are guidance, not evidence that remediation is complete. #84 and #85 must cite focused tests, packaged reachability, and repository verification for their selected implementations.
 
+## Command and dispatch hardening record
+
+Issue #84 preserves the triage dismissals and addresses the remaining disclosure-safe control gap without reclassifying rejected scanner candidates as vulnerabilities:
+
+- Command injection remains dismissed: every production child launch selects one executable before launch, passes a structured argument array with `shell: false`, supplies an explicit working directory, and inherits only an allowlisted environment. Metacharacter and Unicode path tests confirm that argument content is not reinterpreted as a command.
+- The reported dynamic-property candidate remains dismissed: it was a source-literal typed collection operation with no externally selected property or method. Runtime server requests and dynamic tools now use exact allowlisted dispatch values; each admitted tool call must also match the registered thread, turn, purpose-specific advertised tool set, and callback before any side effect. ASCII and Unicode lookalikes, unadvertised tools, and cross-thread envelopes fail closed with non-sensitive errors.
+- Authentication state and ChatGPT-login results now receive purpose-specific runtime decoding. Authentication navigation is accepted only as one normalized HTTPS origin and route, rejects user-info, ports, lookalikes, encoded route variants, fragments, and malformed values at the child-response boundary, and applies the same policy again immediately before the privileged browser open.
+- Focused runtime tests exercise malformed responses, malicious metacharacters, unsupported dispatch keys, and Unicode or encoding variants. The packaged application test drives a hostile child-supplied authentication destination through the renderer and verifies that it is rejected before the browser-open boundary.
+
+This record does not close the separate Model Runtime data-authority or native document-resource findings assigned to #85.
+
+The authentication origin-and-route policy intentionally does not guess at an undocumented provider query contract. The current Codex runtime supplies the OAuth client, redirect, state, and proof-key parameters; tightening those query values requires authoritative provider evidence and remains a time-bounded follow-up rather than an unsupported security claim.
+
 ## Verification and limitations
 
 - All eight canonical candidates have one discovery, one validation, and one attack-path receipt.

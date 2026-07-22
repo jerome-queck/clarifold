@@ -817,6 +817,48 @@ test("installed Quick Study authenticates with the live Codex runtime and comple
   }
 });
 
+test("packaged Quick Study rejects a child-controlled authentication destination", async () => {
+  test.setTimeout(60_000);
+  const dataDirectory = await mkdtemp(join(tmpdir(), "quick-study-auth-policy-"));
+  const accessStatePath = join(dataDirectory, "fake-codex-access.json");
+  const openLogPath = join(dataDirectory, "authentication-open.log");
+  await writeFile(accessStatePath, JSON.stringify({
+    status: "signedOut",
+    authenticationUrl: "https://auth.openai.com.evil.example/oauth/authorize?state=\u03c0;open=/Applications/Calculator.app"
+  }), "utf8");
+  const port = await availablePort();
+  const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
+    env: {
+      ...process.env,
+      QUICK_STUDY_DATA_DIR: dataDirectory,
+      QUICK_STUDY_CODEX_PATH: join(process.cwd(), "tests/fixtures/fake-codex-app-server.mjs"),
+      QUICK_STUDY_TEST_AUTHENTICATION_OPEN_LOG: openLogPath
+    },
+    stdio: "pipe"
+  });
+  let output = "";
+  child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+  child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
+  let browser: Browser | undefined;
+  try {
+    await waitForDebugger(port, child, () => output);
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const page = await waitForPage(browser, child, () => output);
+    await expect(page.getByRole("heading", { name: "Connect Codex to begin teaching" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Sign in with ChatGPT" }).press("Enter");
+
+    await expect(page.getByRole("alert")).toContainText(
+      "Codex returned an unsupported ChatGPT authentication URL."
+    );
+    await expect(lstat(openLogPath)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await browser?.close().catch(() => undefined);
+    await terminateChild(child);
+    await removeTestDirectory(dataDirectory);
+  }
+});
+
 async function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();

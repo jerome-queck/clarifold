@@ -25,6 +25,8 @@ import { ModelAccessError, isCompleteEvidenceTransferContext, type
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { sessionAccessPolicyLabel } from "../shared/session-access";
+import { requireApprovedChatGptAuthenticationUrl } from "./authentication-navigation";
+import { boundedProcessEnvironment } from "./bounded-process-environment";
 
 type ProtocolId = number;
 
@@ -34,6 +36,23 @@ interface ProtocolMessage {
   params?: unknown;
   result?: unknown;
   error?: { code: number; message: string };
+}
+
+export function codexProcessLaunchSpecification(
+  executable: string,
+  cwd: string,
+  sourceEnvironment: Record<string, string | undefined> = process.env
+) {
+  return {
+    executable,
+    args: ["app-server", "--stdio"],
+    options: {
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+      shell: false as const,
+      env: boundedProcessEnvironment(sourceEnvironment)
+    }
+  };
 }
 
 export interface AppServerTransport {
@@ -51,10 +70,8 @@ class CodexProcessTransport implements AppServerTransport {
   private closed = false;
 
   constructor(command: string, cwd: string) {
-    this.process = spawn(command, ["app-server", "--stdio"], {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+    const launch = codexProcessLaunchSpecification(command, cwd);
+    this.process = spawn(launch.executable, launch.args, launch.options);
     createInterface({ input: this.process.stdout }).on("line", (line) => this.lineListener?.(line));
     this.process.stderr.on("data", (chunk: Buffer) => {
       this.stderr = `${this.stderr}${chunk.toString()}`.slice(-4_000);
@@ -237,6 +254,7 @@ class AppServerClient {
 export class CodexAppServerRuntime implements ModelRuntime {
   private readonly turns = new Map<string, {
     threadId: string;
+    allowedDynamicTools: ReadonlySet<string>;
     content: string;
     onDelta?: (delta: string) => void;
     resolve(content: string): void;
@@ -267,7 +285,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
     private readonly turnTimeoutMs: number
   ) {
     client.onNotification((message) => this.receiveNotification(message));
-    client.onServerRequest((_method, params) => this.handleDynamicToolCall(params));
+    client.onServerRequest((method, params) => this.handleDynamicToolCall(method, params));
     client.onFailure((error) => {
       this.runtimeFailure = error;
       this.failActiveTurns(error);
@@ -312,12 +330,18 @@ export class CodexAppServerRuntime implements ModelRuntime {
   }
 
   async getAuthentication(): Promise<AuthenticationState> {
-    const response = await this.client.request("account/read", { refreshToken: false }) as {
-      account: null | { type: "apiKey" } | { type: "chatgpt"; email: string | null };
-    };
+    const response = await this.client.request("account/read", { refreshToken: false });
+    if (!isRecord(response) || !("account" in response)
+      || (response.account !== null && !isRecord(response.account))) {
+      throw new Error("Codex returned an incompatible authentication response.");
+    }
     if (!response.account) return { status: "signedOut" };
     if (response.account.type === "apiKey") {
       return { status: "signedIn", method: "apiKey", accountLabel: null };
+    }
+    if (response.account.type !== "chatgpt"
+      || (response.account.email !== null && typeof response.account.email !== "string")) {
+      throw new Error("Codex returned an incompatible authentication response.");
     }
     return {
       status: "signedIn",
@@ -332,9 +356,16 @@ export class CodexAppServerRuntime implements ModelRuntime {
       codexStreamlinedLogin: true,
       useHostedLoginSuccessPage: true,
       appBrand: "codex"
-    }) as { type: "chatgpt"; loginId: string; authUrl: string };
-    if (response.type !== "chatgpt") throw new Error("Codex returned an unexpected login response.");
-    return { loginId: response.loginId, authUrl: response.authUrl };
+    });
+    if (!isRecord(response) || response.type !== "chatgpt"
+      || typeof response.loginId !== "string" || !response.loginId.trim()
+      || typeof response.authUrl !== "string") {
+      throw new Error("Codex returned an incompatible ChatGPT login response.");
+    }
+    return {
+      loginId: response.loginId,
+      authUrl: requireApprovedChatGptAuthenticationUrl(response.authUrl)
+    };
   }
 
   async loginWithApiKey(apiKey: string): Promise<void> {
@@ -686,6 +717,8 @@ export class CodexAppServerRuntime implements ModelRuntime {
     const boundedContext = anchoredFocus || contextualQuestion;
     const fullAccessTools = accessPolicy === "full" && !boundedContext;
     const runtimeSelection = specialistRequest?.budget ?? teachingRequest?.runtimeSelection;
+    const dynamicTools = specialistRequest ? [SPECIALIST_CHECKPOINT_TOOL]
+      : teachingRequest && !boundedContext ? [SESSION_ACCESS_REQUEST_TOOL] : [];
     const threadResponse = await this.client.request("thread/start", {
       cwd: this.cwd,
       approvalPolicy: "never",
@@ -694,8 +727,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
       ...(runtimeSelection?.model !== "runtimeDefault"
         ? { model: runtimeSelection?.model }
         : {}),
-      dynamicTools: specialistRequest ? [SPECIALIST_CHECKPOINT_TOOL]
-        : teachingRequest && !boundedContext ? [SESSION_ACCESS_REQUEST_TOOL] : [],
+      dynamicTools,
       config: {
         features: {
           apps: false,
@@ -768,6 +800,7 @@ export class CodexAppServerRuntime implements ModelRuntime {
       } : undefined;
       this.turns.set(turnResponse.turn.id, {
         threadId: threadResponse.thread.id,
+        allowedDynamicTools: new Set(dynamicTools.map((tool) => tool.name)),
         content: "",
         onDelta,
         resolve,
@@ -809,41 +842,58 @@ export class CodexAppServerRuntime implements ModelRuntime {
 
   private readonly activeTeachingTurns = new Map<string, Map<string, { threadId: string; turnId: string }>>();
 
-  private async handleDynamicToolCall(params: unknown): Promise<unknown> {
-    if (isRecord(params) && params.tool === "checkpoint_specialist_result") {
-      const call = parseSpecialistCheckpointToolCall(params);
-      const turn = await this.awaitRegisteredTurn(call.turnId);
-      if (!turn?.onSpecialistCheckpoint || !turn.specialistMaxTokens) {
-        throw new Error("This turn cannot checkpoint a Specialist Agent result.");
-      }
-      const checkpoint = parseSpecialistAgentResult(JSON.stringify(call.checkpoint));
-      if (turn.lastSpecialistCheckpoint && !checkpoint.content.startsWith(turn.lastSpecialistCheckpoint)) {
-        throw new Error("Specialist Agent checkpoints must retain all earlier useful conclusions.");
-      }
-      turn.lastSpecialistCheckpoint = checkpoint.content;
-      turn.onSpecialistCheckpoint(checkpoint.content);
-      turn.onRuntimeEvent?.({
-        type: "toolCalled",
-        workKind: "specialist",
-        threadId: turn.threadId,
-        turnId: call.turnId,
-        detail: JSON.stringify(checkpoint)
-      });
-      return { success: true, contentItems: [{ type: "inputText", text: "Checkpoint retained for learner-facing integration." }] };
+  private async handleDynamicToolCall(method: string, params: unknown): Promise<unknown> {
+    if (method !== "item/tool/call" || !isRecord(params) || typeof params.tool !== "string") {
+      throw new Error("Codex requested an unsupported dynamic tool.");
     }
-    const call = parseAccessRequestToolCall(params);
-    const turn = await this.awaitRegisteredTurn(call.turnId);
-    if (!turn?.onAccessRequest) throw new Error("This turn cannot request Session Access elevation.");
-    const decision = await turn.onAccessRequest(call.request);
-    return {
-      success: true,
-      contentItems: [{
-        type: "inputText",
-        text: decision.status === "denied"
-          ? `Access denied. Continue within ${sessionAccessPolicyLabel(decision.policy)} or explain the limitation.`
-          : `Access ${decision.status}. The Learning Session now uses ${sessionAccessPolicyLabel(decision.policy)}.`
-      }]
-    };
+    if (params.tool !== SPECIALIST_CHECKPOINT_TOOL.name && params.tool !== SESSION_ACCESS_REQUEST_TOOL.name) {
+      throw new Error("Codex requested an unsupported dynamic tool.");
+    }
+    if (typeof params.threadId !== "string" || typeof params.turnId !== "string") {
+      throw new Error("Codex sent an invalid dynamic tool context.");
+    }
+    const turn = await this.awaitRegisteredTurn(params.turnId);
+    if (!turn || turn.threadId !== params.threadId || !turn.allowedDynamicTools.has(params.tool)) {
+      throw new Error("This dynamic tool is not authorized for its originating turn.");
+    }
+    switch (params.tool) {
+      case "checkpoint_specialist_result": {
+        const call = parseSpecialistCheckpointToolCall(params);
+        if (!turn?.onSpecialistCheckpoint || !turn.specialistMaxTokens) {
+          throw new Error("This turn cannot checkpoint a Specialist Agent result.");
+        }
+        const checkpoint = parseSpecialistAgentResult(JSON.stringify(call.checkpoint));
+        if (turn.lastSpecialistCheckpoint && !checkpoint.content.startsWith(turn.lastSpecialistCheckpoint)) {
+          throw new Error("Specialist Agent checkpoints must retain all earlier useful conclusions.");
+        }
+        turn.lastSpecialistCheckpoint = checkpoint.content;
+        turn.onSpecialistCheckpoint(checkpoint.content);
+        turn.onRuntimeEvent?.({
+          type: "toolCalled",
+          workKind: "specialist",
+          threadId: turn.threadId,
+          turnId: call.turnId,
+          detail: JSON.stringify(checkpoint)
+        });
+        return { success: true, contentItems: [{ type: "inputText", text: "Checkpoint retained for learner-facing integration." }] };
+      }
+      case "request_session_access": {
+        const call = parseAccessRequestToolCall(params);
+        if (!turn?.onAccessRequest) throw new Error("This turn cannot request Session Access elevation.");
+        const decision = await turn.onAccessRequest(call.request);
+        return {
+          success: true,
+          contentItems: [{
+            type: "inputText",
+            text: decision.status === "denied"
+              ? `Access denied. Continue within ${sessionAccessPolicyLabel(decision.policy)} or explain the limitation.`
+              : `Access ${decision.status}. The Learning Session now uses ${sessionAccessPolicyLabel(decision.policy)}.`
+          }]
+        };
+      }
+      default:
+        throw new Error("Codex requested an unsupported dynamic tool.");
+    }
   }
 
   private async awaitRegisteredTurn(turnId: string) {

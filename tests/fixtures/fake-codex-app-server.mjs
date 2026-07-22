@@ -10,12 +10,13 @@ let serverRequestNumber = 1_000;
 const threadPolicies = new Map();
 const threadKinds = new Map();
 const pendingAccessRequests = new Map();
+const dataDirectory = process.env.QUICK_STUDY_DATA_DIR ?? process.cwd();
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
 const accessState = () => {
   try {
-    return JSON.parse(readFileSync(join(process.env.QUICK_STUDY_DATA_DIR, "fake-codex-access.json"), "utf8"));
+    return JSON.parse(readFileSync(join(dataDirectory, "fake-codex-access.json"), "utf8"));
   } catch {
     return { status: "available" };
   }
@@ -63,6 +64,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         send({ id: message.id, error: { code: -32000, message: accessState().message } });
         break;
       }
+      if (accessState().status === "signedOut") {
+        send({ id: message.id, result: { account: null, requiresOpenaiAuth: true } });
+        break;
+      }
       send({
         id: message.id,
         result: {
@@ -94,7 +99,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       break;
     case "account/login/start":
-      send({ id: message.id, result: { type: message.params.type } });
+      send({
+        id: message.id,
+        result: message.params.type === "chatgpt"
+          ? {
+              type: "chatgpt",
+              loginId: "fake-login",
+              authUrl: accessState().authenticationUrl ?? "https://auth.openai.com/oauth/authorize?state=fake"
+            }
+          : { type: message.params.type }
+      });
       break;
     case "thread/start":
       threadNumber += 1;
@@ -219,7 +233,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           && threadPolicies.get(message.params.threadId) !== "full")
           || (message.params.input[0].text.includes("TRIGGER_NARROW_ACCESS_REQUEST")
             && message.params.input[0].text.includes("Session Access Policy: Focused Access"))) {
-          writeFileSync(join(process.env.QUICK_STUDY_DATA_DIR, "fake-codex-last-teaching-input.json"), JSON.stringify({
+          writeFileSync(join(dataDirectory, "fake-codex-last-teaching-input.json"), JSON.stringify({
             prompt: message.params.input[0].text
           }), "utf8");
           const requestId = serverRequestNumber++;
@@ -243,7 +257,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           });
           return;
         } else {
-          writeFileSync(join(process.env.QUICK_STUDY_DATA_DIR, "fake-codex-last-teaching-input.json"), JSON.stringify({
+          writeFileSync(join(dataDirectory, "fake-codex-last-teaching-input.json"), JSON.stringify({
             prompt: message.params.input[0].text
           }), "utf8");
           send({

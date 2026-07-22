@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { execFile } from "node:child_process";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
@@ -19,6 +19,8 @@ import { MacOsArtifactSharing } from "./artifact-sharing";
 import { BrowserExternalResearch } from "./browser-external-research";
 import { LeanVerifierRuntime } from "./lean-verifier";
 import { LeanEnvironmentManager } from "./lean-environment-manager";
+import { requireApprovedChatGptAuthenticationUrl } from "./authentication-navigation";
+import { boundedProcessEnvironment } from "./bounded-process-environment";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
@@ -36,6 +38,8 @@ const sourceAccess = new MacOsSourceAccess({
   resolveSecurityScopedBookmark: async (bookmarkData) => {
     const helperPath = join(__dirname, "../helpers/source-bookmark-helper").replace("app.asar", "app.asar.unpacked");
     const { stdout } = await execFileAsync(helperPath, [bookmarkData], {
+      cwd: dirname(helperPath),
+      env: boundedProcessEnvironment(),
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
       encoding: "utf8"
@@ -58,6 +62,8 @@ const sourceAccess = new MacOsSourceAccess({
   extractDocument: async (path) => {
     const helperPath = join(__dirname, "../helpers/source-index-extractor").replace("app.asar", "app.asar.unpacked");
     const { stdout } = await execFileAsync(helperPath, [path], {
+      cwd: dirname(helperPath),
+      env: boundedProcessEnvironment(),
       timeout: 45_000,
       maxBuffer: 25 * 1024 * 1024,
       encoding: "utf8"
@@ -475,8 +481,10 @@ function registerLearningApplicationHandlers(): void {
   });
   ipcMain.handle("authentication:openExternal", async (event, url: unknown) => {
     if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
-    if (typeof url !== "string" || new URL(url).protocol !== "https:") throw new Error("Invalid authentication URL.");
-    await shell.openExternal(url);
+    const approvedUrl = requireApprovedChatGptAuthenticationUrl(url);
+    const fixtureLog = process.env.QUICK_STUDY_TEST_AUTHENTICATION_OPEN_LOG;
+    if (fixtureLog) await appendFile(fixtureLog, `${approvedUrl}\n`, "utf8");
+    else await shell.openExternal(approvedUrl);
   });
 }
 
