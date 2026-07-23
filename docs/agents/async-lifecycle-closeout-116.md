@@ -42,33 +42,35 @@ sleep, retry, product timeout, or product-indexing change.
   relevant tests after the fix, including the pinned 50,000-line corpus,
   clear/rebuild persistence, serialized index work, terminal model/access
   states, and the deliberate bounded-action stall.
-- The full suite is 26 Vitest files / 408 tests before the closeout change;
-  the final candidate `npm run verify` is the authoritative integrated result.
-- Packaged diagnostics are retained on failure even when the failing assertion
-  is outside an IPC action: trace, lifecycle output, backend state, and the
-  operation receipt are attached during scenario cleanup.
+- The full suite is 26 Vitest files / 408 tests; the final candidate
+  `npm run verify` is the authoritative integrated result.
+- Readiness waits are named bounded packaged actions, so a failed enabled-state
+  boundary receives the same action-level receipt as its dispatch. Trace,
+  lifecycle output, backend state, and operation receipts remain attached during
+  scenario cleanup.
 
 ## Exact candidate verification
 
-Candidate before this evidence-record update: `2c4fd701`.
+Candidate before this evidence-record update: `08344b3067f142dc9cfe2dc137b4276b26a4e4c9`.
 
 ```text
 PATH=/Users/jeromequeck/.nvm/versions/node/v24.11.0/bin:$PATH npm run verify
 26 Vitest files / 408 tests passed
 packaged index-budget: 1 passed in 9.9s
-packaged functional: 8 passed, 1 intentional live-runtime skip, 3.0m
-ZIP SHA-256: d71f282344908ad04f0d1f7a53d3bab5951a20619c7e3d2f1c196c9abdb5646c
-source-index p95: 798ms (798, 731, 721, 709, 702)
-verifier lifecycle p95: 11277ms
-cold-start p95: 439ms
-Agent Task p95: 49ms
-peak memory: 579MiB
+packaged functional: 8 passed, 1 intentional live-runtime skip, 2.3m
+ZIP SHA-256: 998db820e163900fb6b9e59b2fc056fe999eb27aa7d8dedf896154b4d2fe2a07
+source-index p95: 795ms (795, 759, 763, 740, 756)
+verifier lifecycle p95: 10371ms (10144, 10371, 586, 520, 518, 8957, 546, 539)
+cold-start p95: 434ms (385, 430, 420, 434, 435, 391, 380, 369, 389, 385, 382, 374, 386, 382, 372, 377, 368, 382, 376, 387)
+Agent Task p95: 58ms (27, 58, 37, 23, 19)
+peak memory: 594MiB
 verifier footprint: 6622MiB
 application disk use: 6912MiB
 ```
 
-The final post-remediation run is regenerated against the commit containing
-this evidence record before the pull request is published.
+The final post-remediation run is regenerated against the final commit after
+this evidence-record update. Its exact SHA, ZIP digest, and measurements are
+also posted to issue #116 and the pull request before merge.
 
 ## Remaining limitations
 
