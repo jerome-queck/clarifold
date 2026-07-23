@@ -101,7 +101,7 @@ async function checkLocalLinks(rootDir, markdownPath, markdown, errors) {
   }
 }
 
-async function checkDocumentedScripts(rootDir, markdownPath, markdown, scripts, errors) {
+async function checkDocumentedScripts(markdownPath, markdown, scripts, errors) {
   for (const match of markdown.matchAll(/\bnpm\s+run\s+([A-Za-z0-9:_-]+)/g)) {
     const scriptName = match[1];
     if (!Object.hasOwn(scripts, scriptName)) {
@@ -127,13 +127,16 @@ function checkPullRequestDeclarations(body, errors) {
   if (securityAffected === securityUnaffected) {
     errors.push("pull request body: select exactly one security-impact declaration");
   }
-  for (const [label, errorLabel] of [
-    ["Documentation impact details", "documentation-impact"],
-    ["Security impact details", "security-impact"],
+  for (const [label, errorLabel, affected, reasonPattern] of [
+    ["Documentation impact details", "documentation-impact", documentationAffected, /\b(?:docs?|readme|architecture|development|updated|owner)\b/i],
+    ["Security impact details", "security-impact", securityAffected, /\b(?:review|evidence|scan|test|triage|security|codeql|audit|documentation|docs?)\b/i],
   ]) {
     const detailMatch = new RegExp(`^${label}:\\s*(.*)$`, "m").exec(body);
     const detail = detailMatch?.[1].replace(/<!--.*?-->/g, "").trim() ?? "";
-    if (detail.length < 12 || ["x", "n/a", "none", "no", "tbd", "todo"].includes(detail.toLowerCase())) {
+    const reason = affected
+      ? reasonPattern.test(detail)
+      : /\b(?:no|none|not|unchanged|only|because|documentation|docs?)\b/i.test(detail);
+    if (detail.length < 12 || ["x", "n/a", "none", "no", "tbd", "todo"].includes(detail.toLowerCase()) || !reason) {
       errors.push(`pull request body: provide ${errorLabel} details`);
     }
   }
@@ -183,7 +186,7 @@ export async function validateDocumentation({ rootDir, pullRequestBody }) {
   for (const markdownPath of await markdownFiles(rootDir)) {
     const markdown = await readFile(path.join(rootDir, markdownPath), "utf8");
     await checkLocalLinks(rootDir, markdownPath, markdown, errors);
-    await checkDocumentedScripts(rootDir, markdownPath, markdown, scripts, errors);
+    await checkDocumentedScripts(markdownPath, markdown, scripts, errors);
   }
 
   return errors;
