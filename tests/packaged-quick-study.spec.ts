@@ -446,11 +446,13 @@ test("packaged Quick Study indexes the pinned large-source corpus within budget"
         await expect(page.getByText("Search data unavailable · rebuild required", { exact: true })).toBeVisible();
       }
       const startedAt = Date.now();
-      await action(`Build Source Index run ${run + 1}`, () => page!.getByRole("button", {
+      const buildIndex = page!.getByRole("button", {
         name: run === 0
           ? "Build Source Index for large-analysis-corpus-v2"
           : "Rebuild Source Index for large-analysis-corpus-v2"
-      }).press("Enter"));
+      });
+      await expect(buildIndex).toBeEnabled();
+      await action(`Build Source Index run ${run + 1}`, () => buildIndex.press("Enter"));
       await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true }))
         .toBeVisible({ timeout: maximum });
       sourceIndexDurationsMs.push(Date.now() - startedAt);
@@ -913,7 +915,9 @@ async function prepareIndexedSources(scenario: PackagedScenario, page: Page): Pr
   await expect(page.getByLabel("Opened Source Index match")).toHaveText("Classify the orbits and stabilizers.");
   await scenario.action("Clear Source Index for algebra-course", () => page.getByRole("button", { name: "Clear Source Index for algebra-course" }).press("Enter"));
   await expect(page.getByText("Search data unavailable · rebuild required", { exact: true })).toBeVisible();
-  await scenario.action("Rebuild Source Index for algebra-course", () => page.getByRole("button", { name: "Rebuild Source Index for algebra-course" }).press("Enter"));
+  const rebuildIndex = page.getByRole("button", { name: "Rebuild Source Index for algebra-course" });
+  await expect(rebuildIndex).toBeEnabled();
+  await scenario.action("Rebuild Source Index for algebra-course", () => rebuildIndex.press("Enter"));
   await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true })).toBeVisible({ timeout: 45_000 });
   await scenario.action("Add External Attachment lecture-3.pdf", () => page.getByRole("button", { name: "Add External Attachment" }).press("Enter"));
   await expect(page.getByRole("button", { name: "Open Linked Source lecture-3.pdf" })).toBeVisible();
