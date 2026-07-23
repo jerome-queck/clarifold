@@ -271,7 +271,13 @@ test("packaged verifier and artifact journey keeps lifecycle evidence across rei
     const synthesizeArtifact = reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ });
     await scenario.action("Confirm whole Learning Artifact synthesis scope", () =>
       reformulatedProof.getByRole("checkbox", { name: "Confirm this proposal may replace the whole Learning Artifact" }).check());
+    await scenario.action("Wait for Learning Artifact synthesis readiness", () => expect(synthesizeArtifact).toBeEnabled());
     await scenario.action("Synthesize Learning Artifact", () => synthesizeArtifact.press("Enter"));
+    await scenario.action("Wait for Learning Artifact synthesis settlement", () =>
+      expect(reformulatedProof.getByRole("status")).toContainText(
+        "Learning Artifact synthesized with the current Personal Note Synthesis Preference.",
+        { timeout: 60_000 }
+      ));
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await scenario.action("Export Reformulated Proof", () => reformulatedProof.getByRole("button", { name: /Export Reformulated Proof/ }).press("Enter"));
     await expect(reformulatedProof.getByText(`Artifact Export saved to ${scenario.paths.artifactExportPath}`)).toBeVisible();
@@ -426,6 +432,10 @@ test("packaged Quick Study indexes the pinned large-source corpus within budget"
     browser = await chromium.connectOverCDP(debuggerEndpoint);
     stopTrace = await startPackagedTrace(browser, testInfo, "large-source-index-budget");
     page = await waitForPage(browser, child, () => output);
+    await action("Wait for bundled verifier installation settlement", () =>
+      expect(page!.getByRole("region", { name: "Application settings" })).toContainText(
+        "Installed and ready", { timeout: 660_000 }
+      ), 660_000);
     await page.getByLabel("New Study Workspace name").fill("Large Source Benchmark");
     await action("Create Study Workspace Large Source Benchmark", () => page!.getByRole("button", { name: "Create Study Workspace" }).press("Enter"));
     await page.getByLabel("New Study Mission name").fill("Pinned corpus indexing");
@@ -446,11 +456,13 @@ test("packaged Quick Study indexes the pinned large-source corpus within budget"
         await expect(page.getByText("Search data unavailable · rebuild required", { exact: true })).toBeVisible();
       }
       const startedAt = Date.now();
-      await action(`Build Source Index run ${run + 1}`, () => page!.getByRole("button", {
+      const buildIndex = page!.getByRole("button", {
         name: run === 0
           ? "Build Source Index for large-analysis-corpus-v2"
           : "Rebuild Source Index for large-analysis-corpus-v2"
-      }).press("Enter"));
+      });
+      await action(`Wait for Source Index run ${run + 1} readiness`, () => expect(buildIndex).toBeEnabled());
+      await action(`Build Source Index run ${run + 1}`, () => buildIndex.press("Enter"));
       await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true }))
         .toBeVisible({ timeout: maximum });
       sourceIndexDurationsMs.push(Date.now() - startedAt);
@@ -913,7 +925,9 @@ async function prepareIndexedSources(scenario: PackagedScenario, page: Page): Pr
   await expect(page.getByLabel("Opened Source Index match")).toHaveText("Classify the orbits and stabilizers.");
   await scenario.action("Clear Source Index for algebra-course", () => page.getByRole("button", { name: "Clear Source Index for algebra-course" }).press("Enter"));
   await expect(page.getByText("Search data unavailable · rebuild required", { exact: true })).toBeVisible();
-  await scenario.action("Rebuild Source Index for algebra-course", () => page.getByRole("button", { name: "Rebuild Source Index for algebra-course" }).press("Enter"));
+  const rebuildIndex = page.getByRole("button", { name: "Rebuild Source Index for algebra-course" });
+  await scenario.action("Wait for algebra-course Source Index rebuild readiness", () => expect(rebuildIndex).toBeEnabled());
+  await scenario.action("Rebuild Source Index for algebra-course", () => rebuildIndex.press("Enter"));
   await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true })).toBeVisible({ timeout: 45_000 });
   await scenario.action("Add External Attachment lecture-3.pdf", () => page.getByRole("button", { name: "Add External Attachment" }).press("Enter"));
   await expect(page.getByRole("button", { name: "Open Linked Source lecture-3.pdf" })).toBeVisible();
