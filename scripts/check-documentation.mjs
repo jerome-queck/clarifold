@@ -110,22 +110,30 @@ async function checkDocumentedScripts(rootDir, markdownPath, markdown, scripts, 
   }
 }
 
-function declarationSelection(body, sectionLabel, optionLabel) {
+function declarationSelection(body, optionLabel) {
   const option = new RegExp(`^- \\[([ xX])\\] ${optionLabel}`, "m").exec(body);
   return option?.[1].toLowerCase() === "x";
 }
 
 function checkPullRequestDeclarations(body, errors) {
-  const documentationAffected = declarationSelection(body, "Documentation impact", "Documentation is affected");
-  const documentationUnaffected = declarationSelection(body, "Documentation impact", "Documentation is not affected");
-  const securityAffected = declarationSelection(body, "Security impact", "Security-sensitive code");
-  const securityUnaffected = declarationSelection(body, "Security impact", "Security impact is limited to none");
+  const documentationAffected = declarationSelection(body, "Documentation is affected");
+  const documentationUnaffected = declarationSelection(body, "Documentation is not affected");
+  const securityAffected = declarationSelection(body, "Security-sensitive code");
+  const securityUnaffected = declarationSelection(body, "Security impact is limited to none");
 
   if (documentationAffected === documentationUnaffected) {
     errors.push("pull request body: select exactly one documentation-impact declaration");
   }
   if (securityAffected === securityUnaffected) {
     errors.push("pull request body: select exactly one security-impact declaration");
+  }
+  for (const [label, pattern] of [
+    ["documentation", /^Documentation impact details:\s*(?!<!--).+$/m],
+    ["security", /^Security impact details:\s*(?!<!--).+$/m],
+  ]) {
+    if (!pattern.test(body)) {
+      errors.push(`pull request body: provide ${label}-impact details`);
+    }
   }
 }
 

@@ -12,11 +12,13 @@ Parent spec: #<issue-number> <!-- Optional; remove when not applicable. -->
 
 - [ ] Documentation is affected; the owning canonical document is updated in this PR.
 - [ ] Documentation is not affected; explain why: <!-- required when selecting this option -->
+- Documentation impact details: <!-- required: name the owning document or explain why no document changes -->
 
 ## Security impact
 
 - [ ] Security-sensitive code, data, dependency, workflow, packaging, or trust-boundary behavior is affected; describe the review route and evidence.
 - [ ] Security impact is limited to none; explain why: <!-- required when selecting this option -->
+- Security impact details: <!-- required: describe the review route and evidence, or explain why there is no security impact -->
 
 ## Verification
 
