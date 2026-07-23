@@ -451,7 +451,7 @@ test("packaged Quick Study indexes the pinned large-source corpus within budget"
           ? "Build Source Index for large-analysis-corpus-v2"
           : "Rebuild Source Index for large-analysis-corpus-v2"
       });
-      await expect(buildIndex).toBeEnabled();
+      await action(`Wait for Source Index run ${run + 1} readiness`, () => expect(buildIndex).toBeEnabled());
       await action(`Build Source Index run ${run + 1}`, () => buildIndex.press("Enter"));
       await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true }))
         .toBeVisible({ timeout: maximum });
@@ -916,7 +916,7 @@ async function prepareIndexedSources(scenario: PackagedScenario, page: Page): Pr
   await scenario.action("Clear Source Index for algebra-course", () => page.getByRole("button", { name: "Clear Source Index for algebra-course" }).press("Enter"));
   await expect(page.getByText("Search data unavailable · rebuild required", { exact: true })).toBeVisible();
   const rebuildIndex = page.getByRole("button", { name: "Rebuild Source Index for algebra-course" });
-  await expect(rebuildIndex).toBeEnabled();
+  await scenario.action("Wait for algebra-course Source Index rebuild readiness", () => expect(rebuildIndex).toBeEnabled());
   await scenario.action("Rebuild Source Index for algebra-course", () => rebuildIndex.press("Enter"));
   await expect(page.getByText("Ready · 1 page · 0 equation regions", { exact: true })).toBeVisible({ timeout: 45_000 });
   await scenario.action("Add External Attachment lecture-3.pdf", () => page.getByRole("button", { name: "Add External Attachment" }).press("Enter"));
