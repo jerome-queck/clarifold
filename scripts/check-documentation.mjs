@@ -110,21 +110,23 @@ async function checkDocumentedScripts(markdownPath, markdown, scripts, errors) {
   }
 }
 
-function declarationSelection(body, optionLabel) {
-  const option = new RegExp(`^- \\[([ xX])\\] ${optionLabel}`, "m").exec(body);
-  return option?.[1].toLowerCase() === "x";
+function declarationSelectionCount(body, optionLabel) {
+  const checkedOption = new RegExp("^- \\[x\\] " + optionLabel, "gim");
+  return [...body.matchAll(checkedOption)].length;
 }
 
 function checkPullRequestDeclarations(body, errors) {
-  const documentationAffected = declarationSelection(body, "Documentation is affected");
-  const documentationUnaffected = declarationSelection(body, "Documentation is not affected");
-  const securityAffected = declarationSelection(body, "Security-sensitive code");
-  const securityUnaffected = declarationSelection(body, "Security impact is limited to none");
+  const documentationAffectedCount = declarationSelectionCount(body, "Documentation is affected");
+  const documentationUnaffectedCount = declarationSelectionCount(body, "Documentation is not affected");
+  const securityAffectedCount = declarationSelectionCount(body, "Security-sensitive code");
+  const securityUnaffectedCount = declarationSelectionCount(body, "Security impact is limited to none");
+  const documentationAffected = documentationAffectedCount === 1;
+  const securityAffected = securityAffectedCount === 1;
 
-  if (documentationAffected === documentationUnaffected) {
+  if (documentationAffectedCount + documentationUnaffectedCount !== 1) {
     errors.push("pull request body: select exactly one documentation-impact declaration");
   }
-  if (securityAffected === securityUnaffected) {
+  if (securityAffectedCount + securityUnaffectedCount !== 1) {
     errors.push("pull request body: select exactly one security-impact declaration");
   }
   for (const [label, errorLabel, affected, reasonPattern] of [
@@ -133,8 +135,12 @@ function checkPullRequestDeclarations(body, errors) {
   ]) {
     const detailMatch = new RegExp(`^${label}:\\s*(.*)$`, "m").exec(body);
     const detail = detailMatch?.[1].replace(/<!--.*?-->/g, "").trim() ?? "";
+    const detailLower = detail.toLowerCase();
+    const hasSpecificEvidence = errorLabel === "documentation-impact"
+      ? ["readme", "contributing", "coding", "canonical", "docs/", "evaluation/", ".github/"].some((term) => detailLower.includes(term))
+      : ["evidence", "scan", "test", "audit", "codeql", "fixture", "verify"].some((term) => detailLower.includes(term));
     const reason = affected
-      ? reasonPattern.test(detail)
+      ? reasonPattern.test(detail) && hasSpecificEvidence
       : /\b(?:no|none|not|unchanged|only|because|documentation|docs?)\b/i.test(detail);
     if (detail.length < 12 || ["x", "n/a", "none", "no", "tbd", "todo"].includes(detail.toLowerCase()) || !reason) {
       errors.push(`pull request body: provide ${errorLabel} details`);
