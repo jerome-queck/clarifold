@@ -138,7 +138,8 @@ function checkPullRequestDeclarations(body, errors) {
     const detailLower = detail.toLowerCase();
     const hasSpecificEvidence = errorLabel === "documentation-impact"
       ? ["readme", "contributing", "coding", "canonical", "docs/", "evaluation/", ".github/"].some((term) => detailLower.includes(term))
-      : ["evidence", "scan", "test", "audit", "codeql", "fixture", "verify"].some((term) => detailLower.includes(term));
+      : ["review", "triage"].some((term) => detailLower.includes(term))
+        && ["evidence", "scan", "test", "audit", "codeql", "fixture", "verify"].some((term) => detailLower.includes(term));
     const reason = affected
       ? reasonPattern.test(detail) && hasSpecificEvidence
       : /\b(?:no|none|not|unchanged|only|because|documentation|docs?)\b/i.test(detail);

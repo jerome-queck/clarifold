@@ -115,7 +115,7 @@ export function classifyAllChanges() {
 
 function changedPathsFromGit(base, head) {
   try {
-    const output = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRD", `${base}...${head}`], {
+    const output = execFileSync("git", ["diff", "--no-renames", "--name-only", "--diff-filter=ACMRD", `${base}...${head}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });

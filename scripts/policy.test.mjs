@@ -154,6 +154,33 @@ test("documentation validation rejects duplicate checked declaration options", a
   ]);
 });
 
+test("documentation validation requires a security review route and evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-docs-"));
+  await mkdir(path.join(rootDir, "docs"), { recursive: true });
+  await mkdir(path.join(rootDir, ".github"), { recursive: true });
+  await writeFile(path.join(rootDir, "package.json"), JSON.stringify({ scripts: {} }));
+  await writeFile(path.join(rootDir, "README.md"), "# Home\n\n[Development](docs/development.md)\n[Architecture](docs/architecture.md)\n");
+  await writeFile(path.join(rootDir, "CONTRIBUTING.md"), "# Contributing\n");
+  await writeFile(path.join(rootDir, "CODING_STANDARDS.md"), "# Standards\n");
+  await writeFile(path.join(rootDir, "docs", "development.md"), "# Development\n");
+  await writeFile(path.join(rootDir, "docs", "architecture.md"), "# Architecture\n");
+  await writeFile(path.join(rootDir, ".github", "pull_request_template.md"), "## Documentation impact\n\n## Security impact\n");
+
+  const body = [
+    "- [x] Documentation is affected",
+    "- [ ] Documentation is not affected",
+    "Documentation impact details: Updated docs/development.md.",
+    "- [x] Security-sensitive code is affected",
+    "- [ ] Security impact is limited to none",
+    "Security impact details: Security test evidence.",
+  ].join("\n");
+  const errors = await validateDocumentation({ rootDir, pullRequestBody: body });
+
+  assert.deepEqual(errors.filter((error) => error.includes("security-impact")), [
+    "pull request body: provide security-impact details",
+  ]);
+});
+
 test("documentation validation reports broken links, commands, and policy sections", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-docs-"));
   await writeFile(path.join(rootDir, "package.json"), JSON.stringify({ scripts: {} }));
