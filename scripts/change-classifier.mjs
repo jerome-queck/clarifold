@@ -133,10 +133,14 @@ function changedPathsFromGit(base, head) {
 }
 
 function writeGithubOutput(result) {
-  const outputPath = process.env.GITHUB_OUTPUT;
-  if (!outputPath) {
+  const configuredOutputPath = process.env.GITHUB_OUTPUT;
+  if (!configuredOutputPath) {
     return;
   }
+  if (!path.isAbsolute(configuredOutputPath) || configuredOutputPath.includes("\0")) {
+    throw new Error("GITHUB_OUTPUT must be an absolute path without NUL bytes");
+  }
+  const outputPath = path.normalize(configuredOutputPath);
 
   appendFileSync(
     outputPath,

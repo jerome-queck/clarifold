@@ -134,7 +134,7 @@ function checkPullRequestDeclarations(body, errors) {
     ["Security impact details", "security-impact", securityAffected, /\b(?:review|evidence|scan|test|triage|security|codeql|audit|documentation|docs?)\b/i],
   ]) {
     const detailMatch = new RegExp(`^${label}:\\s*(.*)$`, "m").exec(body);
-    const detail = detailMatch?.[1].replace(/<!--.*?-->/g, "").trim() ?? "";
+    const detail = detailMatch?.[1].trim() ?? "";
     const detailLower = detail.toLowerCase();
     const requiredFields = affected
       ? errorLabel === "documentation-impact" ? ["owner="] : ["route=", "evidence="]
