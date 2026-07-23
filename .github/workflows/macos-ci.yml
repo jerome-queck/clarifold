@@ -5,25 +5,37 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
 jobs:
   verify:
+    permissions:
+      contents: read
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v6
         with:
           path: |
             node_modules/.cache/quick-study-lean
             dist/verifiers
           key: bundled-lean-4.29.1-mathlib-4.29.1-foundations-v4-${{ runner.arch }}
+      - run: npm run security:dependencies
+      - run: npm run security:swift
       - run: npm run verify
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
         if: failure()
         with:
           name: macos-ci-diagnostics-attempt-${{ github.run_attempt }}
@@ -32,7 +44,7 @@ jobs:
           path: |
             test-results/playwright-artifacts
             test-results/beta-install.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
         if: success()
         with:
           name: quick-study-macos-beta-${{ runner.arch }}
@@ -40,7 +52,7 @@ jobs:
           path: |
             out/make/zip/darwin/*/Quick Study-darwin-*.zip
             test-results/beta-install.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
         if: success()
         with:
           name: quality-gate-harness-fixture-only
