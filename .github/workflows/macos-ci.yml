@@ -46,10 +46,19 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
+          set -o pipefail
+          publish_classifier_outputs() {
+            while IFS= read -r line; do
+              printf '%s\n' "$line"
+              case "$line" in
+                github-output:*) printf '%s\n' "${line#github-output:}" >> "$GITHUB_OUTPUT" ;;
+              esac
+            done
+          }
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            npm run policy:classify -- --base "$BASE_SHA" --head "$HEAD_SHA"
+            node scripts/change-classifier.mjs --base "$BASE_SHA" --head "$HEAD_SHA" | publish_classifier_outputs
           else
-            npm run policy:classify -- --all
+            node scripts/change-classifier.mjs --all | publish_classifier_outputs
           fi
       - run: npm run verify:prepackage
       - run: npm run security:dependencies

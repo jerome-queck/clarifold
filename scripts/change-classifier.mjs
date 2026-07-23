@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -132,32 +131,14 @@ function changedPathsFromGit(base, head) {
   }
 }
 
-function writeGithubOutput(result) {
-  const configuredOutputPath = process.env.GITHUB_OUTPUT;
-  if (!configuredOutputPath) {
-    return;
-  }
-  if (!path.isAbsolute(configuredOutputPath) || configuredOutputPath.includes("\0")) {
-    throw new Error("GITHUB_OUTPUT must be an absolute path without NUL bytes");
-  }
-  const outputPath = path.normalize(configuredOutputPath);
-
-  appendFileSync(
-    outputPath,
-    [
-      `classification=${result.classification}`,
-      `artifact_affected=${result.artifactAffected}`,
-      `verification_surfaces=${result.selectedSurfaces.join(",")}`,
-      `changed_paths=${result.changedPaths.join(",")}`,
-    ].join("\n") + "\n",
-  );
-}
-
 function printResult(result) {
   console.log(`Change classification: ${result.classification}`);
   console.log(`Changed paths: ${result.changedPaths.join(", ")}`);
   console.log(`Selected verification surfaces: ${result.selectedSurfaces.join(", ")}`);
   console.log(`Packaging required: ${result.artifactAffected}`);
+  console.log(`github-output:classification=${result.classification}`);
+  console.log(`github-output:artifact_affected=${result.artifactAffected}`);
+  console.log(`github-output:verification_surfaces=${result.selectedSurfaces.join(",")}`);
 }
 
 function main() {
@@ -174,7 +155,6 @@ function main() {
       })();
 
   printResult(result);
-  writeGithubOutput(result);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
