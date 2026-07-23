@@ -22,6 +22,17 @@ const accessState = () => {
   }
 };
 
+const teachingControl = () => accessState();
+
+const waitForTeachingRelease = () => new Promise((resolve) => {
+  const release = setInterval(() => {
+    if (!teachingControl().holdTeaching) {
+      clearInterval(release);
+      resolve();
+    }
+  }, 10);
+});
+
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (message.id === undefined) return;
@@ -128,7 +139,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       turnNumber += 1;
       const turnId = `fake-turn-${turnNumber}`;
       send({ id: message.id, result: { turn: { id: turnId } } });
-      queueMicrotask(() => {
+      queueMicrotask(async () => {
         if (threadKinds.get(message.params.threadId) === "specialist") {
           const checkpoint = "The retained checkpoint identifies Hausdorff separation.";
           send({
@@ -260,6 +271,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           writeFileSync(join(dataDirectory, "fake-codex-last-teaching-input.json"), JSON.stringify({
             prompt: message.params.input[0].text
           }), "utf8");
+          if (teachingControl().holdTeaching) await waitForTeachingRelease();
           send({
             method: "item/agentMessage/delta",
             params: {
