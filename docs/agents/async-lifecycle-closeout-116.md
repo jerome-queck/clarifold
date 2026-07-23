@@ -16,7 +16,7 @@ on the clear-to-rebuild boundary.
 | Long-running operations expose correlated terminal state | Model teaching, session proposal, and access transitions use the shared `LearnerOperationRecord` ID, phases, queued actions, and learner feedback. Research actions, Agent Tasks, Source Index summaries, Verifier Environment state, and Verifier Manifests retain their domain IDs and terminal outcomes. | Pass with limitation below |
 | Incompatible learner actions settle visibly | Public tests hold teaching/access work open and cover queued anchored explanation, queued intake, stale Full Access supersession, and access decisions. Renderer availability and the Busy/Queued/Blocked/Superseded notice use the same shared availability contract. | Pass |
 | Packaged scenarios isolate action boundaries | Release-critical scenarios have isolated data/runtime/source roots. Actions have bounded receipts with operation, settlement, elapsed time, visible/backend failure state, lifecycle logs, and Playwright trace chunks. | Pass |
-| Fresh Node 24/macOS packaged verification is repeated and measured | The source-index scenario performs five clear/rebuild samples; the cold-start scenario performs twenty launches; verifier and Agent Task scenarios retain outcome samples. The final candidate command and artifact digest are recorded in the issue and pull request. | Pass when final candidate verification below is green |
+| Fresh Node 24/macOS packaged verification is repeated and measured | The source-index scenario performs five build samples, including four clear/rebuild cycles; the cold-start scenario performs twenty launches; verifier and Agent Task scenarios retain outcome samples. The exact candidate evidence is recorded below. | Pass |
 
 ## Current red reproduction and diagnosis
 
@@ -47,6 +47,28 @@ sleep, retry, product timeout, or product-indexing change.
 - Packaged diagnostics are retained on failure even when the failing assertion
   is outside an IPC action: trace, lifecycle output, backend state, and the
   operation receipt are attached during scenario cleanup.
+
+## Exact candidate verification
+
+Candidate before this evidence-record update: `2c4fd701`.
+
+```text
+PATH=/Users/jeromequeck/.nvm/versions/node/v24.11.0/bin:$PATH npm run verify
+26 Vitest files / 408 tests passed
+packaged index-budget: 1 passed in 9.9s
+packaged functional: 8 passed, 1 intentional live-runtime skip, 3.0m
+ZIP SHA-256: d71f282344908ad04f0d1f7a53d3bab5951a20619c7e3d2f1c196c9abdb5646c
+source-index p95: 798ms (798, 731, 721, 709, 702)
+verifier lifecycle p95: 11277ms
+cold-start p95: 439ms
+Agent Task p95: 49ms
+peak memory: 579MiB
+verifier footprint: 6622MiB
+application disk use: 6912MiB
+```
+
+The final post-remediation run is regenerated against the commit containing
+this evidence record before the pull request is published.
 
 ## Remaining limitations
 
