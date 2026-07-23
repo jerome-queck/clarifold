@@ -48,6 +48,12 @@ Tracked implementation work updates the owning human document in the same change
 
 Use links between these owners rather than introducing a competing command matrix or architecture overview. `package.json` and [macOS CI](../../.github/workflows/macos-ci.yml) are the executable sources and must be checked when their documented behavior changes. Do not edit the vendored Matt skills to encode these repository routes.
 
+### Declare documentation and security impact
+
+Every material pull request completes both declarations in [the pull-request template](../../.github/pull_request_template.md). Select the documentation option that applies and explain the decision; when a contract changes, update its owning document in the same pull request. Select the security option that applies and describe the review route and evidence for security-sensitive code, data, dependencies, workflows, packaging, or trust boundaries. Suspected vulnerabilities use the private security-reporting route, not a public issue or a declaration that hides the finding.
+
+The repository-owned `scripts/check-documentation.mjs` check validates required public documents, local Markdown links and anchors, documented `npm run` commands, and the declaration headings. `scripts/change-classifier.mjs` classifies every changed path and fails closed for unknown or invalid paths. The always-present `verify` check runs linting, typechecking, unit tests, policy fixtures, documentation policy, and security dependency checks for every pull request. Packaging, native checks, and packaged smoke run when the classifier identifies runtime, native-helper, verifier-asset, dependency, packaging, or workflow-input changes. Pushes to `main`, scheduled verification, manually dispatched candidates, and release candidates always run the complete lane.
+
 ## Gate `/implement`
 
 Before changing product code:

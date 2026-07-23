@@ -56,3 +56,9 @@ Update this document in the same pull request when a change deliberately alters 
 Do not add a standard for a one-off implementation tactic, ticket-specific acceptance criterion, personal formatting preference, or rule already enforced clearly by tooling. If formatting or import policy becomes important, automate it first and make the tool configuration authoritative.
 
 Every material pull request should include a quick standards-impact check. Perform a fuller audit before a major release and after substantial architecture, runtime, build, CI, or review-skill changes. There is no calendar requirement to rewrite this document when the engineering contract has not changed.
+
+## Declare cross-cutting impact
+
+- Every material pull request must complete the documentation-impact and security-impact declarations in the pull-request template, explaining either selection. A declaration is a routing aid, not a substitute for updating the owning document, triaging a security finding, or obtaining review.
+- Documentation-impact decisions follow the ownership map in `CONTRIBUTING.md` and `docs/agents/engineering-workflow.md`; public behavior, supported setup, commands, architecture, licensing, privacy, release, security, and participation changes update their canonical document in the same pull request.
+- The repository-owned documentation policy and changed-path classifier are verification inputs. Unknown paths or classifier errors fail closed, and CI must not use path filtering to silently bypass required linting, typechecking, tests, documentation checks, security checks, packaging, native checks, or packaged smoke.
