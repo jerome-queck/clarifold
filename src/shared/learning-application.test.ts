@@ -8373,7 +8373,7 @@ describe("Learning Application", () => {
       await application.waitForModelWork();
       state = await application.submit({ type: "selectSessionAccessPolicy", policy: "full" });
       const staleConfirmation = {
-        type: "decideFullAccessConfirmation",
+        type: "decideFullAccessConfirmation" as const,
         decision: "confirm" as const,
         confirmationId: "stale-confirmation"
       };
