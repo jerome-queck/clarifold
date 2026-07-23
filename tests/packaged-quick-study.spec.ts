@@ -67,8 +67,7 @@ test("packaged critical source and access journey has an isolated release bounda
       page.getByRole("button", { name: "Open Linked Source algebra-course" }).press("Enter"));
     await expect(page.getByText(/Historical content unavailable/)).toContainText("Source Index and Source Fingerprint are not backups");
 
-    await writeFile(join(scenario.paths.runtimeControlDirectory, "fake-codex-teaching-control.json"),
-      JSON.stringify({ holdTeaching: true }), "utf8");
+    await writeFile(scenario.paths.accessStatePath, JSON.stringify({ status: "available", holdTeaching: true }), "utf8");
     await page.getByLabel("Typed mathematics").fill("Explain orbit-stabilizer without requesting new access.");
     await scenario.action("Start held teaching for operation-state coverage", () =>
       page.getByRole("button", { name: "Propose Learning Session" }).press("Enter"));
@@ -103,8 +102,7 @@ test("packaged critical source and access journey has an isolated release bounda
     await scenario.action("Queue anchored explanation during held teaching", () =>
       page.getByRole("button", { name: /Explain or unpack selected text/ }).press("Enter"));
     await expect(operationNotice).toContainText("Queued: anchored explanation");
-    await writeFile(join(scenario.paths.runtimeControlDirectory, "fake-codex-teaching-control.json"),
-      JSON.stringify({ holdTeaching: false }), "utf8");
+    await writeFile(scenario.paths.accessStatePath, JSON.stringify({ status: "available", holdTeaching: false }), "utf8");
     await expect(page.getByRole("region", { name: /Current anchored Teaching Card/ })).toBeVisible({ timeout: 30_000 });
     await scenario.action("Leave held operation session", () => page.getByRole("button", { name: "Leave session" }).press("Enter"));
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();

@@ -22,13 +22,7 @@ const accessState = () => {
   }
 };
 
-const teachingControl = () => {
-  try {
-    return JSON.parse(readFileSync(join(dataDirectory, "fake-codex-teaching-control.json"), "utf8"));
-  } catch {
-    return { holdTeaching: false };
-  }
-};
+const teachingControl = () => accessState();
 
 const waitForTeachingRelease = () => new Promise((resolve) => {
   const release = setInterval(() => {
