@@ -136,10 +136,10 @@ function checkPullRequestDeclarations(body, errors) {
     const detailMatch = new RegExp(`^${label}:\\s*(.*)$`, "m").exec(body);
     const detail = detailMatch?.[1].replace(/<!--.*?-->/g, "").trim() ?? "";
     const detailLower = detail.toLowerCase();
-    const hasSpecificEvidence = errorLabel === "documentation-impact"
-      ? ["readme", "contributing", "coding", "canonical", "docs/", "evaluation/", ".github/"].some((term) => detailLower.includes(term))
-      : ["review", "triage"].some((term) => detailLower.includes(term))
-        && ["evidence", "scan", "test", "audit", "codeql", "fixture", "verify"].some((term) => detailLower.includes(term));
+    const requiredFields = affected
+      ? errorLabel === "documentation-impact" ? ["owner="] : ["route=", "evidence="]
+      : ["reason="];
+    const hasSpecificEvidence = requiredFields.every((field) => detailLower.includes(field));
     const reason = affected
       ? reasonPattern.test(detail) && hasSpecificEvidence
       : /\b(?:no|none|not|unchanged|only|because|documentation|docs?)\b/i.test(detail);

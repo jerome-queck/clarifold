@@ -39,6 +39,8 @@ For multi-session work, `/to-spec` creates the parent planning issue and `/to-ti
 
 Tracked implementation work updates the owning human document in the same change when it affects public behavior, supported setup, a command, verification, packaging, release evidence, architecture responsibilities, trust boundaries, licensing, or contribution policy. Use the repository's canonical routes:
 
+Migration, persisted-schema, data-directory, and recovery changes update the development guide and, when they affect beta users, the beta-release guide in the same change. Architecture or provenance consequences also update the architecture guide; do not defer migration guidance to a later cleanup.
+
 - [`README.md`](../../README.md) for the product-facing gateway and user expectations.
 - [`docs/development.md`](../../docs/development.md) for development setup, commands, verification, packaging, smoke tests, and troubleshooting.
 - [`docs/architecture.md`](../../docs/architecture.md) for stable component responsibilities, public seams, persistence, and trust boundaries.

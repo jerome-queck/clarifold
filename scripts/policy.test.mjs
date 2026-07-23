@@ -86,11 +86,11 @@ test("documentation validation accepts answered pull-request declarations", asyn
     "## Documentation impact",
     "- [x] Documentation is affected; the owning canonical document is updated in this PR.",
     "- [ ] Documentation is not affected; explain why: no contract changed.",
-    "Documentation impact details: Updated docs/agents/engineering-workflow.md and docs/development.md.",
+    "Documentation impact details: owner=docs/agents/engineering-workflow.md; docs/development.md.",
     "## Security impact",
     "- [ ] Security-sensitive code, data, dependency, workflow, packaging, or trust-boundary behavior is affected; describe the review route and evidence.",
     "- [x] Security impact is limited to none; explain why: documentation-only change.",
-    "Security impact details: No security-sensitive behavior changed; policy declarations and checks were tested.",
+    "Security impact details: reason=documentation-only change; no sensitive boundary changed.",
   ].join("\n");
 
   assert.deepEqual(await validateDocumentation({ rootDir, pullRequestBody: body }), []);

@@ -7,6 +7,12 @@ on:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: "Run the complete verification lane as a release candidate"
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -48,7 +54,7 @@ jobs:
       - run: npm run verify:prepackage
       - run: npm run security:dependencies
       - name: Run complete native and packaged verification lane
-        if: steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request'
+        if: steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true
         run: npm run security:swift && npm run verify:package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
@@ -61,7 +67,7 @@ jobs:
             test-results/beta-install.json
       - id: beta-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request')
+        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         with:
           name: quick-study-macos-beta-${{ runner.arch }}
           if-no-files-found: error
@@ -69,20 +75,20 @@ jobs:
             out/make/zip/darwin/*/Quick Study-darwin-*.zip
             test-results/beta-install.json
       - name: Record uploaded beta binding
-        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request')
+        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         env:
           ARTIFACT_DIGEST: ${{ steps.beta-artifact.outputs.artifact-digest }}
           ARTIFACT_NAME: quick-study-macos-beta-${{ runner.arch }}
           CANDIDATE_COMMIT: ${{ github.sha }}
         run: node scripts/record-beta-upload-binding.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request')
+        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         with:
           name: quick-study-macos-beta-binding-${{ runner.arch }}
           if-no-files-found: error
           path: test-results/beta-upload-binding.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request')
+        if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         with:
           name: quality-gate-harness-fixture-only
           if-no-files-found: error
