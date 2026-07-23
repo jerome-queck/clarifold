@@ -44,7 +44,8 @@ jobs:
           path: |
             test-results/playwright-artifacts
             test-results/beta-install.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
+      - id: beta-artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
         if: success()
         with:
           name: quick-study-macos-beta-${{ runner.arch }}
@@ -52,6 +53,19 @@ jobs:
           path: |
             out/make/zip/darwin/*/Quick Study-darwin-*.zip
             test-results/beta-install.json
+      - name: Record uploaded beta binding
+        if: success()
+        env:
+          ARTIFACT_DIGEST: ${{ steps.beta-artifact.outputs.artifact-digest }}
+          ARTIFACT_NAME: quick-study-macos-beta-${{ runner.arch }}
+          CANDIDATE_COMMIT: ${{ github.sha }}
+        run: node scripts/record-beta-upload-binding.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
+        if: success()
+        with:
+          name: quick-study-macos-beta-binding-${{ runner.arch }}
+          if-no-files-found: error
+          path: test-results/beta-upload-binding.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7
         if: success()
         with:

@@ -11,9 +11,9 @@ const root = process.cwd();
 describe("build and release security contract", () => {
   it("pins every third-party workflow action and limits the verification token", async () => {
     const workflow = await readFile(join(root, ".github/workflows/macos-ci.yml"), "utf8");
-    const actionRefs = [...workflow.matchAll(/^\s+- uses: ([^\s]+)\s+# v\d+$/gm)].map((match) => match[1]);
+    const actionRefs = [...workflow.matchAll(/^\s+(?:-\s+)?uses: ([^\s]+)\s+# v\d+$/gm)].map((match) => match[1]);
 
-    expect(actionRefs).toHaveLength(7);
+    expect(actionRefs).toHaveLength(8);
     expect(actionRefs.every((ref) => /^[^@]+@[0-9a-f]{40}$/.test(ref))).toBe(true);
     expect(workflow).toMatch(/permissions:\s*\{\}/);
     expect(workflow).toMatch(/verify:\n\s+permissions:\n\s+contents: read/);

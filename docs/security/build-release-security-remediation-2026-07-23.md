@@ -38,4 +38,4 @@ The macOS CI checkout fetches full history and runs the pinned Gitleaks action w
 
 ## Release integrity
 
-The packaged smoke installer now uses `lstat` to reject a symbolic-link application root before code-signature and verifier attestation. The existing candidate receipt continues to bind the exact archive digest, candidate commit, extracted application, signature, and bundled verifier; publishing rejects a missing or digest-mismatched archive. No signed or notarized public release is introduced by this change.
+The packaged smoke installer now uses `lstat` to reject a symbolic-link application root before code-signature and verifier attestation. The candidate receipt binds the exact archive digest, candidate commit, extracted application, signature, and bundled verifier. After the beta upload, CI records the upload service's artifact digest together with that candidate receipt in a separately uploaded binding receipt. Publishing rejects a missing or digest-mismatched archive, and no signed or notarized public release is introduced by this change.
