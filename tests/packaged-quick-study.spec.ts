@@ -271,7 +271,13 @@ test("packaged verifier and artifact journey keeps lifecycle evidence across rei
     const synthesizeArtifact = reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ });
     await scenario.action("Confirm whole Learning Artifact synthesis scope", () =>
       reformulatedProof.getByRole("checkbox", { name: "Confirm this proposal may replace the whole Learning Artifact" }).check());
+    await scenario.action("Wait for Learning Artifact synthesis readiness", () => expect(synthesizeArtifact).toBeEnabled());
     await scenario.action("Synthesize Learning Artifact", () => synthesizeArtifact.press("Enter"));
+    await scenario.action("Wait for Learning Artifact synthesis settlement", () =>
+      expect(reformulatedProof.getByRole("status")).toContainText(
+        "Learning Artifact synthesized with the current Personal Note Synthesis Preference.",
+        { timeout: 60_000 }
+      ));
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await scenario.action("Export Reformulated Proof", () => reformulatedProof.getByRole("button", { name: /Export Reformulated Proof/ }).press("Enter"));
     await expect(reformulatedProof.getByText(`Artifact Export saved to ${scenario.paths.artifactExportPath}`)).toBeVisible();
