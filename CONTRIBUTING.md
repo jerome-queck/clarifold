@@ -20,7 +20,7 @@ Keep each kind of repository guidance in its canonical home and link to it inste
 - [`evaluation/README.md`](evaluation/README.md) owns candidate evidence and learning-evaluation procedures.
 - `package.json` and [macOS CI](.github/workflows/macos-ci.yml) are the executable sources for scripts and hosted verification order.
 
-Update the owning document in the same pull request when a change affects its contract. The pull-request template records the documentation-impact decision; a change that affects more than one owner should link the related sections rather than restating them.
+Update the owning document in the same pull request when a change affects its contract. A change that affects more than one owner should link the related sections rather than restating them. Explicit documentation and security impact declarations, plus automated policy enforcement, are tracked in blocked child issue #89.
 
 ## Branches
 

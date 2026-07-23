@@ -49,7 +49,7 @@ For an evaluation install, use the architecture-native archive produced by the d
 
 ## Feedback
 
-Report beta feedback through [GitHub Issues](https://github.com/jerome-queck/openai-build-week/issues/new). Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
+Report beta feedback through [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new). Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
 
 ## Maintenance
 

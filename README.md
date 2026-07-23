@@ -12,6 +12,14 @@ This is an early macOS beta and a technical-evaluation build, not a public produ
 
 The project does not promise mastery, mathematical correctness, or academic outcomes. AI teaching and analysis may be incomplete or wrong. Formal verification applies only to the exact statement and assumptions checked by the Verifier Runtime. Learners control what they save, send, export, and delete.
 
+## What Quick Study does—and does not claim
+
+Quick Study helps Advanced Mathematics Learners uncover and examine gaps in understanding. It does not guarantee mastery, correctness, or academic outcomes. Model-generated teaching and analysis may be incomplete or wrong, and formal verification covers only the exact claims and assumptions checked by the recorded Verifier Environment. Local-first operation does not mean every optional model or research operation stays offline.
+
+## Accessibility
+
+Accessibility is a product requirement. The current build uses semantic controls, accessible names, keyboard-operable primary journeys, and visible status and error messages where those capabilities are implemented. This is not a WCAG conformance claim. Report an accessibility or usability barrier through [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new) without attaching private learner or source data.
+
 ## Requirements
 
 The validated beta baseline is an Apple Silicon Mac running macOS 14 Sonoma or later with at least 16 GB memory and 12 GB free disk space. Developers need Node.js 22 or 24 and npm 11; Node.js 26 is not supported by the Electron packaging toolchain.
@@ -33,7 +41,7 @@ Start with the [development guide](docs/development.md) for a build-from-source 
 
 Application state uses Electron's local `userData` directory. The supported `QUICK_STUDY_DATA_DIR` override is for isolated development or diagnosis and must not point at imported learner sources. Do not commit learner data, credentials, or local `.env` files. Optional model access and external research are separate from local source and session work; see the [beta guide](docs/beta-release.md) for the current boundaries and recovery paths.
 
-Use [GitHub Issues](https://github.com/jerome-queck/openai-build-week/issues/new) for public product feedback. Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
+Use [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new) for public product feedback. Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
 
 ## Maintenance
 
