@@ -20,7 +20,7 @@ Keep each kind of repository guidance in its canonical home and link to it inste
 - [`evaluation/README.md`](evaluation/README.md) owns candidate evidence and learning-evaluation procedures.
 - `package.json` and [macOS CI](.github/workflows/macos-ci.yml) are the executable sources for scripts and hosted verification order.
 
-Update the owning document in the same pull request when a change affects its contract. A change that affects more than one owner should link the related sections rather than restating them. Explicit documentation and security impact declarations, plus automated policy enforcement, are tracked in blocked child issue #89.
+Update the owning document in the same pull request when a change affects its contract. A change that affects more than one owner should link the related sections rather than restating them. Migration, persisted-schema, data-directory, and recovery changes update `docs/development.md` and, when user-facing, `docs/beta-release.md`; architecture or provenance consequences update `docs/architecture.md`. Every material pull request must complete the documentation-impact and security-impact declarations in the pull-request template, with an explanation for either outcome. The repository policy checks validate these declarations, canonical documents, local links and anchors, documented npm commands, and fail-closed changed-path classification.
 
 ## Branches
 
@@ -46,6 +46,7 @@ Prototypes are different: capture them on a clearly named throwaway branch outsi
 - Keep every commit focused and leave tests passing.
 - Use conventional commit subjects where practical, such as `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, or `chore:`.
 - Run typechecking and focused tests regularly; run the full suite at completion.
+- Treat documentation, security, and verification-policy changes as part of the same tracked change; do not defer an affected canonical document or security review declaration to a cleanup issue.
 - For bug fixes, state the confirmed cause in the commit or pull-request message.
 
 ### Review ordering

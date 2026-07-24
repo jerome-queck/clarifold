@@ -45,12 +45,17 @@ Run focused checks while changing code, then run the complete lane before review
 | `npm run security:dependencies` | Production dependency audit |
 | `npm run security:secrets` | Full-history secret scan with the pinned Gitleaks release |
 | `npm run security:swift` | Warnings-as-errors Swift boundary analysis |
+| `npm run policy:documentation` | Required documents, local Markdown links and anchors, documented npm commands, and pull-request template declarations; PR-body answers are checked in pull-request CI |
+| `npm run policy:classify -- --base <sha> --head <sha>` | Fail-closed changed-path classification and selected verification surfaces |
+| `npm run test:policy` | Focused policy fixtures for documentation and changed-path classification |
+| `npm run verify:prepackage` | Run the required lint, typecheck, unit, policy-fixture, and documentation-policy checks |
+| `npm run verify:package` | Run the quality fixture, package, maker, and packaged smoke lane |
 | `npm run quality:gate:fixture` | Deterministic quality-gate harness fixture only |
 | `npm run quality:gate -- --evidence /absolute/path/to/release-evidence.json --out /absolute/path/to/report` | Evaluate separately collected release evidence |
 | `npm run package` | Package an ad-hoc-signed macOS application under `out/` |
 | `npm run make:beta` | Create the architecture-native beta ZIP from the packaged app |
 | `npm run test:smoke` | Install the ZIP and exercise critical packaged journeys |
-| `npm run verify` | Run the core checks, quality fixture, package, maker, and packaged smoke lane in release order |
+| `npm run verify` | Run the core checks, policy fixtures, documentation policy, quality fixture, package, maker, and packaged smoke lane in release order |
 
 The smoke command expects `npm run package` and `npm run make:beta` to have completed first. It extracts the archive into an isolated installation directory, verifies the code signature and bundled verifier, and launches the installed application. The packaged scenarios cover source/index and access transitions, verifier removal/reinstall and artifact export, delayed-transfer persistence, cold-start/resource budgets, Agent Task recovery, Local Working Mode, authentication navigation, and action-level lifecycle diagnostics. A scenario timeout is not a product-operation timeout.
 
@@ -76,6 +81,8 @@ Use Node 24 for the release lane and confirm the active version before diagnosin
 
 The first build may download and prepare the pinned Lean/mathlib environment. Check the reported digest, architecture, and staged preparation error. A failed preparation must not be treated as a ready Verifier Environment; retry the build or use the application's visible recovery action.
 
+After formal verification, wait for the learner-visible Codex runtime lifecycle to reach `available` or `failed`; the verifier result and runtime restoration are deliberately separate correlated states. Packaged tests should wait on that named terminal state rather than a fixed delay or an incidental manifest count.
+
 ### Isolated data and smoke runs
 
 Set `QUICK_STUDY_DATA_DIR` to a fresh temporary directory when reproducing persistence or packaged behavior. The smoke installer creates its own isolated paths. Linked Sources remain externally owned; never use a source fixture as the application-data directory.
@@ -86,4 +93,4 @@ The package and maker write under `out/`. Preserve any candidate-bound evidence 
 
 ## Maintenance
 
-The maintainer reviews this guide whenever `package.json`, the macOS workflow, the supported Node/macOS baseline, packaging behavior, Verifier Runtime preparation, or developer recovery paths change. Commands are checked against `package.json` during issue #88 delivery; automated documentation-policy enforcement is tracked separately in issue #89.
+The maintainer reviews this guide whenever `package.json`, the macOS workflow, the supported Node/macOS baseline, packaging behavior, Verifier Runtime preparation, developer recovery paths, or verification-policy surfaces change. The documentation policy and changed-path classifier are repository-owned checks; vendored or upstream skill sources remain untouched.

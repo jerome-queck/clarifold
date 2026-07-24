@@ -266,8 +266,54 @@ test("packaged verifier and artifact journey keeps lifecycle evidence across rei
     await scenario.action("Reinstall supported Lean environment", () => settings.getByRole("button", { name: "Reinstall supported Lean environment" }).press("Enter"));
     await expect(settings).toContainText("Installed and ready", { timeout: PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS });
     await scenario.action("Resume session after Lean reinstall", () => page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter"));
+    await page.evaluate(() => {
+      const windowWithReceipt = window as typeof window & {
+        __quickStudyVerifierLifecycleReceipt?: {
+          events: Array<{ status: string; operationId: string | null; manifestCount: number }>;
+          unsubscribe: () => void;
+        };
+      };
+      windowWithReceipt.__quickStudyVerifierLifecycleReceipt = {
+        events: [],
+        unsubscribe: window.quickStudy.onStateChanged((state) => {
+          windowWithReceipt.__quickStudyVerifierLifecycleReceipt?.events.push({
+            status: state.modelRuntimeLifecycle.status,
+            operationId: state.modelRuntimeLifecycle.operationId,
+            manifestCount: state.verifierManifests.length
+          });
+        })
+      };
+    });
     await scenario.action("Check exact claim after Lean reinstall", () => claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter"));
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 60_000 });
+    const lifecycleEvents = await page.evaluate(() => {
+      const windowWithReceipt = window as typeof window & {
+        __quickStudyVerifierLifecycleReceipt?: {
+          events: Array<{ status: string; operationId: string | null; manifestCount: number }>;
+          unsubscribe: () => void;
+        };
+      };
+      const events = windowWithReceipt.__quickStudyVerifierLifecycleReceipt?.events ?? [];
+      windowWithReceipt.__quickStudyVerifierLifecycleReceipt?.unsubscribe();
+      delete windowWithReceipt.__quickStudyVerifierLifecycleReceipt;
+      return events;
+    });
+    expect(lifecycleEvents.some((event) => event.status === "paused" && event.manifestCount === 1)).toBe(true);
+    expect(lifecycleEvents.some((event) => event.status === "restoring" && event.manifestCount === 1)).toBe(true);
+    const firstSecondManifestEvent = lifecycleEvents.findIndex((event) => event.manifestCount === 2);
+    expect(firstSecondManifestEvent).toBeGreaterThanOrEqual(0);
+    expect(lifecycleEvents.slice(0, firstSecondManifestEvent).every((event) => event.manifestCount === 1)).toBe(true);
+    const lifecycleAfterManifest = await page.evaluate(async () => (await window.quickStudy.getState()).modelRuntimeLifecycle);
+    expect(lifecycleAfterManifest).toMatchObject({ status: "available", operationId: expect.any(String) });
+    const restorationOperationId = lifecycleAfterManifest.operationId;
+    await scenario.action("Wait for Codex runtime restoration after Lean verification", async () => {
+      await expect(page.getByRole("status", { name: "Model teaching available" })).toContainText("Model teaching available", {
+        timeout: PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS
+      });
+      await expect.poll(() => page.evaluate(async () => (await window.quickStudy.getState()).modelRuntimeLifecycle), {
+        timeout: PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS
+      }).toMatchObject({ status: "available", operationId: restorationOperationId });
+    }, PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS);
     const synthesizeArtifact = reformulatedProof.getByRole("button", { name: /Synthesize Learning Artifact/ });
     await scenario.action("Confirm whole Learning Artifact synthesis scope", () =>
       reformulatedProof.getByRole("checkbox", { name: "Confirm this proposal may replace the whole Learning Artifact" }).check());
@@ -277,7 +323,7 @@ test("packaged verifier and artifact journey keeps lifecycle evidence across rei
       expect(reformulatedProof.getByRole("status")).toContainText(
         "Learning Artifact synthesized with the current Personal Note Synthesis Preference.",
         { timeout: 60_000 }
-      ));
+      ), 60_000);
     await expect(reformulatedProof).toContainText("My exact finite-choice insight.");
     await scenario.action("Export Reformulated Proof", () => reformulatedProof.getByRole("button", { name: /Export Reformulated Proof/ }).press("Enter"));
     await expect(reformulatedProof.getByText(`Artifact Export saved to ${scenario.paths.artifactExportPath}`)).toBeVisible();
@@ -1102,11 +1148,17 @@ function nearestRankP95(values: number[]): number {
 
 function readCompletedVerifierLifecycleSamples(output: string): number[] {
   return output.split("\n").flatMap((line) => {
-    const match = line.match(/\[Lean integrity\] (\{.*\})$/);
+    const match = line.match(/\[Lean verification\] (\{.*\})$/);
     if (!match) return [];
     try {
-      const event = JSON.parse(match[1]) as { status?: string; elapsedMs?: number };
-      return event.status === "completed" && typeof event.elapsedMs === "number" ? [event.elapsedMs] : [];
+      const event = JSON.parse(match[1]) as {
+        runId?: string; restorationOperationId?: string; status?: string; elapsedMs?: number
+      };
+      return event.status === "completed"
+        && typeof event.runId === "string"
+        && typeof event.restorationOperationId === "string"
+        && typeof event.elapsedMs === "number"
+        ? [event.elapsedMs] : [];
     } catch {
       return [];
     }

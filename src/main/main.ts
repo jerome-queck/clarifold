@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { dirname, extname, join } from "node:path";
@@ -445,52 +446,84 @@ function registerLearningApplicationHandlers(): void {
     const startedAt = Date.now();
     console.info(`[Lean verification] ${JSON.stringify({ runId: request.runId, status: "started" })}`);
     let restartModelRuntime = false;
+    const restorationOperationId = randomUUID();
+    let verificationOutcome = "unknown";
+    let restorationFailure: unknown = null;
+    let verifierFailure: unknown = null;
     let failed = false;
     let failure: unknown;
     try {
       await runtimeLeanCoordinator.run(async () => {
         try {
           if (controller.signal.aborted) throw new Error("Formal verification was canceled before Codex was paused.");
-          restartModelRuntime = await learningApplication.pauseModelRuntimeForFormalVerification();
+          restartModelRuntime = await learningApplication.pauseModelRuntimeForFormalVerification(restorationOperationId);
           if (restartModelRuntime) {
             modelRuntime = null;
             console.info(`[Lean verification] ${JSON.stringify({
-              runId: request.runId, status: "model-runtime-paused", elapsedMs: Date.now() - startedAt
+              runId: request.runId, restorationOperationId, status: "model-runtime-paused", elapsedMs: Date.now() - startedAt
             })}`);
           }
           if (controller.signal.aborted) throw new Error("Formal verification was canceled before Lean started.");
-          await learningApplication.runFormalVerification(sessionId, request, controller.signal);
-          const outcome = learningApplication.getState().verifierManifests
+          const checked = restartModelRuntime
+            ? await learningApplication.runFormalVerification(sessionId, request, controller.signal, {
+                publish: false, operationId: restorationOperationId
+              })
+            : await learningApplication.runFormalVerification(sessionId, request, controller.signal);
+          verificationOutcome = checked.verifierManifests
             .find((manifest) => manifest.id === request.runId)?.commandOutcome ?? "unknown";
-          console.info(`[Lean verification] ${JSON.stringify({
-            runId: request.runId, status: "completed", outcome, elapsedMs: Date.now() - startedAt
-          })}`);
+        } catch (error) {
+          verifierFailure = error;
+          throw error;
         } finally {
           if (restartModelRuntime && !applicationShutdown) {
             try {
+              await learningApplication.beginModelRuntimeRestoration(restorationOperationId);
               if (!modelRuntimeWorkingDirectory) throw new Error("The Model Runtime workspace is unavailable.");
               modelRuntime = await CodexAppServerRuntime.launch(modelRuntimeWorkingDirectory);
-              await learningApplication.restoreModelRuntime(modelRuntime);
+              await learningApplication.restoreModelRuntime(modelRuntime, restorationOperationId);
               console.info(`[Lean verification] ${JSON.stringify({
-                runId: request.runId, status: "model-runtime-restored", elapsedMs: Date.now() - startedAt
+                runId: request.runId, restorationOperationId, status: "model-runtime-restored", elapsedMs: Date.now() - startedAt
               })}`);
             } catch (error) {
+              restorationFailure = error;
               modelRuntime = null;
-              await learningApplication.reportModelRuntimeFailure(error);
+              await learningApplication.reportModelRuntimeFailure(error, restorationOperationId);
               console.error("Codex app-server could not restart after formal verification:", error);
             }
+          } else if (restartModelRuntime && applicationShutdown) {
+            await learningApplication.reportModelRuntimeFailure(
+              new Error("Codex restoration was skipped because the application is shutting down."),
+              restorationOperationId
+            );
           }
         }
       });
+      if (restorationFailure && verifierFailure) {
+        throw new AggregateError(
+          [verifierFailure, restorationFailure],
+          "Formal verification and Codex restoration both failed."
+        );
+      }
+      if (restorationFailure) throw restorationFailure;
+      console.info(`[Lean verification] ${JSON.stringify({
+        runId: request.runId,
+        restorationOperationId,
+        status: "completed",
+        outcome: verificationOutcome,
+        elapsedMs: Date.now() - startedAt
+      })}`);
     } catch (error) {
       if (!learningApplication.getState().runtimeAvailable) modelRuntime = null;
       failed = true;
       failure = error;
       console.error(`[Lean verification] ${JSON.stringify({
         runId: request.runId,
+        restorationOperationId,
         status: "failed",
         elapsedMs: Date.now() - startedAt,
-        detail: error instanceof Error ? error.message : "Formal verification failed."
+        detail: error instanceof Error ? error.message : "Formal verification failed.",
+        verifierDetail: verifierFailure instanceof Error ? verifierFailure.message : undefined,
+        restorationDetail: restorationFailure instanceof Error ? restorationFailure.message : undefined
       })}`);
     } finally {
       verifierRuns.delete(request.runId);

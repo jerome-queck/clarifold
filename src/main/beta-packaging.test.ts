@@ -29,6 +29,8 @@ describe("macOS beta release contract", () => {
       "electron-forge make --platform=darwin --skip-package"
     );
     expect(packageJson.scripts["test:smoke"]).toContain("install-beta-for-smoke.mjs");
-    expect(packageJson.scripts.verify).toContain("npm run make:beta && npm run test:smoke");
+    expect(packageJson.scripts["verify:prepackage"]).toContain("npm run policy:documentation");
+    expect(packageJson.scripts["verify:package"]).toContain("npm run make:beta && npm run test:smoke");
+    expect(packageJson.scripts.verify).toBe("npm run verify:prepackage && npm run verify:package");
   });
 });

@@ -23,6 +23,9 @@
     "security:dependencies": "npm audit --omit=dev --audit-level=high",
     "security:secrets": "node scripts/run-gitleaks.mjs",
     "security:swift": "xcrun swiftc -warnings-as-errors -typecheck native/source-index-extractor.swift -framework AppKit -framework Foundation -framework ImageIO -framework PDFKit -framework Vision && xcrun swiftc -warnings-as-errors -typecheck native/source-bookmark-helper.swift -framework Foundation && xcrun swiftc -warnings-as-errors -typecheck tests/fixtures/create-scanned-pdf.swift -framework AppKit -framework Foundation -framework PDFKit",
+    "policy:documentation": "node scripts/check-documentation.mjs",
+    "policy:classify": "node scripts/change-classifier.mjs",
+    "test:policy": "node --test scripts/policy.test.mjs",
     "quality:gate": "npm run build:quality-gate && node dist/quality-gate/quality-gate-cli.js",
     "quality:collect:model": "npm run build:main && node scripts/collect-model-evaluation.mjs",
     "quality:collect:recovery": "node scripts/collect-recovery-evaluation.mjs",
@@ -35,7 +38,9 @@
     "test:smoke": "node scripts/install-beta-for-smoke.mjs && npm run test:smoke:index-budget && npm run test:smoke:functional",
     "test:smoke:index-budget": "playwright test --config=playwright.config.ts --grep \"packaged Quick Study indexes the pinned large-source corpus within budget\"",
     "test:smoke:functional": "playwright test --config=playwright.config.ts --grep-invert \"packaged Quick Study indexes the pinned large-source corpus within budget\"",
-    "verify": "npm run lint && npm run typecheck && npm test && npm run quality:gate:fixture && npm run package && npm run make:beta && npm run test:smoke"
+    "verify:prepackage": "npm run lint && npm run typecheck && npm test && npm run test:policy && npm run policy:documentation",
+    "verify:package": "npm run quality:gate:fixture && npm run package && npm run make:beta && npm run test:smoke",
+    "verify": "npm run verify:prepackage && npm run verify:package"
   },
   "dependencies": {
     "react": "19.2.7",
