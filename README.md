@@ -1,10 +1,10 @@
-# Quick Study
+# Clarifold
 
-Quick Study is a local-first macOS mathematical learning workbench for Advanced Mathematics Learners. It turns typed mathematics, source material, and learner questions into a durable Learning Session that can be examined, practised, and consolidated into evidence.
+Clarifold is a local-first macOS mathematical learning workbench for Advanced Mathematics Learners. It turns typed mathematics, source material, and learner questions into a durable Learning Session that can be examined, practised, and consolidated into evidence.
 
 The built-in Quick Study Study Workspace is the home for loose work. Learners can later file a session into a named Study Workspace and Study Mission without replacing the session or losing its Learning Goal, Session Target, or return context.
 
-Quick Study keeps learner work local by default. Linked Sources remain at their original locations, Personal Notes stay private from ordinary teaching, and model-dependent work is explicit, bounded, cancellable, and recoverable. Teaching output can become a source-linked Learning Artifact or Reformulated Proof with revision provenance, while exact formal verification is shown only for claims actually checked by the recorded Verifier Environment.
+Clarifold keeps learner work local by default. Linked Sources remain at their original locations, Personal Notes stay private from ordinary teaching, and model-dependent work is explicit, bounded, cancellable, and recoverable. Teaching output can become a source-linked Learning Artifact or Reformulated Proof with revision provenance, while exact formal verification is shown only for claims actually checked by the recorded Verifier Environment.
 
 ## Current status
 
@@ -37,13 +37,13 @@ not a present beta launch requirement; it becomes appropriate before
 commercial maturity, collaboration, paid or hosted distribution, or a public
 signed and notarized release.
 
-## What Quick Study does—and does not claim
+## What Clarifold does—and does not claim
 
-Quick Study helps Advanced Mathematics Learners uncover and examine gaps in understanding. It does not guarantee mastery, correctness, or academic outcomes. Model-generated teaching and analysis may be incomplete or wrong, and formal verification covers only the exact claims and assumptions checked by the recorded Verifier Environment. Local-first operation does not mean every optional model or research operation stays offline.
+Clarifold helps Advanced Mathematics Learners uncover and examine gaps in understanding. It does not guarantee mastery, correctness, or academic outcomes. Model-generated teaching and analysis may be incomplete or wrong, and formal verification covers only the exact claims and assumptions checked by the recorded Verifier Environment. Local-first operation does not mean every optional model or research operation stays offline.
 
 ## Accessibility
 
-Accessibility is a product requirement. The current build uses semantic controls, accessible names, keyboard-operable primary journeys, and visible status and error messages where those capabilities are implemented. This is not a WCAG conformance claim. Report an accessibility or usability barrier through [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new) without attaching private learner or source data.
+Accessibility is a product requirement. The current build uses semantic controls, accessible names, keyboard-operable primary journeys, and visible status and error messages where those capabilities are implemented. This is not a WCAG conformance claim. Report an accessibility or usability barrier through the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose) without attaching private learner or source data.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Start with the [development guide](docs/development.md) for a build-from-source 
 
 Application state uses Electron's local `userData` directory. The supported `QUICK_STUDY_DATA_DIR` override is for isolated development or diagnosis and must not point at imported learner sources. Do not commit learner data, credentials, or local `.env` files. Optional model access and external research are separate from local source and session work; see the [privacy notice](PRIVACY.md) and [beta guide](docs/beta-release.md) for the current boundaries and recovery paths.
 
-Use [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new) for public product feedback. Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
+Use the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose) for structured product feedback. Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded when the selected form requests it. Public reports are reviewed on a best-effort basis; there is no dedicated support service or response-time promise.
 
 ## Maintenance
 

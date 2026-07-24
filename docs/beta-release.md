@@ -1,4 +1,4 @@
-# Quick Study macOS beta
+# Clarifold macOS beta
 
 This is an evaluation beta for the supported Apple Silicon baseline. It is not a public production release and makes no causal learning-effectiveness claim.
 
@@ -6,7 +6,7 @@ This is an evaluation beta for the supported Apple Silicon baseline. It is not a
 
 - Apple Silicon Mac with macOS 14 Sonoma or later.
 - At least 16 GB memory and 12 GB free disk space for the application, local data, indexes, and the bundled verifier.
-- Network access and a supported Codex authentication path are needed for model-backed teaching. ChatGPT sign-in and OpenAI API-key sign-in are owned by Codex; Quick Study does not store either credential.
+- Network access and a supported Codex authentication path are needed for model-backed teaching. ChatGPT sign-in and OpenAI API-key sign-in are owned by Codex; Clarifold does not store either credential.
 - Local Working Mode, Linked Sources, Session Records, annotations, search, artifacts, export, and installed Lean checks remain usable without Codex access.
 
 The automated release lane runs on GitHub's `macos-14` runner with Node 24. The final local installed-artifact audit records the exact Mac, OS, candidate commit, archive digest, and operational measurements with the release evidence described in [`evaluation/README.md`](../evaluation/README.md).
@@ -19,7 +19,7 @@ The canonical setup, command matrix, packaging behavior, smoke coverage, and dev
 
 The [evaluation guide](../evaluation/README.md) owns live model samples, blinded evaluator records, recovery evidence, candidate quality gates, and report publication. It also explains the exact-commit and evidence-binding rules. This beta guide intentionally keeps only the user-facing install boundary and limitations rather than duplicating those procedures.
 
-For an evaluation install, use the architecture-native archive produced by the development guide and copy `Quick Study.app` to `/Applications` or another local Applications folder. The current archive is ad-hoc signed but not Developer ID signed or notarized. It is therefore suitable for local and CI evaluation, not public internet distribution; do not bypass organizational Gatekeeper policy to install it. Developer ID signing, notarization, and a post-notarization rerun are required before calling any artifact a public beta.
+For an evaluation install, use the architecture-native archive produced by the development guide and copy Clarifold's current internal `Quick Study.app` artifact to `/Applications` or another local Applications folder. The current archive is ad-hoc signed but not Developer ID signed or notarized. It is therefore suitable for local and CI evaluation, not public internet distribution; do not bypass organizational Gatekeeper policy to install it. Developer ID signing, notarization, and a post-notarization rerun are required before calling any artifact a public beta.
 
 ## Privacy and source access defaults
 
@@ -53,7 +53,7 @@ Security reports and conduct reports use their separate private channels in
 
 ## Feedback
 
-Report beta feedback through [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new). Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
+Report beta feedback through the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose). Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded when the selected form requests it. Reports are reviewed on a best-effort basis; there is no dedicated support service or response-time promise.
 
 ## Maintenance
 

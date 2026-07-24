@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible problem in the Clarifold product or verified development build.
+title: "[Bug]: "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Clarifold. This is a public issue and is reviewed on a best-effort basis; submission does not guarantee a response, acceptance, or implementation.
+
+        Do not include private learner material, source documents, Personal Notes, credentials, secrets, or another person's personal data. Do not use this form for security vulnerabilities, conduct reports, privacy questions, commercial licensing, emergencies, or general support. Use the chooser contact links instead.
+  - type: input
+    id: summary
+    attributes:
+      label: Problem summary
+      description: What went wrong, in one sentence?
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the Clarifold version or commit, macOS version, Mac model, and whether this was a packaged or source build. Do not include paths containing private data.
+      placeholder: "Clarifold 0.1.0, macOS 14.x, Apple Silicon, packaged build"
+    validations:
+      required: true
+  - type: dropdown
+    id: reproducible
+    attributes:
+      label: Reproducibility
+      description: How consistently can you reproduce the problem?
+      options:
+        - Always
+        - Sometimes
+        - Once
+        - Unable to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest safe sequence that demonstrates the problem. Use synthetic content only.
+      placeholder: |
+        1. Start with a new empty Study Workspace.
+        2. Choose ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected, observed, and impact
+      description: What did you expect, what happened, and what learner work or recovery path was affected? Do not paste learner records.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Safe diagnostic details
+      description: Add redacted error text or logs only. Remove secrets, tokens, personal data, learner content, and private source material.
+    validations:
+      required: false
+  - type: checkboxes
+    id: safe-to-publish
+    attributes:
+      label: Public issue confirmation
+      options:
+        - label: I confirm that this report contains no private learner material, secrets, credentials, or another person's personal data, and that it is safe to publish publicly.
+          required: true
