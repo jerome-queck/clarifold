@@ -52,8 +52,26 @@ module.exports = {
 
 async function copyPackagedUpstreamNotices(outputPath) {
   const resources = join(outputPath, "Quick Study.app", "Contents", "Resources");
-  await copyFile(join(outputPath, "LICENSE"), join(resources, "ELECTRON_LICENSE"));
-  await copyFile(join(outputPath, "LICENSES.chromium.html"), join(resources, "CHROMIUM_LICENSES.html"));
+  await copyFirstAvailableFile([
+    join(outputPath, "LICENSE"),
+    join(outputPath, "Quick Study.app", "Contents", "LICENSE"),
+  ], join(resources, "ELECTRON_LICENSE"));
+  await copyFirstAvailableFile([
+    join(outputPath, "LICENSES.chromium.html"),
+    join(outputPath, "Quick Study.app", "Contents", "LICENSES.chromium.html"),
+  ], join(resources, "CHROMIUM_LICENSES.html"));
+}
+
+async function copyFirstAvailableFile(sources, destination) {
+  for (const source of sources) {
+    try {
+      await copyFile(source, destination);
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  throw new Error(`Could not find an upstream notice to copy to ${destination}.`);
 }
 
 async function makeVerifierFilesReadOnly(directory) {

@@ -1,4 +1,4 @@
-import { extractFile } from "@electron/asar";
+import { extractFile, listPackage } from "@electron/asar";
 import { createHash } from "node:crypto";
 import { access, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -29,29 +29,48 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
   if (!notice.includes("Required Notice: Copyright © 2026 Jerome Queck")) {
     throw new Error("Packaged NOTICE is missing the required Jerome Queck copyright notice.");
   }
-  await requireNonEmptyFile(join(resources, "THIRD_PARTY_NOTICES.md"), "third-party notices");
-  await requireNonEmptyFile(join(verifier, "LICENSE"), "Lean license");
-  await requireNonEmptyFile(join(verifier, "LICENSES"), "Lean component licenses");
-  await requireNonEmptyFile(join(verifier, "mathlib-LICENSE"), "mathlib license");
-
-  for (const { name, key, license } of runtimePackages(packageLock)) {
-    if (!ALLOWED_NPM_RUNTIME_LICENSES.has(license)) {
-      throw new Error(`Disallowed or unknown runtime license for ${name}: ${license}`);
+  const thirdPartyNotices = await requireNonEmptyFile(join(resources, "THIRD_PARTY_NOTICES.md"), "third-party notices");
+  for (const requiredNotice of ["Electron 43.1.1", "Chromium", "React", "React DOM", "scheduler", "Lean toolchain", "mathlib", "native helpers"]) {
+    if (!thirdPartyNotices.includes(requiredNotice)) {
+      throw new Error(`Packaged third-party notices are missing required attribution: ${requiredNotice}`);
     }
-    const packageJsonPath = `node_modules/${name}/package.json`;
+  }
+  const electronLicense = await requireNonEmptyFile(join(resources, "ELECTRON_LICENSE"), "Electron license");
+  if (!electronLicense.includes("Electron contributors")) throw new Error("Packaged Electron license has unexpected contents.");
+  const chromiumLicenses = await requireNonEmptyFile(join(resources, "CHROMIUM_LICENSES.html"), "Chromium notices");
+  if (!chromiumLicenses.toString("utf8").includes("Chromium")) throw new Error("Packaged Chromium notices have unexpected contents.");
+  await requireLicenseText(join(verifier, "LICENSE"), "Lean license");
+  await requireLicenseText(join(verifier, "LICENSES"), "Lean component licenses");
+  await requireLicenseText(join(verifier, "mathlib-LICENSE"), "mathlib license");
+  await requireNonEmptyFile(join(resources, "app.asar.unpacked", "dist", "helpers", "source-bookmark-helper"), "source bookmark helper");
+  await requireNonEmptyFile(join(resources, "app.asar.unpacked", "dist", "helpers", "source-index-extractor"), "source index helper");
+
+  const expectedRuntimePackages = runtimePackages(packageLock);
+  const expectedByName = new Map(expectedRuntimePackages.map((entry) => [entry.name, entry]));
+  const packagedPackagePaths = listPackage(asarPath).filter((path) => /^node_modules\/.+\/package\.json$/.test(path));
+  const packagedNames = new Set();
+  for (const packageJsonPath of packagedPackagePaths) {
     let packagedPackage;
     try {
       packagedPackage = JSON.parse(extractFile(asarPath, packageJsonPath).toString("utf8"));
     } catch (error) {
-      throw new Error(`Packaged runtime dependency is missing: ${packageJsonPath}`, { cause: error });
+      throw new Error(`Packaged runtime dependency metadata is unreadable: ${packageJsonPath}`, { cause: error });
     }
-    if (packagedPackage.license !== license) {
-      throw new Error(`Packaged runtime license mismatch for ${name}: expected ${license}, got ${packagedPackage.license ?? "unknown"}`);
+    const expected = expectedByName.get(packagedPackage.name);
+    if (!expected) throw new Error(`Unexpected packaged runtime dependency: ${packagedPackage.name ?? packageJsonPath}`);
+    packagedNames.add(packagedPackage.name);
+    if (!ALLOWED_NPM_RUNTIME_LICENSES.has(expected.license)) {
+      throw new Error(`Disallowed or unknown runtime license for ${packagedPackage.name}: ${expected.license}`);
     }
-    if (!key) throw new Error(`Could not resolve package-lock entry for runtime dependency ${name}.`);
+    if (packagedPackage.license !== expected.license) {
+      throw new Error(`Packaged runtime license mismatch for ${packagedPackage.name}: expected ${expected.license}, got ${packagedPackage.license ?? "unknown"}`);
+    }
+  }
+  for (const expected of expectedRuntimePackages) {
+    if (!packagedNames.has(expected.name)) throw new Error(`Packaged runtime dependency is missing: ${expected.name}`);
   }
 
-  return { applicationPath, runtimePackages: runtimePackages(packageLock).map(({ name, license }) => ({ name, license })) };
+  return { applicationPath, runtimePackages: expectedRuntimePackages.map(({ name, license }) => ({ name, license })) };
 }
 
 async function requireNonEmptyFile(path, label) {
@@ -64,6 +83,13 @@ async function requireNonEmptyFile(path, label) {
   }
 }
 
+async function requireLicenseText(path, label) {
+  const contents = await requireNonEmptyFile(path, label);
+  if (!contents.toString("utf8").includes("Apache License")) {
+    throw new Error(`Packaged ${label} has unexpected contents.`);
+  }
+}
+
 function runtimePackages(packageLock) {
   const packages = packageLock.packages ?? {};
   const queue = Object.keys(packages[""]?.dependencies ?? {}).map((name) => ({ name, parentKey: "" }));
@@ -71,14 +97,15 @@ function runtimePackages(packageLock) {
   const result = [];
   while (queue.length > 0) {
     const { name, parentKey } = queue.shift();
-    const key = resolvePackageKey(packages, name, parentKey);
-    if (!key || visited.has(key)) continue;
-    visited.add(key);
-    const metadata = packages[key];
+    const packageLockPath = resolvePackageKey(packages, name, parentKey);
+    if (!packageLockPath) throw new Error(`Could not resolve package-lock entry for runtime dependency ${name}.`);
+    if (visited.has(packageLockPath)) continue;
+    visited.add(packageLockPath);
+    const metadata = packages[packageLockPath];
     const license = typeof metadata.license === "string" ? metadata.license : "unknown";
-    result.push({ name, key, license });
+    result.push({ name, packageLockPath, license });
     for (const dependency of Object.keys(metadata.dependencies ?? {})) {
-      queue.push({ name: dependency, parentKey: key });
+      queue.push({ name: dependency, parentKey: packageLockPath });
     }
   }
   return result;
