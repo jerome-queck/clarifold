@@ -38,6 +38,21 @@ test("legacy identifier audit rejects a new occurrence in an allowlisted file", 
   assert.match(result.errors.join("\n"), /durable-domain-language: expected 31 legacy-concatenated-identifier occurrences, found 1/);
 });
 
+test("legacy identifier audit rejects a replacement that preserves aggregate counts", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-fingerprint-"));
+  const lines = [
+    ...Array.from({ length: 57 }, () => "Quick Study product download"),
+    ...Array.from({ length: 25 }, () => "quick-study-product"),
+    ...Array.from({ length: 31 }, () => "quickStudyProduct"),
+    ...Array.from({ length: 14 }, () => "QUICK_STUDY_DATA_DIR"),
+  ];
+  await writeFile(path.join(rootDir, "README.md"), `${lines.join("\n")}\n`);
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /durable-domain-language: expected legacy-product-name occurrence fingerprint/);
+});
+
 test("legacy identifier audit rejects unapproved legacy environment variables", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-environment-"));
   await writeFile(path.join(rootDir, "config.ts"), "process.env.QUICK_STUDY_API_KEY;\n");

@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -58,6 +59,12 @@ function lineNumber(contents, offset) {
   return contents.slice(0, offset).split("\n").length;
 }
 
+function sourceLine(contents, offset) {
+  const start = contents.lastIndexOf("\n", offset - 1) + 1;
+  const end = contents.indexOf("\n", offset);
+  return contents.slice(start, end === -1 ? contents.length : end);
+}
+
 function scanContents(relativePath, contents, source) {
   const hits = [];
   for (const [patternId, pattern] of Object.entries(patterns)) {
@@ -72,6 +79,7 @@ function scanContents(relativePath, contents, source) {
         path: relativePath,
         rule: rule?.id ?? null,
         source,
+        sourceLine: sourceLine(contents, match.index ?? 0),
         value,
       });
     }
@@ -83,6 +91,7 @@ export async function auditLegacyIdentifiers({ rootDir }) {
   const errors = [];
   const classified = [];
   const observedCounts = new Map();
+  const observedOccurrences = new Map();
   const activeRuleIds = new Set();
   const files = await collectFiles(rootDir);
 
@@ -102,6 +111,9 @@ export async function auditLegacyIdentifiers({ rootDir }) {
         if (hit.source === "content") {
           const key = `${hit.rule}:${hit.patternId}`;
           observedCounts.set(key, (observedCounts.get(key) ?? 0) + 1);
+          const occurrences = observedOccurrences.get(key) ?? [];
+          occurrences.push(`${hit.path}\0${hit.patternId}\0${hit.sourceLine}`);
+          observedOccurrences.set(key, occurrences);
         }
       }
     }
@@ -115,11 +127,24 @@ export async function auditLegacyIdentifiers({ rootDir }) {
         errors.push(`${rule.id}: expected ${expected} ${patternId} occurrences, found ${actual}`);
       }
     }
+    for (const [patternId, expected] of Object.entries(rule.expectedFingerprints ?? {})) {
+      const occurrences = [...(observedOccurrences.get(`${rule.id}:${patternId}`) ?? [])].sort();
+      const actual = createHash("sha256").update(occurrences.join("\n")).digest("hex");
+      if (actual !== expected) {
+        errors.push(`${rule.id}: expected ${patternId} occurrence fingerprint ${expected}, found ${actual}`);
+      }
+    }
   }
 
   const summary = Object.fromEntries(summaryCategories.map((category) => [category, 0]));
   for (const hit of classified) summary[hit.category] = (summary[hit.category] ?? 0) + 1;
-  return { classified, errors, observedCounts: Object.fromEntries(observedCounts), summary };
+  const observedFingerprints = Object.fromEntries(
+    [...observedOccurrences.entries()].map(([key, occurrences]) => [
+      key,
+      createHash("sha256").update([...occurrences].sort().join("\n")).digest("hex"),
+    ]),
+  );
+  return { classified, errors, observedCounts: Object.fromEntries(observedCounts), observedFingerprints, summary };
 }
 
 async function main() {

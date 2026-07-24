@@ -41,6 +41,12 @@
         "legacy-product-name": 19,
         "legacy-slug": 1,
         "legacy-concatenated-identifier": 0
+      },
+      "expectedFingerprints": {
+        "event-reference": "94157cf7be78ec3cf22109aa2d5144ab5e5c85bbd9248fba74892d8d8e94f7d0",
+        "legacy-product-name": "cbbe8c85c3caabbed4d9651bdacf159e84e87a4410e7e6b569f55a3b0a73adde",
+        "legacy-slug": "0ba6f9b33d3656ea75fab3c1674d3d880640dd458878d914214d70e0c372067e",
+        "legacy-concatenated-identifier": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     },
     {
@@ -58,6 +64,11 @@
         "legacy-product-name": 4,
         "legacy-slug": 0,
         "legacy-concatenated-identifier": 0
+      },
+      "expectedFingerprints": {
+        "legacy-product-name": "89e1df68ef9b8a3dd21ab94f4de454a6004ffd656726a1f5fde916334bae2014",
+        "legacy-slug": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "legacy-concatenated-identifier": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     },
     {
@@ -88,6 +99,11 @@
         "legacy-product-name": 57,
         "legacy-slug": 25,
         "legacy-concatenated-identifier": 31
+      },
+      "expectedFingerprints": {
+        "legacy-product-name": "1ba0874efd3a2e505d233216dd129184829360745ced851b1050826b840f7b81",
+        "legacy-slug": "f34abd160186bf6c92a6fed4c76aab4e920e677b0f08d0f2742aff6846bffb59",
+        "legacy-concatenated-identifier": "1c6d39315bcb87b11d4ec03749772762586be01419ab6bbdc3d3a58d6d08f78a"
       }
     },
     {
@@ -102,6 +118,10 @@
       "expectedCounts": {
         "legacy-slug": 2,
         "legacy-concatenated-identifier": 0
+      },
+      "expectedFingerprints": {
+        "legacy-slug": "509923c731077f41642512e8b7be5cf33c060ec981a80c6eda25d20062d0895b",
+        "legacy-concatenated-identifier": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     },
     {
@@ -120,6 +140,9 @@
       "patterns": ["legacy-environment-variable"],
       "expectedCounts": {
         "legacy-environment-variable": 14
+      },
+      "expectedFingerprints": {
+        "legacy-environment-variable": "925d3c245980af2e7d4821ec742893bd44b1c9363cca00facb51922480fe1370"
       }
     },
     {
@@ -131,6 +154,11 @@
         "legacy-product-name": 39,
         "legacy-slug": 77,
         "legacy-concatenated-identifier": 125
+      },
+      "expectedFingerprints": {
+        "legacy-product-name": "ebb70ac2ec63b9d0807659f06e4a65dd85bf3cc1cef91643f0b457dd74f80c93",
+        "legacy-slug": "5ef0430ebaea8fe4aa75044cd698b3b665890db216e7315132f43d4b6e181ec4",
+        "legacy-concatenated-identifier": "52276b671fc78524c4b5b3c0ec7c02861d89034ee8df51bcb4a05f076e7fb8fc"
       }
     }
   ]

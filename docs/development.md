@@ -65,9 +65,9 @@ Run focused checks while changing code, then run the complete lane before review
 The legacy-identifier policy scans repository text and tracked paths using the allowlist in
 `scripts/legacy-identifier-allowlist.json`. It deliberately skips generated output,
 dependency, cache, signing, and policy-fixture directories so search results remain about
-reviewed source. Each allowlisted rule records its expected occurrence count, so adding a
-new legacy string to an otherwise allowed file fails until the inventory is deliberately
-reclassified. The built-in Quick Study Study Workspace, durable persisted identifiers,
+reviewed source. Each allowlisted rule records its expected occurrence count and source-line
+fingerprint, so adding or replacing a legacy string in an otherwise allowed file fails until
+the inventory is deliberately reclassified. The built-in Quick Study Study Workspace, durable persisted identifiers,
 historical records, and the one-beta `QUICK_STUDY_DATA_DIR` alias are the only allowed
 legacy identity classes today. The alias has lower precedence than `CLARIFOLD_DATA_DIR`,
 emits a deprecation warning, and is removed in the next breaking beta after this one-beta
