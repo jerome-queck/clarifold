@@ -12,6 +12,35 @@ const REQUIRED_DOCUMENTS = [
 ];
 
 const REQUIRED_PULL_REQUEST_SECTIONS = ["Documentation impact", "Security impact"];
+const REQUIRED_ISSUE_FORMS = [
+  {
+    file: "bug_report.yml",
+    name: "Bug report",
+    ids: ["summary", "environment", "reproducible", "steps", "impact", "safe-to-publish"],
+  },
+  {
+    file: "learning_experience.yml",
+    name: "Learning experience proposal",
+    ids: ["learner-goal", "current-experience", "proposal", "impact", "safe-to-publish"],
+  },
+  {
+    file: "mathematical_accuracy.yml",
+    name: "Mathematical-accuracy concern",
+    ids: ["claim-location", "claim", "concern", "reasoning", "reproduction", "impact", "safe-to-publish"],
+  },
+  {
+    file: "accessibility_usability.yml",
+    name: "Accessibility or usability concern",
+    ids: ["barrier", "affected-journey", "reproduction", "environment", "impact", "safe-to-publish"],
+  },
+];
+const REQUIRED_ISSUE_CONTACT_LINKS = [
+  "https://github.com/jerome-queck/clarifold/security/advisories/new",
+  "security@jeromegroup.org",
+  "mailto:conduct@jeromegroup.org",
+  "mailto:privacy@jeromegroup.org",
+  "mailto:licensing@jeromegroup.org",
+];
 const REQUIRED_CANONICAL_LINKS = [
   { source: "README.md", target: "docs/development.md" },
   { source: "README.md", target: "docs/architecture.md" },
@@ -143,6 +172,74 @@ async function checkIgnoreRules(rootDir, errors) {
       }
     }
   }
+}
+
+async function readOptionalFile(rootDir, relativePath) {
+  try {
+    return await readFile(path.join(rootDir, relativePath), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function hasYamlField(contents, field, valuePattern = /.+/) {
+  return new RegExp(`^${field}:\\s*${valuePattern.source}\\s*$`, "m").test(contents);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&");
+}
+
+export async function validatePublicIssueIntake({ rootDir }) {
+  const errors = [];
+  const configPath = ".github/ISSUE_TEMPLATE/config.yml";
+  const config = await readOptionalFile(rootDir, configPath);
+
+  if (config === null) {
+    errors.push(`missing issue intake configuration: ${configPath}`);
+  } else {
+    if (!hasYamlField(config, "blank_issues_enabled", /false/)) {
+      errors.push(`${configPath}: blank issues must be disabled`);
+    }
+    for (const contactLink of REQUIRED_ISSUE_CONTACT_LINKS) {
+      if (!config.includes(contactLink)) {
+        errors.push(`${configPath}: missing contact route: ${contactLink}`);
+      }
+    }
+  }
+
+  for (const form of REQUIRED_ISSUE_FORMS) {
+    const relativePath = `.github/ISSUE_TEMPLATE/${form.file}`;
+    const contents = await readOptionalFile(rootDir, relativePath);
+    if (contents === null) {
+      errors.push(`missing issue form: ${relativePath}`);
+      continue;
+    }
+
+    for (const field of ["name", "description", "title", "labels", "body"]) {
+      if (!new RegExp(`^${field}:`, "m").test(contents)) {
+        errors.push(`${relativePath}: missing required field: ${field}`);
+      }
+    }
+    if (!new RegExp(`^name:\\s*${escapeRegExp(form.name)}\\s*$`, "m").test(contents)) {
+      errors.push(`${relativePath}: name must be ${form.name}`);
+    }
+    if (!/^labels:\s*(?:\[[^\]]*needs-triage[^\]]*\]|.*needs-triage.*)$/m.test(contents)) {
+      errors.push(`${relativePath}: must apply the needs-triage label`);
+    }
+    for (const id of form.ids) {
+      if (!new RegExp(`^\\s*id:\\s*${id}\\s*$`, "m").test(contents)) {
+        errors.push(`${relativePath}: missing required field id: ${id}`);
+      }
+    }
+    for (const warning of ["private learner material", "secret", "security", "conduct", "best-effort", "safe-to-publish"]) {
+      if (!contents.toLowerCase().includes(warning)) {
+        errors.push(`${relativePath}: missing public-intake warning or consent text: ${warning}`);
+      }
+    }
+  }
+
+  return errors;
 }
 
 function headingAnchors(markdown) {
@@ -316,7 +413,11 @@ export async function validateDocumentation({ rootDir, pullRequestBody }) {
 
 async function main() {
   const pullRequestBody = process.env.GITHUB_EVENT_NAME === "pull_request" ? process.env.PULL_REQUEST_BODY ?? "" : undefined;
-  const errors = await validateDocumentation({ rootDir: process.cwd(), pullRequestBody });
+  const rootDir = process.cwd();
+  const errors = [
+    ...(await validatePublicIssueIntake({ rootDir })),
+    ...(await validateDocumentation({ rootDir, pullRequestBody })),
+  ];
   if (errors.length > 0) {
     console.error(errors.map((error) => `Documentation policy: ${error}`).join("\n"));
     process.exitCode = 1;

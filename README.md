@@ -43,7 +43,7 @@ Quick Study helps Advanced Mathematics Learners uncover and examine gaps in unde
 
 ## Accessibility
 
-Accessibility is a product requirement. The current build uses semantic controls, accessible names, keyboard-operable primary journeys, and visible status and error messages where those capabilities are implemented. This is not a WCAG conformance claim. Report an accessibility or usability barrier through [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new) without attaching private learner or source data.
+Accessibility is a product requirement. The current build uses semantic controls, accessible names, keyboard-operable primary journeys, and visible status and error messages where those capabilities are implemented. This is not a WCAG conformance claim. Report an accessibility or usability barrier through the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose) without attaching private learner or source data.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Start with the [development guide](docs/development.md) for a build-from-source 
 
 Application state uses Electron's local `userData` directory. The supported `QUICK_STUDY_DATA_DIR` override is for isolated development or diagnosis and must not point at imported learner sources. Do not commit learner data, credentials, or local `.env` files. Optional model access and external research are separate from local source and session work; see the [privacy notice](PRIVACY.md) and [beta guide](docs/beta-release.md) for the current boundaries and recovery paths.
 
-Use [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new) for public product feedback. Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
+Use the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose) for structured product feedback. Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded when the selected form requests it. Public reports are reviewed on a best-effort basis; there is no dedicated support service or response-time promise.
 
 ## Maintenance
 

@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/jerome-queck/clarifold/security/advisories/new
+    about: Use GitHub Private Vulnerability Reporting. If it is unavailable, email security@jeromegroup.org. Do not use a public issue.
+  - name: Report a conduct concern
+    url: mailto:conduct@jeromegroup.org
+    about: Send conduct reports privately to conduct@jeromegroup.org. Do not use a public issue.
+  - name: Ask a privacy question
+    url: mailto:privacy@jeromegroup.org
+    about: Ask privately about personal data, local records, export, deletion, or suspected mishandling.
+  - name: Request commercial permission
+    url: mailto:licensing@jeromegroup.org
+    about: Request written commercial permission privately; an inquiry grants no rights.

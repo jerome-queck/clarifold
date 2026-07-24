@@ -36,6 +36,24 @@ agreement. Professional legal review is deferred until collaboration is
 imminent or another legal-review trigger is reached; the gate cannot be
 repaired after accepting the contribution.
 
+## Public issue intake and support boundary
+
+Use the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose)
+for bug reports, learning-experience proposals, mathematical-accuracy
+concerns, and accessibility or usability concerns. These forms collect only
+the subject-specific context needed for triage and apply `needs-triage`.
+
+Do not put private learner material, source documents, Personal Notes,
+credentials, secrets, conduct reports, privacy questions, commercial licensing
+requests, security vulnerabilities, or emergency reports in a public issue.
+The chooser links to the private reporting routes in [SECURITY.md](SECURITY.md),
+[PRIVACY.md](PRIVACY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and the
+licensing contact. Clarifold has no dedicated support service, general support
+inbox, response-time promise, or GitHub Discussions forum during beta. Public
+reports are reviewed on a best-effort basis, and submission does not guarantee
+a response, acceptance, or implementation. The repository policy check also
+keeps the form schema, chooser routes, and triage label contract aligned.
+
 ## Documentation ownership
 
 Keep each kind of repository guidance in its canonical home and link to it instead of copying a second command matrix or architecture description:

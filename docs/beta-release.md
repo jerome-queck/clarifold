@@ -53,7 +53,7 @@ Security reports and conduct reports use their separate private channels in
 
 ## Feedback
 
-Report beta feedback through [GitHub Issues](https://github.com/jerome-queck/clarifold/issues/new). Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded.
+Report beta feedback through the [public issue chooser](https://github.com/jerome-queck/clarifold/issues/new/choose). Do not attach learner records, source documents, credentials, Personal Notes, or other private data. Include the beta version, macOS version, Mac model, action attempted, visible error, and whether recovery succeeded when the selected form requests it. Reports are reviewed on a best-effort basis; there is no dedicated support service or response-time promise.
 
 ## Maintenance
 

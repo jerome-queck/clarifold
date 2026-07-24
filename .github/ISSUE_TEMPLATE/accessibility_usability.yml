@@ -1,0 +1,54 @@
+name: Accessibility or usability concern
+description: Report a barrier that makes a Clarifold journey difficult, confusing, or unavailable.
+title: "[Accessibility/usability]: "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve access to Clarifold. Reports are reviewed on a best-effort basis; submission does not guarantee a response, acceptance, or implementation. Clarifold does not currently claim WCAG conformance.
+
+        Do not include private learner material, source documents, Personal Notes, credentials, secrets, or another person's personal data. Do not use this form for security vulnerabilities, conduct reports, privacy questions, commercial licensing, emergencies, or general support. Use the chooser contact links instead.
+  - type: textarea
+    id: barrier
+    attributes:
+      label: Barrier summary
+      description: What makes the experience inaccessible, confusing, or difficult?
+    validations:
+      required: true
+  - type: input
+    id: affected-journey
+    attributes:
+      label: Affected journey
+      description: Identify the screen, control, or action where the barrier occurs, using synthetic content only.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest safe sequence and describe the expected and observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and access setup
+      description: Include Clarifold version or commit, macOS version, Mac model, input method, and assistive technology if relevant. Do not include private paths or personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and workaround
+      description: Explain what is blocked or slowed, its severity, and any workaround you found.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safe-to-publish
+    attributes:
+      label: Public issue confirmation
+      options:
+        - label: I confirm that this report contains no private learner material, secrets, credentials, or another person's personal data, and that it is safe to publish publicly.
+          required: true

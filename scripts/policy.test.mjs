@@ -5,7 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { classifyChangedPaths } from "./change-classifier.mjs";
-import { validateDocumentation } from "./check-documentation.mjs";
+import { validateDocumentation, validatePublicIssueIntake } from "./check-documentation.mjs";
+
+test("repository public issue intake matches the supported community boundary", async () => {
+  assert.deepEqual(await validatePublicIssueIntake({ rootDir: process.cwd() }), []);
+});
 
 test("classifies documentation-only changes without requiring packaging", () => {
   const result = classifyChangedPaths([
