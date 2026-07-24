@@ -11,9 +11,11 @@ import type {
   SessionSearchResult,
   SourceSearchResult
 } from "../shared/learning-application";
+import type { MigrationStatus } from "../shared/clarifold-migration";
 
 contextBridge.exposeInMainWorld("clarifold", {
   getState: (): Promise<LearningApplicationState> => ipcRenderer.invoke("learning:getState"),
+  getMigrationStatus: (): Promise<MigrationStatus | null> => ipcRenderer.invoke("migration:getStatus"),
   submit: (action: LearnerAction): Promise<LearningApplicationState> => ipcRenderer.invoke("learning:submit", action),
   getAgentWorkLogEvidence: (sessionId: string, fromSequence: number, toSequence: number): Promise<AgentWorkLogEvidence[]> =>
     ipcRenderer.invoke("learning:getAgentWorkLogEvidence", sessionId, fromSequence, toSequence),
@@ -44,5 +46,6 @@ contextBridge.exposeInMainWorld("clarifold", {
     ipcRenderer.on("learning:stateChanged", handler);
     return () => ipcRenderer.removeListener("learning:stateChanged", handler);
   },
-  openExternal: (url: string): Promise<void> => ipcRenderer.invoke("authentication:openExternal", url)
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke("authentication:openExternal", url),
+  openPublicLink: (url: string): Promise<void> => ipcRenderer.invoke("public:openExternal", url)
 });

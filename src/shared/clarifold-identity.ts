@@ -16,6 +16,7 @@ export interface ClarifoldRuntimeConfiguration {
   readonly testRelocatedSource: string | null;
   readonly testAuthenticationOpenLog: string | null;
   readonly testVerifierRemovalFailure: string | null;
+  readonly testSkipDefaultVerifierInstall: boolean;
   readonly testExternalResearch: string | null;
 }
 
@@ -63,6 +64,7 @@ export function resolveClarifoldRuntimeConfiguration(
     testRelocatedSource: nonEmptyEnvironmentValue(environment, "CLARIFOLD_TEST_RELOCATED_SOURCE"),
     testAuthenticationOpenLog: nonEmptyEnvironmentValue(environment, "CLARIFOLD_TEST_AUTHENTICATION_OPEN_LOG"),
     testVerifierRemovalFailure: nonEmptyEnvironmentValue(environment, "CLARIFOLD_TEST_VERIFIER_REMOVAL_FAILURE"),
+    testSkipDefaultVerifierInstall: nonEmptyEnvironmentValue(environment, "CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL") === "1",
     testExternalResearch: nonEmptyEnvironmentValue(environment, "CLARIFOLD_TEST_EXTERNAL_RESEARCH")
   };
 }

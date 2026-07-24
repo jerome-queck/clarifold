@@ -4,7 +4,17 @@ import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile 
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file";
 import { CLARIFOLD_IDENTITY } from "../shared/clarifold-identity";
-import { LearningApplication } from "../shared/learning-application";
+import type {
+  MigrationOutcome,
+  MigrationReason,
+  MigrationRecoveryReceipt,
+  MigrationReceipt,
+  MigrationResult,
+  MigrationStage,
+  MigrationStatus,
+  MigrationStatusOutcome
+} from "../shared/clarifold-migration";
+import { LearningApplication, type LocalSourceAccess } from "../shared/learning-application";
 
 const MIGRATION_RECEIPT_NAME = "migration-receipt.json";
 const MIGRATION_STAGING_SUFFIX = ".migration-staging";
@@ -12,67 +22,71 @@ const MIGRATION_LOCK_SUFFIX = ".migration-lock";
 const MIGRATION_STAGING_MARKER_NAME = ".clarifold-migration-staging.json";
 const MIGRATION_RECOVERY_RECEIPT_SUFFIX = ".migration-recovery.json";
 
-export type MigrationStage =
-  | "discovery"
-  | "preflight"
-  | "staging-copy"
-  | "verification"
-  | "atomic-commit"
-  | "recovery"
-  | "complete";
-
-export type MigrationOutcome = "not-needed" | "migrated" | "already-migrated" | "blocked" | "failed";
-
-export type MigrationReason =
-  | "source-absent"
-  | "source-incomplete"
-  | "destination-conflict"
-  | "concurrent-launch"
-  | "staging-collision"
-  | "insufficient-space"
-  | "validation-failed"
-  | "copy-failed"
-  | "activation-failed";
-
-export interface MigrationReceipt {
-  readonly schemaVersion: 1;
-  readonly source: string;
-  readonly destination: string;
-  readonly applicationVersion: string;
-  readonly startedAt: string;
-  readonly completedAt: string;
-  readonly outcome: "migrated";
-  readonly retryState: "idempotent";
-}
-
-export interface MigrationRecoveryReceipt {
-  readonly schemaVersion: 1;
-  readonly source: string;
-  readonly destination: string;
-  readonly applicationVersion: string;
-  readonly updatedAt: string;
-  readonly outcome: "blocked" | "failed";
-  readonly reason: MigrationReason;
-  readonly retryState: "safe-to-retry" | "manual-intervention-required";
-  readonly message: string;
-}
-
-export interface MigrationResult {
-  readonly outcome: MigrationOutcome;
-  readonly stages: MigrationStage[];
-  readonly reason?: MigrationReason;
-  readonly message?: string;
-  readonly receipt?: MigrationReceipt;
-}
+export type {
+  MigrationOutcome,
+  MigrationReason,
+  MigrationRecoveryReceipt,
+  MigrationReceipt,
+  MigrationResult,
+  MigrationStage,
+  MigrationStatus,
+  MigrationStatusOutcome
+} from "../shared/clarifold-migration";
 
 export interface ClarifoldDataMigrationOptions {
   readonly sourceDirectory: string;
   readonly destinationDirectory: string;
   readonly applicationVersion: string;
+  readonly sourceAccess?: LocalSourceAccess | null;
   readonly now?: () => Date;
   readonly onStage?: (stage: MigrationStage) => void;
   readonly getFreeSpaceBytes?: (path: string) => Promise<number>;
   readonly validateStagedDirectory?: (path: string) => Promise<void>;
+}
+
+export function migrationStatusFor(result: MigrationResult): MigrationStatus {
+  const retryState = result.receipt
+    ? result.receipt.retryState
+    : result.reason === "destination-conflict" || result.reason === "staging-collision"
+      ? "manual-intervention-required"
+      : result.outcome === "blocked" || result.outcome === "failed"
+        ? "safe-to-retry"
+        : undefined;
+  const message = migrationStatusMessage(result);
+  return {
+    outcome: result.outcome,
+    stages: [...result.stages],
+    ...(result.reason ? { reason: result.reason } : {}),
+    ...(message ? { message } : {}),
+    ...(retryState ? { retryState } : {})
+  };
+}
+
+export function migrationStatusForStage(stages: readonly MigrationStage[]): MigrationStatus {
+  const currentStage = stages.at(-1);
+  const message = currentStage === "staging-copy"
+    ? "Clarifold is safely staging the old Quick Study learner data."
+    : currentStage === "verification"
+      ? "Clarifold is validating the staged learner data before activation."
+      : currentStage === "atomic-commit"
+        ? "Clarifold is activating the validated learner data."
+        : "Clarifold is preparing the learner-data migration.";
+  return { outcome: "migrating", stages: [...stages], message };
+}
+
+function migrationStatusMessage(result: MigrationResult): string | undefined {
+  switch (result.reason) {
+    case "source-absent": return undefined;
+    case "source-incomplete": return "The old Quick Study data directory is incomplete. Its contents were left unchanged.";
+    case "destination-conflict": return "The Clarifold data directory already contains data; automatic migration will not merge or overwrite it.";
+    case "concurrent-launch": return "Another Clarifold launch is already preparing this migration.";
+    case "staging-collision": return "Clarifold found migration staging output it did not create and left it untouched.";
+    case "insufficient-space": return "There is not enough free space to stage the old Quick Study data safely.";
+    case "validation-failed": return "Clarifold rejected the staged learner data because it could not be validated safely.";
+    case "copy-failed": return "Clarifold could not stage the old learner data safely; the source was left unchanged.";
+    case "activation-failed": return "Clarifold could not activate the staged learner data safely; the source was left unchanged.";
+    default: return result.message ? "Clarifold could not safely prepare its application data." : undefined;
+  }
 }
 
 export async function migrateQuickStudyData(options: ClarifoldDataMigrationOptions): Promise<MigrationResult> {
@@ -156,7 +170,7 @@ async function migrateQuickStudyDataInternal(options: ClarifoldDataMigrationOpti
     emit("preflight");
     emit("verification");
     try {
-      await (options.validateStagedDirectory ?? validateApplicationDirectory)(destinationDirectory);
+      await (options.validateStagedDirectory ?? ((path) => validateApplicationDirectory(path, options.sourceAccess)))(destinationDirectory);
     } catch (error) {
       return result("failed", "validation-failed", `The activated Clarifold data directory failed validation: ${errorMessage(error)}.`);
     }
@@ -198,6 +212,10 @@ async function migrateQuickStudyDataInternal(options: ClarifoldDataMigrationOpti
       return result("failed", "insufficient-space", "There is not enough free space to stage the legacy Quick Study data safely.");
     }
 
+    const currentDestination = await directoryStatus(destinationDirectory);
+    if (currentDestination.exists && (!currentDestination.isDirectory || currentDestination.meaningful)) {
+      return result("blocked", "destination-conflict", "The Clarifold data directory already contains data; automatic migration will not merge or overwrite it.");
+    }
     emit("staging-copy");
     const sourceSnapshot = await snapshotDirectory(sourceDirectory);
     try {
@@ -213,7 +231,7 @@ async function migrateQuickStudyDataInternal(options: ClarifoldDataMigrationOpti
 
     emit("verification");
     try {
-      await (options.validateStagedDirectory ?? validateApplicationDirectory)(stagingDirectory);
+      await (options.validateStagedDirectory ?? ((path) => validateApplicationDirectory(path, options.sourceAccess)))(stagingDirectory);
       if (await snapshotDirectory(sourceDirectory) !== sourceSnapshot) {
         throw new Error("the legacy Quick Study data changed while it was being migrated");
       }
@@ -235,10 +253,15 @@ async function migrateQuickStudyDataInternal(options: ClarifoldDataMigrationOpti
       outcome: "migrated",
       retryState: "idempotent"
     };
-    await atomicWriteFile(join(stagingDirectory, MIGRATION_RECEIPT_NAME), `${JSON.stringify(migrationReceipt, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
+    try {
+      await atomicWriteFile(join(stagingDirectory, MIGRATION_RECEIPT_NAME), `${JSON.stringify(migrationReceipt, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600
+      });
+    } catch (error) {
+      await removeOwnedStaging(stagingDirectory);
+      return result("failed", "activation-failed", `Clarifold could not record the migration receipt: ${errorMessage(error)}.`);
+    }
 
     emit("atomic-commit");
     try {
@@ -246,13 +269,14 @@ async function migrateQuickStudyDataInternal(options: ClarifoldDataMigrationOpti
       if (currentDestination.exists && (!currentDestination.isDirectory || currentDestination.meaningful)) {
         throw new Error("The Clarifold data directory changed while migration was being prepared.");
       }
-      if (currentDestination.exists) await rm(destinationDirectory, { recursive: false });
+      // rename replaces an empty destination directory atomically on the
+      // supported filesystem. No destination path is deleted after validation.
       await rename(stagingDirectory, destinationDirectory);
-      await rm(join(destinationDirectory, MIGRATION_STAGING_MARKER_NAME), { force: true });
     } catch (error) {
       await removeOwnedStaging(stagingDirectory);
       return result("failed", "activation-failed", `Clarifold could not activate the staged data: ${errorMessage(error)}.`);
     }
+    await rm(join(destinationDirectory, MIGRATION_STAGING_MARKER_NAME), { force: true }).catch(() => undefined);
     return result("migrated", undefined, undefined, migrationReceipt);
   } finally {
     if (lockHeld) await rm(lockPath, { force: true }).catch(() => undefined);
@@ -309,10 +333,15 @@ async function isCompleteSourceDirectory(path: string): Promise<boolean> {
   }
 }
 
-async function validateApplicationDirectory(path: string): Promise<void> {
-  const application = await LearningApplication.launch(path);
+async function validateApplicationDirectory(path: string, sourceAccess?: LocalSourceAccess | null): Promise<void> {
+  const application = await LearningApplication.launch(path, null, sourceAccess ?? null);
   if (application.getState().persistenceRecovery.status !== "ready") {
     throw new Error("the stored learner state requires blocked recovery");
+  }
+  if (sourceAccess) {
+    for (const source of application.getState().sources) {
+      if (source.kind === "linkedSource") await application.openLinkedSource(source.id);
+    }
   }
 }
 
@@ -505,11 +534,11 @@ async function readMigrationReceipt(path: string): Promise<MigrationReceipt | nu
 }
 
 async function writeRecoveryReceipt(options: ClarifoldDataMigrationOptions, result: MigrationResult): Promise<void> {
-  if (!result.reason || (result.outcome !== "blocked" && result.outcome !== "failed") || !isAbsolute(options.destinationDirectory)) return;
-  const destination = resolve(options.destinationDirectory);
+  if (!result.reason || (result.outcome !== "blocked" && result.outcome !== "failed")) return;
+  const destination = normalizedDirectory(options.destinationDirectory, "destination");
   const receipt: MigrationRecoveryReceipt = {
     schemaVersion: 1,
-    source: isAbsolute(options.sourceDirectory) ? resolve(options.sourceDirectory) : options.sourceDirectory,
+    source: normalizedDirectory(options.sourceDirectory, "source"),
     destination,
     applicationVersion: options.applicationVersion,
     updatedAt: (options.now ?? (() => new Date()))().toISOString(),
@@ -526,8 +555,7 @@ async function writeRecoveryReceipt(options: ClarifoldDataMigrationOptions, resu
 }
 
 async function removeMatchingRecoveryReceipt(options: ClarifoldDataMigrationOptions): Promise<void> {
-  if (!isAbsolute(options.destinationDirectory)) return;
-  const destination = resolve(options.destinationDirectory);
+  const destination = normalizedDirectory(options.destinationDirectory, "destination");
   const path = `${destination}${MIGRATION_RECOVERY_RECEIPT_SUFFIX}`;
   try {
     const receipt = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
