@@ -1,0 +1,137 @@
+// @vitest-environment node
+
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { LearningApplication } from "../shared/learning-application";
+import {
+  migrateQuickStudyData,
+  type MigrationStage
+} from "./clarifold-data-migration";
+
+describe("Clarifold data migration", () => {
+  const temporaryDirectories: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it("reports that no migration is needed when the old default is absent", async () => {
+    const root = await temporaryDirectory("clarifold-migration-absent-");
+    const result = await migrateQuickStudyData({
+      sourceDirectory: join(root, "Quick Study"),
+      destinationDirectory: join(root, "Clarifold"),
+      applicationVersion: "0.2.0"
+    });
+
+    expect(result.outcome).toBe("not-needed");
+    expect(result.stages).toEqual(["discovery", "preflight", "complete"]);
+  });
+
+  it("copies valid learner state through staging, leaves the source intact, and records a safe receipt", async () => {
+    const root = await temporaryDirectory("clarifold-migration-success-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await createLearnerState(sourceDirectory);
+    await writeFile(join(sourceDirectory, "rollback-marker.txt"), "retain me\n", "utf8");
+    const sourceState = await readFile(join(sourceDirectory, "learning-application.json"), "utf8");
+
+    const result = await migrateQuickStudyData({
+      sourceDirectory,
+      destinationDirectory,
+      applicationVersion: "0.2.0",
+      now: () => new Date("2026-07-24T01:02:03.000Z")
+    });
+
+    expect(result.outcome).toBe("migrated");
+    expect(result.stages).toEqual<MigrationStage[]>([
+      "discovery", "preflight", "staging-copy", "verification", "atomic-commit", "complete"
+    ]);
+    expect(await readFile(join(destinationDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+    expect(await readFile(join(sourceDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+    expect(await readFile(join(sourceDirectory, "rollback-marker.txt"), "utf8")).toBe("retain me\n");
+    expect(JSON.parse(await readFile(join(destinationDirectory, "migration-receipt.json"), "utf8"))).toEqual({
+      schemaVersion: 1,
+      source: sourceDirectory,
+      destination: destinationDirectory,
+      applicationVersion: "0.2.0",
+      startedAt: "2026-07-24T01:02:03.000Z",
+      completedAt: "2026-07-24T01:02:03.000Z",
+      outcome: "migrated"
+    });
+    expect(await readdir(dirname(destinationDirectory))).not.toContain("Clarifold.migration-staging");
+  });
+
+  it("is idempotent after activation and does not copy the preserved source again", async () => {
+    const root = await temporaryDirectory("clarifold-migration-retry-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await createLearnerState(sourceDirectory);
+    await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
+      .resolves.toMatchObject({ outcome: "migrated" });
+    const receipt = await readFile(join(destinationDirectory, "migration-receipt.json"), "utf8");
+
+    await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
+      .resolves.toMatchObject({ outcome: "already-migrated" });
+    expect(await readFile(join(destinationDirectory, "migration-receipt.json"), "utf8")).toBe(receipt);
+  });
+
+  it("blocks a meaningful destination instead of overwriting or merging it", async () => {
+    const root = await temporaryDirectory("clarifold-migration-conflict-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await createLearnerState(sourceDirectory);
+    await mkdir(destinationDirectory, { recursive: true });
+    await writeFile(join(destinationDirectory, "local-history.txt"), "keep destination\n", "utf8");
+    const sourceState = await readFile(join(sourceDirectory, "learning-application.json"), "utf8");
+
+    await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
+      .resolves.toMatchObject({ outcome: "blocked", reason: "destination-conflict" });
+    expect(await readFile(join(sourceDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+    expect(await readFile(join(destinationDirectory, "local-history.txt"), "utf8")).toBe("keep destination\n");
+  });
+
+  it("cleans its own failed staging output and exposes recovery without touching the source", async () => {
+    const root = await temporaryDirectory("clarifold-migration-failure-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await createLearnerState(sourceDirectory);
+    const result = await migrateQuickStudyData({
+      sourceDirectory,
+      destinationDirectory,
+      applicationVersion: "0.2.0",
+      getFreeSpaceBytes: async () => 0
+    });
+
+    expect(result).toMatchObject({ outcome: "failed", reason: "insufficient-space" });
+    expect(result.stages).toContain("recovery");
+    await expect(readFile(join(sourceDirectory, "learning-application.json"))).resolves.toBeTruthy();
+    await expect(readdir(destinationDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an incomplete source before any staging copy", async () => {
+    const root = await temporaryDirectory("clarifold-migration-incomplete-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await mkdir(sourceDirectory, { recursive: true });
+    await writeFile(join(sourceDirectory, "partial-copy.txt"), "partial\n", "utf8");
+
+    await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
+      .resolves.toMatchObject({ outcome: "blocked", reason: "source-incomplete" });
+    await expect(readdir(destinationDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  async function temporaryDirectory(prefix: string): Promise<string> {
+    const path = await mkdtemp(join(tmpdir(), prefix));
+    temporaryDirectories.push(path);
+    return path;
+  }
+
+  async function createLearnerState(path: string): Promise<void> {
+    await mkdir(path, { recursive: true });
+    const application = await LearningApplication.launch(path);
+    await application.submit({ type: "createWorkspace", name: "Topology" });
+  }
+});

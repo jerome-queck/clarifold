@@ -13,7 +13,7 @@ if (process.platform !== "darwin" || !(process.arch in specification.releases)) 
 const release = specification.releases[process.arch];
 const verifiersDirectory = join(projectRoot, "dist", "verifiers");
 const destination = join(verifiersDirectory, specification.id);
-const cacheDirectory = join(projectRoot, "node_modules", ".cache", "quick-study-lean");
+const cacheDirectory = join(projectRoot, "node_modules", ".cache", "clarifold-lean");
 const archivePath = join(cacheDirectory, release.archive);
 const extractionDirectory = join(cacheDirectory, `${specification.id}-${process.arch}-extracted`);
 const mathlibSourceDirectory = join(cacheDirectory, `mathlib-source-${specification.mathlibCommit}`);
