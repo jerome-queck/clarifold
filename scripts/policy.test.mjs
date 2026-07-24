@@ -13,6 +13,7 @@ test("classifies documentation-only changes without requiring packaging", () => 
     "CODE_OF_CONDUCT.md",
     "PRIVACY.md",
     "SECURITY.md",
+    "LICENSE",
     "LICENSE.md",
     "docs/development.md",
     "THIRD_PARTY_NOTICES.md",
