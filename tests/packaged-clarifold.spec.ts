@@ -299,7 +299,7 @@ test("packaged verifier and artifact journey keeps lifecycle evidence across rei
     const claimTrust = reformulatedProof.getByRole("region", { name: "Claim provenance and verification" });
     await reformulatedProof.getByRole("textbox", { name: "Exact claim 1", exact: true }).fill("For every natural number n, n + 0 = n.");
     await scenario.action("Save exact natural-number claim", () => reformulatedProof.getByRole("button", { name: /Save Learning Artifact revision/ }).press("Enter"));
-    await expect(claimTrust.getByRole("region", { name: "Formalization for mathematical claim 1" })).toContainText("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    await expect(claimTrust.getByRole("region", { name: "Formalization for mathematical claim 1" })).toContainText("theorem clarifoldNatAddZero (n : Nat) : n + 0 = n");
     const checkExactClaim = claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" });
     await expect(checkExactClaim).toBeEnabled({ timeout: PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS });
     await scenario.action("Check exact natural-number claim with bundled Lean", () => checkExactClaim.press("Enter"));

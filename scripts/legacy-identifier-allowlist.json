@@ -3,6 +3,7 @@
     "event-reference": "openai-build-week|openai\\s+build\\s+week|devpost|codex-feedback-session|/feedback\\b",
     "legacy-product-name": "\\bQuick Study\\b",
     "legacy-slug": "quick-study(?:-[a-z0-9]+)*",
+    "legacy-concatenated-identifier": "\\b(?:QuickStudy|quickStudy)[A-Z][A-Za-z0-9]*",
     "legacy-environment-variable": "\\bQUICK_STUDY_[A-Z0-9_]+\\b"
   },
   "excludedDirectories": [
@@ -48,7 +49,13 @@
         "docs/adr/0029-name-the-product-clarifold.md",
         "docs/research/clarifold-identity-migration.md"
       ],
-      "patterns": ["event-reference", "legacy-product-name", "legacy-slug"]
+      "patterns": ["event-reference", "legacy-product-name", "legacy-slug", "legacy-concatenated-identifier"],
+      "expectedCounts": {
+        "event-reference": 10,
+        "legacy-product-name": 19,
+        "legacy-slug": 1,
+        "legacy-concatenated-identifier": 0
+      }
     },
     {
       "id": "historical-product-records",
@@ -60,7 +67,12 @@
         "evaluation/benchmarks/v2/README.md",
         "evaluation/studies/v1/moderated-learning-study.md"
       ],
-      "patterns": ["legacy-product-name", "legacy-slug"]
+      "patterns": ["legacy-product-name", "legacy-slug", "legacy-concatenated-identifier"],
+      "expectedCounts": {
+        "legacy-product-name": 4,
+        "legacy-slug": 0,
+        "legacy-concatenated-identifier": 0
+      }
     },
     {
       "id": "durable-domain-language",
@@ -83,7 +95,12 @@
         "src/shared/learning-application.ts",
         "tests/packaged-clarifold.spec.ts"
       ],
-      "patterns": ["legacy-product-name", "legacy-slug"]
+      "patterns": ["legacy-product-name", "legacy-slug", "legacy-concatenated-identifier"],
+      "expectedCounts": {
+        "legacy-product-name": 57,
+        "legacy-slug": 25,
+        "legacy-concatenated-identifier": 2
+      }
     },
     {
       "id": "durable-persisted-identifiers",
@@ -93,7 +110,11 @@
         "src/shared/bundled-verifier-environment.json",
         "src/shared/learning-application.ts"
       ],
-      "patterns": ["legacy-slug"]
+      "patterns": ["legacy-slug", "legacy-concatenated-identifier"],
+      "expectedCounts": {
+        "legacy-slug": 2,
+        "legacy-concatenated-identifier": 0
+      }
     },
     {
       "id": "approved-beta-compatibility",
@@ -108,13 +129,21 @@
         "src/shared/clarifold-identity.json",
         "src/shared/clarifold-identity.test.ts"
       ],
-      "patterns": ["legacy-environment-variable"]
+      "patterns": ["legacy-environment-variable"],
+      "expectedCounts": {
+        "legacy-environment-variable": 14
+      }
     },
     {
       "id": "non-operative-test-fixtures",
       "category": "historical",
       "paths": ["**/*.test.ts", "**/*.test.tsx", "tests/**"],
-      "patterns": ["legacy-product-name", "legacy-slug"]
+      "patterns": ["legacy-product-name", "legacy-slug", "legacy-concatenated-identifier"],
+      "expectedCounts": {
+        "legacy-product-name": 39,
+        "legacy-slug": 77,
+        "legacy-concatenated-identifier": 46
+      }
     }
   ]
 }

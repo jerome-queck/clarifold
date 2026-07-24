@@ -50,7 +50,7 @@ describe("LeanVerifierRuntime", () => {
     const result = await verifier.run(await request());
 
     expect(result).toMatchObject({ outcome: "accepted", environment: installedEnvironment });
-    expect(await readFile(result.evidenceLocation, "utf8")).toContain("theorem quickStudyNatAddZero");
+    expect(await readFile(result.evidenceLocation, "utf8")).toContain("theorem clarifoldNatAddZero");
   });
 
   it("fails safely without deleting an exact verifier staging symlink", async () => {

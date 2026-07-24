@@ -80,9 +80,9 @@ export function formalizationForClaim(exactClaim: string): Formalization | null 
   if (exactClaim.trim() !== KNOWN_CLAIM) return null;
   return {
     exactClaim: KNOWN_CLAIM,
-    formalStatement: "theorem quickStudyNatAddZero (n : Nat) : n + 0 = n",
+    formalStatement: "theorem clarifoldNatAddZero (n : Nat) : n + 0 = n",
     assumptions: ["n : Nat"],
-    proofSource: "theorem quickStudyNatAddZero (n : Nat) : n + 0 = n := by\n  rfl\n"
+    proofSource: "theorem clarifoldNatAddZero (n : Nat) : n + 0 = n := by\n  rfl\n"
   };
 }
 

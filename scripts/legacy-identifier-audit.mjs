@@ -57,7 +57,7 @@ function lineNumber(contents, offset) {
   return contents.slice(0, offset).split("\n").length;
 }
 
-function scanContents(relativePath, contents) {
+function scanContents(relativePath, contents, source) {
   const hits = [];
   for (const [patternId, pattern] of Object.entries(patterns)) {
     pattern.lastIndex = 0;
@@ -70,6 +70,7 @@ function scanContents(relativePath, contents) {
         patternId,
         path: relativePath,
         rule: rule?.id ?? null,
+        source,
         value,
       });
     }
@@ -80,23 +81,42 @@ function scanContents(relativePath, contents) {
 export async function auditLegacyIdentifiers({ rootDir }) {
   const errors = [];
   const classified = [];
+  const observedCounts = new Map();
+  const activeRuleIds = new Set();
   const files = await collectFiles(rootDir);
 
   for (const relativePath of files) {
-    const pathHits = scanContents(relativePath, relativePath);
+    for (const rule of inventory.rules) {
+      if (rule.paths.some((candidate) => pathMatches(relativePath, candidate))) activeRuleIds.add(rule.id);
+    }
+    const pathHits = scanContents(relativePath, relativePath, "path");
     const contents = await readFile(path.join(rootDir, relativePath), "utf8");
-    for (const hit of [...pathHits, ...scanContents(relativePath, contents)]) {
+    for (const hit of [...pathHits, ...scanContents(relativePath, contents, "content")]) {
       if (hit.rule === null) {
         errors.push(`${hit.path}:${hit.line}: unexplained legacy identifier ${hit.value} (${hit.patternId})`);
       } else {
         classified.push(hit);
+        if (hit.source === "content") {
+          const key = `${hit.rule}:${hit.patternId}`;
+          observedCounts.set(key, (observedCounts.get(key) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  for (const rule of inventory.rules) {
+    if (!activeRuleIds.has(rule.id)) continue;
+    for (const [patternId, expected] of Object.entries(rule.expectedCounts ?? {})) {
+      const actual = observedCounts.get(`${rule.id}:${patternId}`) ?? 0;
+      if (actual !== expected) {
+        errors.push(`${rule.id}: expected ${expected} ${patternId} occurrences, found ${actual}`);
       }
     }
   }
 
   const summary = Object.fromEntries(summaryCategories.map((category) => [category, 0]));
   for (const hit of classified) summary[hit.category] = (summary[hit.category] ?? 0) + 1;
-  return { classified, errors, summary };
+  return { classified, errors, observedCounts: Object.fromEntries(observedCounts), summary };
 }
 
 async function main() {

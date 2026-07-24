@@ -74,8 +74,8 @@ await copySelectedLeanRuntime(leanSource, staging);
 await copyMathlibSupport(mathlibWorkingDirectory, staging);
 await chmod(join(staging, "bin", "lean"), 0o755);
 await mkdir(join(staging, "app-support"), { recursive: true });
-await writeFile(join(staging, "app-support", "QuickStudyRuntimeHealth.lean"), proofSource(), "utf8");
-await writeFile(join(staging, "app-support", "QuickStudyMathlibDependency.lean"), mathlibDependencySource(), "utf8");
+await writeFile(join(staging, "app-support", "ClarifoldRuntimeHealth.lean"), proofSource(), "utf8");
+await writeFile(join(staging, "app-support", "ClarifoldMathlibDependency.lean"), mathlibDependencySource(), "utf8");
 await writeFile(join(staging, "manifest.json"), `${JSON.stringify({
   id: specification.id,
   checker: specification.checker,
@@ -213,15 +213,15 @@ async function preparedRuntimeIsCurrent(root) {
     const lean = join(root, "bin", "lean");
     const versionOutput = await run(lean, ["--version"], true);
     if (!versionOutput.includes(`version ${specification.leanVersion}`)) return false;
-    await run(lean, ["--deps", join(root, "app-support", "QuickStudyMathlibDependency.lean")], true);
-    const validationFile = join(root, "app-support", "QuickStudyRuntimeHealth.lean");
+    await run(lean, ["--deps", join(root, "app-support", "ClarifoldMathlibDependency.lean")], true);
+    const validationFile = join(root, "app-support", "ClarifoldRuntimeHealth.lean");
     await run(lean, [validationFile], true);
     return true;
   } catch { return false; }
 }
 
 function proofSource() {
-  return "theorem quickStudyRuntimeHealth (n : Nat) : n + 0 = n := by\n  rfl\n";
+  return "theorem clarifoldRuntimeHealth (n : Nat) : n + 0 = n := by\n  rfl\n";
 }
 
 function mathlibDependencySource() {

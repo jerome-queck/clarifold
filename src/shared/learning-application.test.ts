@@ -1282,7 +1282,7 @@ describe("Learning Application", () => {
     expect(checked.verifierManifests[0]).toMatchObject({
       claimRevisionId: current.currentRevision.id,
       exactClaim: "For every natural number n, n + 0 = n.",
-      formalStatement: "theorem quickStudyNatAddZero (n : Nat) : n + 0 = n",
+        formalStatement: "theorem clarifoldNatAddZero (n : Nat) : n + 0 = n",
       assumptions: ["n : Nat"],
       environment: BUNDLED_LEAN_ENVIRONMENT,
       commandOutcome: "accepted",
@@ -1868,7 +1868,7 @@ describe("Learning Application", () => {
     expect(checked.verifierManifests[0]).toMatchObject({
       commandOutcome: "timedOut", diagnostics: "Lean exceeded 15 seconds.",
       formalStatementVerificationLevel: "incomplete",
-      proofSource: expect.stringContaining("quickStudyNatAddZero")
+      proofSource: expect.stringContaining("clarifoldNatAddZero")
     });
     expect(checked.sessions[0].learningArtifacts[0].currentRevision.claims[0]).toMatchObject({
       verificationLevel: "notIndependentlyChecked",
