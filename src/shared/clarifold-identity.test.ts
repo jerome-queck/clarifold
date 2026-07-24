@@ -47,4 +47,19 @@ describe("Clarifold identity configuration", () => {
     expect(configuration.dataDirectorySource).toBe("legacy-environment");
     expect(warnings[0]?.message).toContain("CLARIFOLD_DATA_DIR");
   });
+
+  it("keeps an explicit packaged-test data path isolated from default migration", () => {
+    const warnings: RuntimeEnvironmentWarning[] = [];
+    const configuration = resolveClarifoldRuntimeConfiguration({
+      CLARIFOLD_TEST_USER_DATA_DIR: "/tmp/isolated-test-data",
+      QUICK_STUDY_DATA_DIR: "/tmp/legacy-default-data"
+    }, "/Users/learner/Library/Application Support/Clarifold", (warning) => warnings.push(warning));
+
+    expect(configuration).toMatchObject({
+      dataDirectory: "/tmp/isolated-test-data",
+      dataDirectorySource: "test-environment",
+      testUserDataDirectory: "/tmp/isolated-test-data"
+    });
+    expect(warnings).toEqual([expect.objectContaining({ variable: "CLARIFOLD_TEST_USER_DATA_DIR" })]);
+  });
 });

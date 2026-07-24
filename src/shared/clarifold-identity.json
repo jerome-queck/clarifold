@@ -27,6 +27,19 @@
   "leanPathVariable": "CLARIFOLD_LEAN_PATH",
   "runtimeCacheDirectoryName": "clarifold-lean",
   "runtimeClientName": "clarifold",
+  "release": {
+    "releaseIdPrefix": "macos-beta",
+    "workflowArtifactPrefix": "clarifold-macos-beta"
+  },
+  "testUserDataDirectoryVariable": "CLARIFOLD_TEST_USER_DATA_DIR",
+  "testArtifactExportPathVariable": "CLARIFOLD_TEST_ARTIFACT_EXPORT_PATH",
+  "testPrimaryFolderVariable": "CLARIFOLD_TEST_PRIMARY_FOLDER",
+  "testExternalAttachmentVariable": "CLARIFOLD_TEST_EXTERNAL_ATTACHMENT",
+  "testRelocatedSourceVariable": "CLARIFOLD_TEST_RELOCATED_SOURCE",
+  "testAuthenticationOpenLogVariable": "CLARIFOLD_TEST_AUTHENTICATION_OPEN_LOG",
+  "testVerifierRemovalFailureVariable": "CLARIFOLD_TEST_VERIFIER_REMOVAL_FAILURE",
+  "testSkipDefaultVerifierInstallVariable": "CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL",
+  "testExternalResearchVariable": "CLARIFOLD_TEST_EXTERNAL_RESEARCH",
   "compatibility": {
     "legacyDataDirectory": {
       "owner": "Jerome Queck",

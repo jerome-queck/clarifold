@@ -29,6 +29,7 @@ jobs:
         with:
           fetch-depth: 0
       - run: node scripts/run-gitleaks.mjs
+      - run: node scripts/clarifold-release-identity.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
@@ -78,22 +79,22 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         with:
-          name: clarifold-macos-beta-${{ runner.arch }}
+          name: ${{ github.event.repository.name }}-macos-beta-${{ runner.arch }}
           if-no-files-found: error
           path: |
-            out/make/zip/darwin/*/Clarifold-darwin-*.zip
+            out/make/zip/darwin/*/*.zip
             test-results/beta-install.json
       - name: Record uploaded beta binding
         if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         env:
           ARTIFACT_DIGEST: ${{ steps.beta-artifact.outputs.artifact-digest }}
-          ARTIFACT_NAME: clarifold-macos-beta-${{ runner.arch }}
+          ARTIFACT_NAME: ${{ github.event.repository.name }}-macos-beta-${{ runner.arch }}
           CANDIDATE_COMMIT: ${{ github.sha }}
         run: node scripts/record-beta-upload-binding.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: success() && (steps.classify.outputs.artifact_affected == 'true' || github.event_name != 'pull_request' || inputs.release_candidate == true)
         with:
-          name: clarifold-macos-beta-binding-${{ runner.arch }}
+          name: ${{ github.event.repository.name }}-macos-beta-binding-${{ runner.arch }}
           if-no-files-found: error
           path: test-results/beta-upload-binding.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
