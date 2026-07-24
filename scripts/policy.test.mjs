@@ -78,6 +78,7 @@ test("documentation validation rejects event-specific references in active files
   await writeFile(path.join(rootDir, "README.md"), "# Home\n\n[Development](docs/development.md)\n[Architecture](docs/architecture.md)\n");
   await writeFile(path.join(rootDir, "AGENTS.md"), "This is an OpenAI Build Week submission.\n");
   await writeFile(path.join(rootDir, "forge.config.js"), "const repository = 'https://github.com/jerome-queck/openai-build-week';\n");
+  await writeFile(path.join(rootDir, "vitest.config.ts"), "const event = 'Devpost';\n");
   await writeFile(path.join(rootDir, "CONTRIBUTING.md"), "# Contributing\n");
   await writeFile(path.join(rootDir, "CODING_STANDARDS.md"), "# Standards\n");
   await writeFile(path.join(rootDir, "docs", "development.md"), "# Development\n");
@@ -88,6 +89,7 @@ test("documentation validation rejects event-specific references in active files
 
   assert.match(errors.join("\n"), /AGENTS\.md: prohibited event-specific reference/);
   assert.match(errors.join("\n"), /forge\.config\.js: prohibited event-specific reference/);
+  assert.match(errors.join("\n"), /vitest\.config\.ts: prohibited event-specific reference/);
 });
 
 test("documentation validation rejects unsafe ignore rules", async () => {

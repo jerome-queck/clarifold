@@ -27,6 +27,7 @@ const ACTIVE_REFERENCE_FILES = [
   "package-lock.json",
   "forge.config.js",
   "vite.config.ts",
+  "vitest.config.ts",
   "playwright.config.ts",
   "tsconfig.json",
   "tsconfig.main.json",
