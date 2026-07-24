@@ -11,6 +11,52 @@ test("repository public issue intake matches the supported community boundary", 
   assert.deepEqual(await validatePublicIssueIntake({ rootDir: process.cwd() }), []);
 });
 
+test("public issue intake policy accepts a compact complete fixture repository", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-issue-intake-valid-"));
+  const templateDir = path.join(rootDir, ".github", "ISSUE_TEMPLATE");
+  await mkdir(templateDir, { recursive: true });
+  await writeFile(
+    path.join(templateDir, "config.yml"),
+    [
+      "blank_issues_enabled: false",
+      "contact_links:",
+      "  - url: https://github.com/jerome-queck/clarifold/security/advisories/new",
+      "  - url: security@jeromegroup.org",
+      "  - url: mailto:conduct@jeromegroup.org",
+      "  - url: mailto:privacy@jeromegroup.org",
+      "  - url: mailto:licensing@jeromegroup.org",
+      "",
+    ].join("\n"),
+  );
+
+  const forms = [
+    ["bug_report.yml", "Bug report", ["summary", "environment", "reproducible", "steps", "impact", "safe-to-publish"]],
+    ["learning_experience.yml", "Learning experience proposal", ["learner-goal", "current-experience", "proposal", "impact", "safe-to-publish"]],
+    ["mathematical_accuracy.yml", "Mathematical-accuracy concern", ["claim-location", "claim", "concern", "reasoning", "reproduction", "impact", "safe-to-publish"]],
+    ["accessibility_usability.yml", "Accessibility or usability concern", ["barrier", "affected-journey", "reproduction", "environment", "impact", "safe-to-publish"]],
+  ];
+  for (const [file, name, ids] of forms) {
+    await writeFile(
+      path.join(templateDir, file),
+      [
+        `name: ${name}`,
+        "description: A complete fixture form",
+        "title: '[Fixture]: '",
+        "labels: [needs-triage]",
+        "body:",
+        "  - type: markdown",
+        "    id: public-warning",
+        "    attributes:",
+        "      value: private learner material secret security conduct best-effort",
+        ...ids.map((id) => `  id: ${id}`),
+        "",
+      ].join("\n"),
+    );
+  }
+
+  assert.deepEqual(await validatePublicIssueIntake({ rootDir }), []);
+});
+
 test("public issue intake policy rejects an incomplete fixture repository", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-issue-intake-"));
   await mkdir(path.join(rootDir, ".github", "ISSUE_TEMPLATE"), { recursive: true });

@@ -19,7 +19,7 @@ The canonical setup, command matrix, packaging behavior, smoke coverage, and dev
 
 The [evaluation guide](../evaluation/README.md) owns live model samples, blinded evaluator records, recovery evidence, candidate quality gates, and report publication. It also explains the exact-commit and evidence-binding rules. This beta guide intentionally keeps only the user-facing install boundary and limitations rather than duplicating those procedures.
 
-For an evaluation install, use the architecture-native archive produced by the development guide and copy `Quick Study.app` to `/Applications` or another local Applications folder. The current archive is ad-hoc signed but not Developer ID signed or notarized. It is therefore suitable for local and CI evaluation, not public internet distribution; do not bypass organizational Gatekeeper policy to install it. Developer ID signing, notarization, and a post-notarization rerun are required before calling any artifact a public beta.
+For an evaluation install, use the architecture-native archive produced by the development guide and copy Clarifold's current internal `Quick Study.app` artifact to `/Applications` or another local Applications folder. The current archive is ad-hoc signed but not Developer ID signed or notarized. It is therefore suitable for local and CI evaluation, not public internet distribution; do not bypass organizational Gatekeeper policy to install it. Developer ID signing, notarization, and a post-notarization rerun are required before calling any artifact a public beta.
 
 ## Privacy and source access defaults
 
