@@ -1,6 +1,6 @@
-# Quick Study
+# Clarifold
 
-Quick Study is a local-first macOS mathematical learning workbench for Advanced Mathematics Learners. It turns typed mathematics, source material, and learner questions into a durable Learning Session that can be examined, practised, and consolidated into evidence.
+Clarifold is a local-first macOS mathematical learning workbench for Advanced Mathematics Learners. It turns typed mathematics, source material, and learner questions into a durable Learning Session that can be examined, practised, and consolidated into evidence.
 
 The built-in Quick Study Study Workspace is the home for loose work. Learners can later file a session into a named Study Workspace and Study Mission without replacing the session or losing its Learning Goal, Session Target, or return context.
 

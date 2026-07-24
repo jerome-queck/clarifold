@@ -21,6 +21,12 @@ mathematical-content contributions. Opening a pull request or offering a
 change under the repository's outbound license does not grant a contributor
 rights or create an obligation to merge it.
 
+Public Issues and pull requests remain enabled for structured feedback,
+maintainer work, approved collaborators, and repository automation. Pull
+requests are accepted only through the approved collaborator model at this
+stage; unsolicited outside pull requests are blocked and are not a request
+surface.
+
 Before the first collaborative contribution is accepted, Jerome Queck must
 classify the contributor relationship, decide whether ownership remains with
 him or moves to a Singapore entity, and put written Singapore-appropriate
