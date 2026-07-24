@@ -486,7 +486,10 @@ function registerLearningApplicationHandlers(): void {
             try {
               await learningApplication.beginModelRuntimeRestoration(restorationOperationId);
               if (!modelRuntimeWorkingDirectory) throw new Error("The Model Runtime workspace is unavailable.");
-              modelRuntime = await CodexAppServerRuntime.launch(modelRuntimeWorkingDirectory);
+              modelRuntime = await CodexAppServerRuntime.launch(
+                modelRuntimeWorkingDirectory,
+                runtimeConfiguration.codexPath ?? undefined
+              );
               await learningApplication.restoreModelRuntime(modelRuntime, restorationOperationId);
               console.info(`[Lean verification] ${JSON.stringify({
                 runId: request.runId, restorationOperationId, status: "model-runtime-restored", elapsedMs: Date.now() - startedAt
