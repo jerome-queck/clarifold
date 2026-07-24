@@ -1,6 +1,6 @@
 import { extractFile, listPackage } from "@electron/asar";
 import { createHash } from "node:crypto";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -104,7 +104,8 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
 
 async function requireNonEmptyFile(path, label) {
   try {
-    const contents = await readFile(path);
+    const trustedPath = await realpath(path);
+    const contents = await readFile(trustedPath);
     if (contents.length === 0) throw new Error("empty file");
     return contents;
   } catch (error) {
@@ -167,7 +168,7 @@ async function findPackagedApplication() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const applicationPath = process.env.QUICK_STUDY_PACKAGED_APP ?? await findPackagedApplication();
+  const applicationPath = await findPackagedApplication();
   await access(applicationPath);
   const result = await auditPackagedApplication(applicationPath);
   console.log(`Packaged license audit passed for ${result.applicationPath}: ${result.runtimePackages.map(({ name, license }) => `${name} (${license})`).join(", ")}.`);
