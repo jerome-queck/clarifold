@@ -10,7 +10,7 @@ license.
 
 | Component | Version | License | Attribution and source |
 | --- | --- | --- | --- |
-| Electron | 43.1.1 | MIT | [Electron](https://github.com/electron/electron), including the Electron and Chromium notices retained in the packaged application |
+| Electron | 43.1.1 | MIT | [Electron](https://github.com/electron/electron), including the Electron `LICENSE` and Chromium `LICENSES.chromium.html` copied into the application resources as `ELECTRON_LICENSE` and `CHROMIUM_LICENSES.html` |
 | Chromium | Bundled by Electron 43.1.1 | Chromium/BSD and other upstream licenses | The packaged Electron application retains `LICENSES.chromium.html`; see [Chromium licensing](https://www.chromium.org/chromium-projects/licensing) and the bundled notice for the complete attribution set |
 | React | 19.2.7 | MIT | [React](https://github.com/facebook/react) |
 | React DOM | 19.2.7 | MIT | [React](https://github.com/facebook/react) |

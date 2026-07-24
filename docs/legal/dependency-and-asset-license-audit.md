@@ -18,7 +18,7 @@ review of a future distribution transaction.
 | --- | --- | --- | --- |
 | Original application, native helpers, tests, and documentation | Jerome Queck's repository material | Compatible with the root PolyForm Noncommercial 1.0.0 license; no outside contribution rights are inferred | `NOTICE` and the root `LICENSE` |
 | Production npm runtime graph | React 19.2.7, React DOM 19.2.7, and transitive scheduler 0.27.0 | MIT terms are compatible when their notices remain available; the exact runtime graph remains in `package-lock.json` | `THIRD_PARTY_NOTICES.md` and package metadata |
-| Electron runtime and Chromium | Electron 43.1.1 and its bundled Chromium distribution | Preserve Electron's and Chromium's generated notice files; do not collapse their upstream licenses into the PolyForm terms | Electron's packaged `LICENSE.electron.txt` and `LICENSES.chromium.html`, plus `THIRD_PARTY_NOTICES.md` |
+| Electron runtime and Chromium | Electron 43.1.1 and its bundled Chromium distribution | Preserve Electron's and Chromium's generated notice files; do not collapse their upstream licenses into the PolyForm terms | Electron's packaged `ELECTRON_LICENSE` and `CHROMIUM_LICENSES.html` in application resources, plus `THIRD_PARTY_NOTICES.md` |
 | Verifier Environment | Lean 4.29.1 and mathlib 4.29.1 at the pinned commit | Preserve the upstream license files copied into `Resources/verifiers/`; generated proof artifacts are not relicensed | `Resources/verifiers/LICENSE`, `LICENSES/`, and `mathlib-LICENSE` |
 | Tracked visual and font assets | No third-party assets currently tracked or bundled | No unresolved asset license is present; a future asset requires a source and rights record before merge | This audit and `THIRD_PARTY_NOTICES.md` |
 
@@ -59,7 +59,8 @@ Before each release candidate, maintainers must:
 
 1. run `npm audit --omit=dev --audit-level=high` and inspect the complete
    production dependency graph;
-2. inspect the packaged application for `LICENSE`, `NOTICE`,
+2. run `npm run license:audit` against the exact package and inspect the
+   packaged application for `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.md`, Electron/Chromium notices, and Verifier Environment
    upstream license files;
 3. compare newly shipped files and assets with this audit and stop on an

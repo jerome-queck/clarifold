@@ -1,4 +1,4 @@
-const { chmod, readdir, rm } = require("node:fs/promises");
+const { chmod, copyFile, readdir, rm } = require("node:fs/promises");
 const { join } = require("node:path");
 
 module.exports = {
@@ -43,11 +43,18 @@ module.exports = {
     },
     postPackage: async (_forgeConfig, packageResult) => {
       for (const outputPath of packageResult.outputPaths) {
+        await copyPackagedUpstreamNotices(outputPath);
         await makeVerifierFilesReadOnly(join(outputPath, "Quick Study.app", "Contents", "Resources", "verifiers"));
       }
     }
   }
 };
+
+async function copyPackagedUpstreamNotices(outputPath) {
+  const resources = join(outputPath, "Quick Study.app", "Contents", "Resources");
+  await copyFile(join(outputPath, "LICENSE"), join(resources, "ELECTRON_LICENSE"));
+  await copyFile(join(outputPath, "LICENSES.chromium.html"), join(resources, "CHROMIUM_LICENSES.html"));
+}
 
 async function makeVerifierFilesReadOnly(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
