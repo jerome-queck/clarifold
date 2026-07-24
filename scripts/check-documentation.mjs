@@ -17,6 +17,20 @@ const REQUIRED_CANONICAL_LINKS = [
   { source: "README.md", target: "docs/architecture.md" },
 ];
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", "dist", "out", "test-results", ".vite", ".agents", ".claude"]);
+const ACTIVE_REFERENCE_FILES = [
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  "CODING_STANDARDS.md",
+  "CONTEXT.md",
+  "README.md",
+  "docs/development.md",
+  "docs/architecture.md",
+  "docs/beta-release.md",
+  "evaluation/README.md",
+  ".github/pull_request_template.md",
+];
+const ACTIVE_REFERENCE_DIRECTORIES = ["src", ".github"];
+const PROHIBITED_EVENT_REFERENCE = /openai-build-week|openai\s+build\s+week|devpost|codex-feedback-session|\/feedback\b/i;
 
 async function markdownFiles(rootDir, currentDir = rootDir) {
   const entries = await readdir(currentDir, { withFileTypes: true });
@@ -31,6 +45,49 @@ async function markdownFiles(rootDir, currentDir = rootDir) {
   }
 
   return files.sort();
+}
+
+async function filesUnderDirectory(rootDir, relativeDirectory) {
+  const absoluteDirectory = path.join(rootDir, relativeDirectory);
+  let entries;
+  try {
+    entries = await readdir(absoluteDirectory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    const relativePath = path.join(relativeDirectory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await filesUnderDirectory(rootDir, relativePath)));
+    } else if (entry.isFile()) {
+      files.push(relativePath);
+    }
+  }
+  return files;
+}
+
+async function checkActiveRepositoryReferences(rootDir, errors) {
+  const candidatePaths = new Set(ACTIVE_REFERENCE_FILES);
+  for (const directory of ACTIVE_REFERENCE_DIRECTORIES) {
+    for (const file of await filesUnderDirectory(rootDir, directory)) {
+      candidatePaths.add(file);
+    }
+  }
+
+  for (const relativePath of candidatePaths) {
+    let contents;
+    try {
+      contents = await readFile(path.join(rootDir, relativePath), "utf8");
+    } catch {
+      continue;
+    }
+    const match = PROHIBITED_EVENT_REFERENCE.exec(contents);
+    if (match) {
+      errors.push(`${relativePath}: prohibited event-specific reference: ${match[0]}`);
+    }
+  }
 }
 
 function headingAnchors(markdown) {
@@ -189,6 +246,8 @@ export async function validateDocumentation({ rootDir, pullRequestBody }) {
   if (pullRequestBody !== undefined) {
     checkPullRequestDeclarations(pullRequestBody, errors);
   }
+
+  await checkActiveRepositoryReferences(rootDir, errors);
 
   for (const markdownPath of await markdownFiles(rootDir)) {
     const markdown = await readFile(path.join(rootDir, markdownPath), "utf8");

@@ -27,9 +27,9 @@ describe("anchored teaching workbench", () => {
     expect(release.textContent).toContain("not a public distribution");
     const feedback = within(release).getByRole("link", { name: "Report beta feedback" });
     expect(feedback.getAttribute("href"))
-      .toBe("https://github.com/jerome-queck/openai-build-week/issues/new");
+      .toBe("https://github.com/jerome-queck/clarifold/issues/new");
     await user.click(feedback);
-    expect(api.openExternal).toHaveBeenCalledWith("https://github.com/jerome-queck/openai-build-week/issues/new");
+    expect(api.openExternal).toHaveBeenCalledWith("https://github.com/jerome-queck/clarifold/issues/new");
   });
 
   it("shows a blocking recoverable error when stored learner state cannot be migrated", async () => {

@@ -33,10 +33,15 @@ Parent spec: #<issue-number> <!-- Optional; remove when not applicable. -->
 - Material-fix re-review: <!-- Completed, not needed, or not applicable with reason. -->
 - Standards impact: <!-- No durable contract change, or CODING_STANDARDS.md updated with the changed contract. -->
 
+## AI assistance
+
+- Material AI assistance: <!-- None, or name the tool/model and the material contribution. -->
+- Human verification: <!-- Describe the tests, review, and other verification performed by a human. -->
+
 ## Demo evidence
 
 <!-- Link or attach relevant screenshots, recordings, CLI output, or a deployed test route. Use "Not applicable" when appropriate. -->
 
 ## Squash-merge reminder
 
-- [ ] The final squash-commit message will include each applicable AI co-author and session trailer exactly once.
+- [ ] The final squash-commit message will include each applicable `Assisted-by` and authentic session trailer exactly once.

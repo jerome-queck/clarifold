@@ -506,7 +506,7 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
         <p><strong>Privacy and access defaults:</strong> learner work is stored locally. Linked Sources stay in their original locations and are read-only. Model access, external research, and Source Excerpt Egress remain separate, visible controls.</p>
         <p><strong>Recovery:</strong> Local Working Mode keeps local study available when Codex cannot be reached. Missing sources retain their identity and offer Retry or Locate again. Unfinished Agent Tasks require explicit resume after relaunch.</p>
         <p><strong>Known beta limitation:</strong> this evaluation build is not a public distribution and makes no claim beyond its documented platform and verifier profile.</p>
-        <p><a href="https://github.com/jerome-queck/openai-build-week/issues/new"
+        <p><a href="https://github.com/jerome-queck/clarifold/issues/new"
           onClick={(event) => {
             event.preventDefault();
             void window.quickStudy.openExternal(event.currentTarget.href);

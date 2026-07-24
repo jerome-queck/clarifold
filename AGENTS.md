@@ -12,10 +12,6 @@ Default five-label vocabulary. See `docs/agents/triage-labels.md`.
 
 Single-context. See `docs/agents/domain.md`.
 
-## Hackathon reference
-
-For OpenAI Build Week requirements, tracks, deadlines, required deliverables, form fields, and judging, read [`docs/openai-build-week.md`](docs/openai-build-week.md) before planning or preparing a submission. Consult the live [Official Rules](https://openai.devpost.com/rules) for rules, eligibility, intellectual-property terms, and prizes.
-
 ## Engineering workflow
 
 For tracked product engineering work, read [`docs/agents/engineering-workflow.md`](docs/agents/engineering-workflow.md) before selecting a flow or changing code. It owns the repository-specific routing, issue-entry, review, and skill-maintenance rules.
@@ -26,20 +22,19 @@ Automatically use only model-invocable skills when their trigger descriptions ma
 
 ## Commit attribution
 
-When materially involved, ensure the commit message includes each applicable agent's model-specific co-author and session trailers exactly once.
+When an AI agent materially contributes, disclose it with neutral `Assisted-by` provenance. The human maintainer or approved collaborator remains the commit author and accountable reviewer.
 
-For Codex, use the current model display name and `CODEX_THREAD_ID`:
+For Codex, use the current model display name and an authentic `CODEX_THREAD_ID` when one is available:
 
 ```text
-Co-authored-by: Codex <model> <noreply@openai.com>
+Assisted-by: Codex <model>
 Codex-Session: codex://threads/<CODEX_THREAD_ID>
-Codex-Feedback-Session: <CODEX_THREAD_ID>
 ```
 
-`Codex-Feedback-Session` is the raw thread ID required by the OpenAI Build Week Devpost form's `/feedback` field. It must exactly match the ID embedded in `Codex-Session`; include each trailer once in every Codex-attributed commit.
+Never invent or duplicate a session identifier. A session reference is an audit aid, not evidence that generated output is correct, secure, original, or legally safe.
 
 See [CONTRIBUTING.md — AI attribution](CONTRIBUTING.md#ai-attribution) for the canonical repository-wide commit-attribution rules.
 
-For Claude, preserve Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers. Never invent a session identifier or duplicate an automatic trailer.
+Equivalent authentic provenance may be retained for other agents, but AI systems do not receive `Co-authored-by` trailers. Human contributors remain responsible for source, dependency, security, mathematical, privacy, and documentation review.
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branches, commits, and pull requests.

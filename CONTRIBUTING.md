@@ -64,19 +64,29 @@ For product work, use this flow:
 
 ## AI attribution
 
-When an AI agent materially contributes, include its model-specific co-author and session trailers exactly once in local commits and in the final squash-commit message.
+When an AI agent materially contributes, disclose that assistance in the commit and pull request while keeping the human maintainer or approved collaborator as the commit author and accountable reviewer. Use the neutral `Assisted-by` convention and include an authentic session reference when one is available.
 
 Codex uses its current model display name and thread ID:
 
 ```text
-Co-authored-by: Codex <model> <noreply@openai.com>
+Assisted-by: Codex <model>
 Codex-Session: codex://threads/<CODEX_THREAD_ID>
-Codex-Feedback-Session: <CODEX_THREAD_ID>
 ```
 
-`Codex-Feedback-Session` is the raw ID required by the OpenAI Build Week Devpost form's `/feedback` field. It must match the ID embedded in `Codex-Session`; include each trailer exactly once.
+The session reference must be genuine, must match the current work, and must appear at most once. Never invent a session identifier. AI provenance does not replace source and dependency review, security triage, tests, mathematical review, documentation-impact declarations, or protected-branch controls.
 
-Claude Code's generated model-specific `Co-authored-by` and `Claude-Session` trailers should be preserved. Do not invent session identifiers, duplicate automatic trailers, or attribute an agent that did not materially contribute.
+Equivalent authentic provenance may be retained for other agents, but AI systems do not receive `Co-authored-by` trailers. Human contributors review generated content for copied material, licence incompatibility, sensitive data, unsafe behavior, and truthful attribution.
+
+## Git identity
+
+Use a stable name and an email address you control for new commits. The maintainer's canonical repository identity is:
+
+```sh
+git config user.name "Jerome Queck"
+git config user.email "jeromequeck@jeromegroup.org"
+```
+
+Check the effective identity before committing with `git config --show-origin --get-regexp '^user\\.(name|email)$'`. The repository [`.mailmap`](.mailmap) maps Jerome's historical NTU address for display without rewriting public history. Do not commit credentials, private keys, learner data, or machine-local paths.
 
 ## Pull requests
 
