@@ -690,7 +690,8 @@ void app.whenReady().then(async () => {
     app.getPath("userData"),
     (warning) => console.warn(`[Clarifold configuration] ${warning.message}`)
   );
-  if (runtimeConfiguration.dataDirectorySource === "default") {
+  if (runtimeConfiguration.dataDirectorySource === "default"
+    || runtimeConfiguration.dataDirectorySource === "test-environment") {
     const migrationStages: MigrationStage[] = [];
     const observeMigrationStage = (stage: MigrationStage): void => {
       if (migrationStages.at(-1) !== stage) migrationStages.push(stage);

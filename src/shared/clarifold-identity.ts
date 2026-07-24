@@ -40,7 +40,7 @@ export function resolveClarifoldRuntimeConfiguration(
     if (canonicalDataDirectory || legacyDataDirectory) {
       warn({
         variable: identity.testUserDataDirectoryVariable,
-        message: `${identity.testUserDataDirectoryVariable} is an isolated test data path; migration and other default-directory discovery are disabled.`
+        message: `${identity.testUserDataDirectoryVariable} is an isolated test data path; real default-user-data discovery is disabled.`
       });
     }
   } else if (canonicalDataDirectory) {
