@@ -30,8 +30,22 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
     throw new Error("Packaged NOTICE is missing the required Jerome Queck copyright notice.");
   }
   const thirdPartyNotices = await requireNonEmptyFile(join(resources, "THIRD_PARTY_NOTICES.md"), "third-party notices");
-  for (const requiredNotice of ["Electron 43.1.1", "Chromium", "React", "React DOM", "scheduler", "Lean toolchain", "mathlib", "native helpers", "source-bookmark-helper", "source-index-extractor"]) {
-    if (!thirdPartyNotices.includes(requiredNotice)) {
+  const normalizedThirdPartyNotices = thirdPartyNotices.toString("utf8").replace(/\s+/g, " ");
+  for (const requiredNotice of [
+    "Electron 43.1.1",
+    "Chromium",
+    "React",
+    "React DOM",
+    "scheduler",
+    "Lean toolchain",
+    "mathlib",
+    "native helpers",
+    "source-bookmark-helper",
+    "source-index-extractor",
+    "are built from the repository's native helpers",
+    "remain covered by that same notice",
+  ]) {
+    if (!normalizedThirdPartyNotices.includes(requiredNotice)) {
       throw new Error(`Packaged third-party notices are missing required attribution: ${requiredNotice}`);
     }
   }

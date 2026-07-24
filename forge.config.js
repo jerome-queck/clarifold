@@ -56,14 +56,18 @@ async function copyPackagedUpstreamNotices(outputPath) {
     {
       sources: [
         join(outputPath, "LICENSE"),
+        join(outputPath, "Quick Study.app", "LICENSE"),
         join(outputPath, "Quick Study.app", "Contents", "LICENSE"),
+        join(__dirname, "node_modules", "electron", "dist", "LICENSE"),
       ],
       destination: join(resources, "ELECTRON_LICENSE"),
     },
     {
       sources: [
         join(outputPath, "LICENSES.chromium.html"),
+        join(outputPath, "Quick Study.app", "LICENSES.chromium.html"),
         join(outputPath, "Quick Study.app", "Contents", "LICENSES.chromium.html"),
+        join(__dirname, "node_modules", "electron", "dist", "LICENSES.chromium.html"),
       ],
       destination: join(resources, "CHROMIUM_LICENSES.html"),
     },

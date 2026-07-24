@@ -78,6 +78,24 @@ describe("macOS beta release contract", () => {
     }
   });
 
+  it("rejects a packaged artifact without native-helper provenance", async () => {
+    const fixture = await createPackagedLicenseFixture();
+    try {
+      const noticesPath = join(fixture.applicationPath, "Contents", "Resources", "THIRD_PARTY_NOTICES.md");
+      const notices = await readFile(noticesPath, "utf8");
+      await writeFile(noticesPath, notices.replace(
+        "are built from the repository's native helpers",
+        "are built from an unknown source",
+      ));
+      await expect(auditPackagedApplication(fixture.applicationPath, {
+        packageLock: fixture.packageLock,
+        verifierId: fixture.verifierId,
+      })).rejects.toThrow(/native helpers/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an unresolved or disallowed runtime license", async () => {
     const fixture = await createPackagedLicenseFixture({ runtimeLicense: "GPL-3.0-only" });
     try {
