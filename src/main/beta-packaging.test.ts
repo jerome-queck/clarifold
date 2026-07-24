@@ -2,11 +2,18 @@
 
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
+// @ts-expect-error The audit helper is an executable-side JavaScript module.
+import { auditPackagedApplication } from "../../scripts/audit-packaged-licenses.mjs";
+
 const require = createRequire(import.meta.url);
+const { createPackage } = require("@electron/asar") as {
+  createPackage: (source: string, destination: string) => Promise<void>;
+};
 
 describe("macOS beta release contract", () => {
   it("declares the source-available license and packages legal notices", async () => {
@@ -37,6 +44,52 @@ describe("macOS beta release contract", () => {
     ]));
   });
 
+  it("passes the packaged license audit for the allowed runtime graph", async () => {
+    const fixture = await createPackagedLicenseFixture();
+    try {
+      await expect(auditPackagedApplication(fixture.applicationPath, {
+        packageLock: fixture.packageLock,
+        verifierId: fixture.verifierId,
+      })).resolves.toMatchObject({
+        runtimePackages: [
+          { name: "react", license: "MIT" },
+          { name: "react-dom", license: "MIT" },
+          { name: "scheduler", license: "MIT" },
+        ],
+      });
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a packaged artifact with missing notice attribution", async () => {
+    const fixture = await createPackagedLicenseFixture();
+    try {
+      await writeFile(
+        join(fixture.applicationPath, "Contents", "Resources", "THIRD_PARTY_NOTICES.md"),
+        "Electron 43.1.1\nChromium\nReact\nReact DOM\nLean toolchain\nmathlib\nnative helpers\nsource-bookmark-helper\nsource-index-extractor\n",
+      );
+      await expect(auditPackagedApplication(fixture.applicationPath, {
+        packageLock: fixture.packageLock,
+        verifierId: fixture.verifierId,
+      })).rejects.toThrow(/scheduler/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unresolved or disallowed runtime license", async () => {
+    const fixture = await createPackagedLicenseFixture({ runtimeLicense: "GPL-3.0-only" });
+    try {
+      await expect(auditPackagedApplication(fixture.applicationPath, {
+        packageLock: fixture.packageLock,
+        verifierId: fixture.verifierId,
+      })).rejects.toThrow(/Disallowed or unknown runtime license/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("makes a versioned zip and validates an installed copy in the smoke lane", async () => {
     const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
     const forgeConfig = require(join(process.cwd(), "forge.config.js"));
@@ -64,3 +117,40 @@ describe("macOS beta release contract", () => {
     expect(packageJson.scripts.verify).toBe("npm run verify:prepackage && npm run verify:package");
   });
 });
+
+async function createPackagedLicenseFixture({ runtimeLicense = "MIT" } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "clarifold-license-audit-"));
+  const applicationPath = join(root, "Quick Study.app");
+  const resources = join(applicationPath, "Contents", "Resources");
+  const verifierId = "test-verifier";
+  const verifier = join(resources, "verifiers", verifierId);
+  const appSource = join(root, "app-source");
+  const packageLock = {
+    packages: {
+      "": { dependencies: { react: "19.2.7", "react-dom": "19.2.7" } },
+      "node_modules/react": { license: runtimeLicense },
+      "node_modules/react-dom": { license: runtimeLicense, dependencies: { scheduler: "0.27.0" } },
+      "node_modules/scheduler": { license: runtimeLicense },
+    },
+  };
+  await mkdir(join(resources, "app.asar.unpacked", "dist", "helpers"), { recursive: true });
+  await mkdir(verifier, { recursive: true });
+  await mkdir(join(appSource, "node_modules", "react"), { recursive: true });
+  await mkdir(join(appSource, "node_modules", "react-dom"), { recursive: true });
+  await mkdir(join(appSource, "node_modules", "scheduler"), { recursive: true });
+  await writeFile(join(resources, "LICENSE"), await readFile(join(process.cwd(), "LICENSE")));
+  await writeFile(join(resources, "NOTICE"), "Required Notice: Copyright © 2026 Jerome Queck\n");
+  await writeFile(join(resources, "THIRD_PARTY_NOTICES.md"), await readFile(join(process.cwd(), "THIRD_PARTY_NOTICES.md")));
+  await writeFile(join(resources, "ELECTRON_LICENSE"), "Copyright (c) Electron contributors\n");
+  await writeFile(join(resources, "CHROMIUM_LICENSES.html"), "<title>Chromium licenses</title>\n");
+  await writeFile(join(verifier, "LICENSE"), "Apache License Version 2.0\n");
+  await writeFile(join(verifier, "LICENSES"), "Apache License Version 2.0\n");
+  await writeFile(join(verifier, "mathlib-LICENSE"), "Apache License Version 2.0\n");
+  await writeFile(join(resources, "app.asar.unpacked", "dist", "helpers", "source-bookmark-helper"), "helper\n");
+  await writeFile(join(resources, "app.asar.unpacked", "dist", "helpers", "source-index-extractor"), "helper\n");
+  for (const name of ["react", "react-dom", "scheduler"]) {
+    await writeFile(join(appSource, "node_modules", name, "package.json"), JSON.stringify({ name, license: runtimeLicense }));
+  }
+  await createPackage(appSource, join(resources, "app.asar"));
+  return { root, applicationPath, packageLock, verifierId };
+}

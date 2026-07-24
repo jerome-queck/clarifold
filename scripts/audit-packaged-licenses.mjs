@@ -132,7 +132,8 @@ function sha256(contents) {
 async function findPackagedApplication() {
   const outDirectory = join(projectRoot, "out");
   const entries = await readdir(outDirectory, { withFileTypes: true });
-  const packageDirectory = entries.find((entry) => entry.isDirectory() && /^Quick Study-darwin-/.test(entry.name));
+  const expectedPackageName = `Quick Study-darwin-${process.arch}`;
+  const packageDirectory = entries.find((entry) => entry.isDirectory() && entry.name === expectedPackageName);
   if (!packageDirectory) throw new Error(`No packaged Quick Study application found under ${outDirectory}.`);
   return join(outDirectory, packageDirectory.name, "Quick Study.app");
 }
