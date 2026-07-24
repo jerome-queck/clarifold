@@ -40,6 +40,12 @@ the root [`LICENSE`](LICENSE), except where a file or notice says otherwise.
 The packaged `source-bookmark-helper` and `source-index-extractor` binaries
 are built from the repository's native helpers and remain covered by that
 same notice.
+
+| Native helper | Source | License | Attribution and package location |
+| --- | --- | --- | --- |
+| `source-bookmark-helper` | Repository `native/source-bookmark-helper.swift` | PolyForm-Noncommercial-1.0.0 | Packaged native helper binary under `Resources/app.asar.unpacked/dist/helpers/`; covered by the root Clarifold license and this notice |
+| `source-index-extractor` | Repository `native/source-index-extractor.swift` | PolyForm-Noncommercial-1.0.0 | Packaged native helper binary under `Resources/app.asar.unpacked/dist/helpers/`; covered by the root Clarifold license and this notice |
+
 The repository currently has no third-party fonts, images, icon artwork, or
 other bundled visual assets. A future asset must be added only with a recorded
 source, license, attribution, and compatibility decision in the audit linked

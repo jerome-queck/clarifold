@@ -42,6 +42,7 @@ describe("macOS beta release contract", () => {
       "NOTICE",
       "THIRD_PARTY_NOTICES.md",
     ]));
+    expect(forgeConfig.packagerConfig.beforeCopyExtraResources).toEqual([expect.any(Function)]);
   });
 
   it("passes the packaged license audit for the allowed runtime graph", async () => {
@@ -52,9 +53,9 @@ describe("macOS beta release contract", () => {
         verifierId: fixture.verifierId,
       })).resolves.toMatchObject({
         runtimePackages: [
-          { name: "react", license: "MIT" },
-          { name: "react-dom", license: "MIT" },
-          { name: "scheduler", license: "MIT" },
+          { name: "react", version: "19.2.7", license: "MIT" },
+          { name: "react-dom", version: "19.2.7", license: "MIT" },
+          { name: "scheduler", version: "0.27.0", license: "MIT" },
         ],
       });
     } finally {
@@ -72,7 +73,7 @@ describe("macOS beta release contract", () => {
       await expect(auditPackagedApplication(fixture.applicationPath, {
         packageLock: fixture.packageLock,
         verifierId: fixture.verifierId,
-      })).rejects.toThrow(/scheduler/);
+      })).rejects.toThrow(/notice inventory/);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -83,14 +84,38 @@ describe("macOS beta release contract", () => {
     try {
       const noticesPath = join(fixture.applicationPath, "Contents", "Resources", "THIRD_PARTY_NOTICES.md");
       const notices = await readFile(noticesPath, "utf8");
-      await writeFile(noticesPath, notices.replace(
-        "are built from the repository's native helpers",
-        "are built from an unknown source",
-      ));
+      await writeFile(noticesPath, notices.split("\n")
+        .filter((line) => !line.includes("source-bookmark-helper") && !line.includes("source-index-extractor"))
+        .join("\n"));
       await expect(auditPackagedApplication(fixture.applicationPath, {
         packageLock: fixture.packageLock,
         verifierId: fixture.verifierId,
-      })).rejects.toThrow(/native helpers/);
+      })).rejects.toThrow(/notice inventory/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a packaged artifact with a runtime version mismatch", async () => {
+    const fixture = await createPackagedLicenseFixture({ packagedVersionOverrides: { react: "19.2.6" } });
+    try {
+      await expect(auditPackagedApplication(fixture.applicationPath, {
+        packageLock: fixture.packageLock,
+        verifierId: fixture.verifierId,
+      })).rejects.toThrow(/runtime version mismatch/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects truncated upstream notices", async () => {
+    const fixture = await createPackagedLicenseFixture();
+    try {
+      await writeFile(join(fixture.applicationPath, "Contents", "Resources", "CHROMIUM_LICENSES.html"), "Chromium\n");
+      await expect(auditPackagedApplication(fixture.applicationPath, {
+        packageLock: fixture.packageLock,
+        verifierId: fixture.verifierId,
+      })).rejects.toThrow(/Chromium notices do not match/);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -136,7 +161,7 @@ describe("macOS beta release contract", () => {
   });
 });
 
-async function createPackagedLicenseFixture({ runtimeLicense = "MIT" } = {}) {
+async function createPackagedLicenseFixture({ runtimeLicense = "MIT", packagedVersionOverrides = {} } = {}) {
   const root = await mkdtemp(join(tmpdir(), "clarifold-license-audit-"));
   const applicationPath = join(root, "Quick Study.app");
   const resources = join(applicationPath, "Contents", "Resources");
@@ -146,9 +171,9 @@ async function createPackagedLicenseFixture({ runtimeLicense = "MIT" } = {}) {
   const packageLock = {
     packages: {
       "": { dependencies: { react: "19.2.7", "react-dom": "19.2.7" } },
-      "node_modules/react": { license: runtimeLicense },
-      "node_modules/react-dom": { license: runtimeLicense, dependencies: { scheduler: "0.27.0" } },
-      "node_modules/scheduler": { license: runtimeLicense },
+      "node_modules/react": { version: "19.2.7", license: runtimeLicense },
+      "node_modules/react-dom": { version: "19.2.7", license: runtimeLicense, dependencies: { scheduler: "0.27.0" } },
+      "node_modules/scheduler": { version: "0.27.0", license: runtimeLicense },
     },
   };
   await mkdir(join(resources, "app.asar.unpacked", "dist", "helpers"), { recursive: true });
@@ -157,17 +182,22 @@ async function createPackagedLicenseFixture({ runtimeLicense = "MIT" } = {}) {
   await mkdir(join(appSource, "node_modules", "react-dom"), { recursive: true });
   await mkdir(join(appSource, "node_modules", "scheduler"), { recursive: true });
   await writeFile(join(resources, "LICENSE"), await readFile(join(process.cwd(), "LICENSE")));
-  await writeFile(join(resources, "NOTICE"), "Required Notice: Copyright © 2026 Jerome Queck\n");
+  await writeFile(join(resources, "NOTICE"), await readFile(join(process.cwd(), "NOTICE")));
   await writeFile(join(resources, "THIRD_PARTY_NOTICES.md"), await readFile(join(process.cwd(), "THIRD_PARTY_NOTICES.md")));
-  await writeFile(join(resources, "ELECTRON_LICENSE"), "Copyright (c) Electron contributors\n");
-  await writeFile(join(resources, "CHROMIUM_LICENSES.html"), "<title>Chromium licenses</title>\n");
+  await writeFile(join(resources, "ELECTRON_LICENSE"), await readFile(join(process.cwd(), "node_modules", "electron", "dist", "LICENSE")));
+  await writeFile(join(resources, "CHROMIUM_LICENSES.html"), await readFile(join(process.cwd(), "node_modules", "electron", "dist", "LICENSES.chromium.html")));
   await writeFile(join(verifier, "LICENSE"), "Apache License Version 2.0\n");
   await writeFile(join(verifier, "LICENSES"), "Apache License Version 2.0\n");
   await writeFile(join(verifier, "mathlib-LICENSE"), "Apache License Version 2.0\n");
   await writeFile(join(resources, "app.asar.unpacked", "dist", "helpers", "source-bookmark-helper"), "helper\n");
   await writeFile(join(resources, "app.asar.unpacked", "dist", "helpers", "source-index-extractor"), "helper\n");
+  const versions = { react: "19.2.7", "react-dom": "19.2.7", scheduler: "0.27.0" };
   for (const name of ["react", "react-dom", "scheduler"]) {
-    await writeFile(join(appSource, "node_modules", name, "package.json"), JSON.stringify({ name, license: runtimeLicense }));
+    await writeFile(join(appSource, "node_modules", name, "package.json"), JSON.stringify({
+      name,
+      version: packagedVersionOverrides[name] ?? versions[name],
+      license: runtimeLicense,
+    }));
   }
   await createPackage(appSource, join(resources, "app.asar"));
   return { root, applicationPath, packageLock, verifierId };

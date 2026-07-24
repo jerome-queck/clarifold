@@ -69,7 +69,8 @@ The [evaluation guide](../evaluation/README.md) owns benchmark evidence collecti
 Every packaged application also includes Clarifold's `LICENSE`, `NOTICE`, and
 `THIRD_PARTY_NOTICES.md` at the application resource root. Electron's own
 `LICENSE` and `LICENSES.chromium.html` files are copied into the application
-resource root as `ELECTRON_LICENSE` and `CHROMIUM_LICENSES.html` for ZIP
+resource root as `ELECTRON_LICENSE` and `CHROMIUM_LICENSES.html` before code
+signing for ZIP
 recipients. The Verifier Environment's upstream license files remain alongside
 their respective packaged components. Keep these files with any permitted
 noncommercial redistribution and consult the [license audit](legal/dependency-and-asset-license-audit.md)

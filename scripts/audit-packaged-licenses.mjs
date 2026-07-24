@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const LICENSE_SHA256 = "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8";
+const NOTICE_SHA256 = "f813c9234a763c6b2d2ba7d0630baa11eb1161e85dd1e84ea778799171b34d84";
+const THIRD_PARTY_NOTICES_SHA256 = "ab006cb7c60354e1f531c85f9976e1915fa0918e6e0ea453349be2303a9a05fd";
+const ELECTRON_LICENSE_SHA256 = "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d";
+const CHROMIUM_LICENSES_SHA256 = "4fc0507a046b9ecd0738b2dd64119b5ec8bc29ac0221b63edb693fd5fd497c87";
 const ALLOWED_NPM_RUNTIME_LICENSES = new Set(["MIT"]);
 
 export async function auditPackagedApplication(applicationPath, options = {}) {
@@ -26,10 +30,14 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
     throw new Error("Packaged Clarifold LICENSE does not match PolyForm Noncommercial 1.0.0.");
   }
   const notice = await requireNonEmptyFile(join(resources, "NOTICE"), "Clarifold notice");
+  if (sha256(notice) !== NOTICE_SHA256) throw new Error("Packaged NOTICE does not match the repository legal notice.");
   if (!notice.includes("Required Notice: Copyright © 2026 Jerome Queck")) {
     throw new Error("Packaged NOTICE is missing the required Jerome Queck copyright notice.");
   }
   const thirdPartyNotices = await requireNonEmptyFile(join(resources, "THIRD_PARTY_NOTICES.md"), "third-party notices");
+  if (sha256(thirdPartyNotices) !== THIRD_PARTY_NOTICES_SHA256) {
+    throw new Error("Packaged third-party notices do not match the repository notice inventory.");
+  }
   const normalizedThirdPartyNotices = thirdPartyNotices.toString("utf8").replace(/\s+/g, " ");
   for (const requiredNotice of [
     "Electron 43.1.1",
@@ -44,15 +52,17 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
     "source-index-extractor",
     "are built from the repository's native helpers",
     "remain covered by that same notice",
+    "`source-bookmark-helper` | Repository `native/source-bookmark-helper.swift` | PolyForm-Noncommercial-1.0.0",
+    "`source-index-extractor` | Repository `native/source-index-extractor.swift` | PolyForm-Noncommercial-1.0.0",
   ]) {
     if (!normalizedThirdPartyNotices.includes(requiredNotice)) {
       throw new Error(`Packaged third-party notices are missing required attribution: ${requiredNotice}`);
     }
   }
   const electronLicense = await requireNonEmptyFile(join(resources, "ELECTRON_LICENSE"), "Electron license");
-  if (!electronLicense.includes("Electron contributors")) throw new Error("Packaged Electron license has unexpected contents.");
+  if (sha256(electronLicense) !== ELECTRON_LICENSE_SHA256) throw new Error("Packaged Electron license does not match Electron 43.1.1.");
   const chromiumLicenses = await requireNonEmptyFile(join(resources, "CHROMIUM_LICENSES.html"), "Chromium notices");
-  if (!chromiumLicenses.toString("utf8").includes("Chromium")) throw new Error("Packaged Chromium notices have unexpected contents.");
+  if (sha256(chromiumLicenses) !== CHROMIUM_LICENSES_SHA256) throw new Error("Packaged Chromium notices do not match Electron 43.1.1.");
   await requireLicenseText(join(verifier, "LICENSE"), "Lean license");
   await requireLicenseText(join(verifier, "LICENSES"), "Lean component licenses");
   await requireLicenseText(join(verifier, "mathlib-LICENSE"), "mathlib license");
@@ -78,6 +88,9 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
     if (!ALLOWED_NPM_RUNTIME_LICENSES.has(expected.license)) {
       throw new Error(`Disallowed or unknown runtime license for ${packagedPackage.name}: ${expected.license}`);
     }
+    if (packagedPackage.version !== expected.version) {
+      throw new Error(`Packaged runtime version mismatch for ${packagedPackage.name}: expected ${expected.version}, got ${packagedPackage.version ?? "unknown"}`);
+    }
     if (packagedPackage.license !== expected.license) {
       throw new Error(`Packaged runtime license mismatch for ${packagedPackage.name}: expected ${expected.license}, got ${packagedPackage.license ?? "unknown"}`);
     }
@@ -86,7 +99,7 @@ export async function auditPackagedApplication(applicationPath, options = {}) {
     if (!packagedNames.has(expected.name)) throw new Error(`Packaged runtime dependency is missing: ${expected.name}`);
   }
 
-  return { applicationPath, runtimePackages: expectedRuntimePackages.map(({ name, license }) => ({ name, license })) };
+  return { applicationPath, runtimePackages: expectedRuntimePackages.map(({ name, license, version }) => ({ name, license, version })) };
 }
 
 async function requireNonEmptyFile(path, label) {
@@ -119,7 +132,8 @@ function runtimePackages(packageLock) {
     visited.add(packageLockPath);
     const metadata = packages[packageLockPath];
     const license = typeof metadata.license === "string" ? metadata.license : "unknown";
-    result.push({ name, packageLockPath, license });
+    const version = typeof metadata.version === "string" ? metadata.version : "unknown";
+    result.push({ name, packageLockPath, license, version });
     for (const dependency of Object.keys(metadata.dependencies ?? {})) {
       queue.push({ name: dependency, parentKey: packageLockPath });
     }

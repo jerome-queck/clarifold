@@ -13,6 +13,7 @@ module.exports = {
       optionsForFile: () => ({ hardenedRuntime: false }),
       continueOnError: false
     },
+    beforeCopyExtraResources: [copyPackagedUpstreamNotices],
     extraResource: ["dist/verifiers", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"],
     ignore: [
       /^\/src($|\/)/,
@@ -43,7 +44,6 @@ module.exports = {
     },
     postPackage: async (_forgeConfig, packageResult) => {
       for (const outputPath of packageResult.outputPaths) {
-        await copyPackagedUpstreamNotices(outputPath);
         await makeVerifierFilesReadOnly(join(outputPath, "Quick Study.app", "Contents", "Resources", "verifiers"));
       }
     }
