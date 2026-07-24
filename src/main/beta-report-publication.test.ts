@@ -15,15 +15,23 @@ describe("beta report publication", () => {
   it("bundles evidence outside Git without changing the exact attested candidate", async () => {
     const repository = await mkdtemp(join(tmpdir(), "quick-study-beta-report-"));
     temporaryDirectories.push(repository);
+    await mkdir(join(repository, "src", "shared"), { recursive: true });
     await mkdir(join(repository, "test-results", "release-quality-gate"), { recursive: true });
     await mkdir(join(repository, "test-results", "release-evidence"), { recursive: true });
     await mkdir(join(repository, "out", "make", "zip", "darwin", "arm64"), { recursive: true });
     await writeFile(join(repository, ".gitignore"), "out/\ntest-results/\nevaluation/\n", "utf8");
-    await writeJson(join(repository, "package.json"), { version: "0.2.0" });
+    await writeJson(join(repository, "package.json"), {
+      name: "clarifold", productName: "Clarifold", version: "0.2.0"
+    });
+    await writeFile(
+      join(repository, "src", "shared", "clarifold-identity.json"),
+      await readFile(join(process.cwd(), "src", "shared", "clarifold-identity.json")),
+      "utf8"
+    );
     git(repository, ["init"]);
     git(repository, ["config", "user.name", "Release Test"]);
     git(repository, ["config", "user.email", "release-test@example.com"]);
-    git(repository, ["add", ".gitignore", "package.json"]);
+    git(repository, ["add", ".gitignore", "package.json", "src/shared/clarifold-identity.json"]);
     git(repository, ["commit", "-m", "test candidate"]);
     const candidateCommit = git(repository, ["rev-parse", "HEAD"]).trim();
     const reportDirectory = join(repository, "test-results", "release-quality-gate");
@@ -32,11 +40,18 @@ describe("beta report publication", () => {
     await writeJson(join(reportDirectory, "macos-beta-0.2.0.json"), {
       decision: "pass", benchmarkVersion: "2.0.0", release: { id: "macos-beta-0.2.0", commit: candidateCommit }
     });
-    const betaArchivePath = join(repository, "out", "make", "zip", "darwin", "arm64", "Clarifold.zip");
+    const betaArchivePath = join(repository, "out", "make", "zip", "darwin", "arm64", "Clarifold-darwin-arm64-0.2.0.zip");
     await writeFile(betaArchivePath, "signed beta archive", "utf8");
     const betaPath = join(repository, "test-results", "beta-install.json");
     await writeJson(betaPath, {
-      candidateCommit, architecture: "arm64", artifact: "Clarifold.zip", sha256: await digest(betaArchivePath)
+      candidateCommit,
+      architecture: "arm64",
+      artifact: "Clarifold-darwin-arm64-0.2.0.zip",
+      identity: {
+        packageName: "clarifold", productName: "Clarifold", version: "0.2.0",
+        bundleIdentifier: "org.jeromegroup.clarifold"
+      },
+      sha256: await digest(betaArchivePath)
     });
     const modelPath = join(evidenceDirectory, "model-responses.json");
     const verdictPath = join(evidenceDirectory, "blinded-verdicts.json");
@@ -77,7 +92,7 @@ describe("beta report publication", () => {
     expect(manifest.decision).toBe("pass");
     expect(manifest.files.map((file: { name: string }) => file.name)).toContain("recovery-vitest.json");
     expect(manifest.distributable).toEqual({
-      name: "Clarifold.zip", sha256: await digest(betaArchivePath)
+      name: "Clarifold-darwin-arm64-0.2.0.zip", sha256: await digest(betaArchivePath)
     });
     expect(git(repository, ["rev-parse", "HEAD"]).trim()).toBe(candidateCommit);
     expect(git(repository, ["status", "--porcelain"]).trim()).toBe("");

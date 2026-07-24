@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { assertRealFile } from "./release-integrity.mjs";
+import { readClarifoldReleaseIdentity } from "./clarifold-release-identity.mjs";
 
 const root = process.cwd();
+const release = await readClarifoldReleaseIdentity(root);
 const modelPath = requiredEvidencePath("CLARIFOLD_MODEL_EVIDENCE");
 const verdictPath = requiredEvidencePath("CLARIFOLD_EVALUATOR_VERDICTS");
 const recoveryPath = requiredEvidencePath("CLARIFOLD_RECOVERY_EVIDENCE");
@@ -13,9 +15,8 @@ if (execFileSync("/usr/bin/git", ["status", "--porcelain"], { encoding: "utf8" }
   throw new Error("Publishing beta release evidence requires a clean, committed candidate worktree.");
 }
 
-const packageJson = await json(join(root, "package.json"));
 const reportDirectory = join(root, "test-results", "release-quality-gate");
-const reportBase = `macos-beta-${packageJson.version}`;
+const reportBase = release.releaseId;
 const sources = [
   [join(reportDirectory, `${reportBase}.md`), "quality-gate.md"],
   [join(reportDirectory, `${reportBase}.json`), "quality-gate.json"],
@@ -34,6 +35,13 @@ if (basename(beta.artifact ?? "") !== beta.artifact || !beta.architecture
   || !/^[a-f0-9]{64}$/.test(beta.sha256 ?? "")
   || !/^(arm64|x64)$/.test(beta.architecture)) {
   throw new Error("The distributable beta archive metadata is invalid.");
+}
+if (beta.artifact !== release.archiveName(beta.architecture)
+  || beta.identity?.packageName !== release.packageName
+  || beta.identity?.productName !== release.productName
+  || beta.identity?.version !== release.version
+  || beta.identity?.bundleIdentifier !== release.bundleIdentifier) {
+  throw new Error("The distributable beta archive metadata does not match the centralized Clarifold identity.");
 }
 const betaArchivePath = join(root, "out", "make", "zip", "darwin", beta.architecture, beta.artifact);
 await assertRealFile(betaArchivePath, "distributable beta archive");

@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readClarifoldReleaseIdentity } from "./clarifold-release-identity.mjs";
 import { assertRealFile } from "./release-integrity.mjs";
 
 const root = process.cwd();
+const release = await readClarifoldReleaseIdentity(root);
 const artifactDigest = process.env.ARTIFACT_DIGEST;
 const artifactName = process.env.ARTIFACT_NAME;
 const candidateCommit = process.env.CANDIDATE_COMMIT;
@@ -19,8 +21,16 @@ await assertRealFile(receiptPath, "installed beta receipt");
 const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
 if (receipt.candidateCommit !== candidateCommit
   || !/^[a-f0-9]{64}$/.test(receipt.sha256 ?? "")
-  || typeof receipt.artifact !== "string") {
+  || typeof receipt.artifact !== "string"
+  || receipt.artifact !== release.archiveName(receipt.architecture)
+  || receipt.identity?.packageName !== release.packageName
+  || receipt.identity?.productName !== release.productName
+  || receipt.identity?.version !== release.version
+  || receipt.identity?.bundleIdentifier !== release.bundleIdentifier) {
   throw new Error("The installed beta receipt does not match the uploaded candidate.");
+}
+if (artifactName !== release.workflowArtifactName(receipt.architecture)) {
+  throw new Error(`The uploaded beta artifact name must be ${release.workflowArtifactName(receipt.architecture)}.`);
 }
 
 const binding = {

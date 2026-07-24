@@ -685,10 +685,9 @@ function registerMigrationStatusHandler(): void {
 
 void app.whenReady().then(async () => {
   registerMigrationStatusHandler();
-  const testUserDataDirectory = process.env.CLARIFOLD_TEST_USER_DATA_DIR?.trim();
   runtimeConfiguration = resolveClarifoldRuntimeConfiguration(
     process.env,
-    testUserDataDirectory || app.getPath("userData"),
+    app.getPath("userData"),
     (warning) => console.warn(`[Clarifold configuration] ${warning.message}`)
   );
   if (runtimeConfiguration.dataDirectorySource === "default") {

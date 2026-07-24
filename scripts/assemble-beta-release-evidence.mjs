@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { readClarifoldReleaseIdentity } from "./clarifold-release-identity.mjs";
 
 const root = process.cwd();
+const release = await readClarifoldReleaseIdentity(root);
 const modelPath = process.env.CLARIFOLD_MODEL_EVIDENCE;
 const verdictPath = process.env.CLARIFOLD_EVALUATOR_VERDICTS;
 const recoveryPath = process.env.CLARIFOLD_RECOVERY_EVIDENCE;
@@ -13,14 +15,13 @@ if (!modelPath || !verdictPath || !recoveryPath) {
   );
 }
 
-const [benchmark, recoveryPolicy, beta, model, verdicts, recovery, packageJson, verifier] = await Promise.all([
+const [benchmark, recoveryPolicy, beta, model, verdicts, recovery, verifier] = await Promise.all([
   json("evaluation/benchmarks/v2/benchmark.json"),
   json("evaluation/benchmarks/v2/recovery-evidence.json"),
   json("test-results/beta-install.json"),
   json(modelPath),
   json(verdictPath),
   json(recoveryPath),
-  json("package.json"),
   json("src/shared/bundled-verifier-environment.json")
 ]);
 const candidateCommit = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -30,6 +31,13 @@ if (execFileSync("/usr/bin/git", ["status", "--porcelain"], { encoding: "utf8" }
 if (beta.candidateCommit !== candidateCommit || model.provenance?.candidateCommit !== candidateCommit
   || verdicts.candidateCommit !== candidateCommit || recovery.candidateCommit !== candidateCommit) {
   throw new Error("Installed, model, evaluator, and recovery evidence must target the exact current commit.");
+}
+if (beta.artifact !== release.archiveName(beta.architecture)
+  || beta.identity?.packageName !== release.packageName
+  || beta.identity?.productName !== release.productName
+  || beta.identity?.version !== release.version
+  || beta.identity?.bundleIdentifier !== release.bundleIdentifier) {
+  throw new Error("Installed beta evidence must match the centralized Clarifold package identity and archive name.");
 }
 if (!beta.validations.includes("installed-critical-journeys")
   || !beta.validations.includes("agent-recovery-journeys")
@@ -140,7 +148,7 @@ const verifierManifestPath = join("dist", "verifiers", verifier.id, "manifest.js
 const corpusFiles = benchmark.scenarios.filter((scenario) => scenario.fixture).map((scenario) => scenario.fixture);
 const evidence = {
   benchmarkVersion: benchmark.benchmarkVersion,
-  release: { id: `macos-beta-${packageJson.version}`, commit: candidateCommit },
+  release: { id: release.releaseId, commit: candidateCommit },
   provenance: {
     inputAssets: [
       { role: "installed-beta", name: "beta-install.json", sha256: await fileDigest("test-results/beta-install.json") },
@@ -168,7 +176,7 @@ const evidence = {
   },
   recordedAt: new Date().toISOString(),
   versions: {
-    application: packageJson.version,
+    application: release.version,
     modelRuntime: `${model.runtime.model}/${model.runtime.reasoningEffort}/policy-v${model.runtime.policyVersion}`,
     verifier: verifier.id
   },
@@ -176,7 +184,7 @@ const evidence = {
     hardware: beta.testHardware.model,
     operatingSystem: beta.testHardware.operatingSystem,
     node: process.version,
-    electron: packageJson.devDependencies.electron
+    electron: release.packageJson.devDependencies.electron
   },
   trials: [...stochasticTrials, ...deterministicTrials],
   operationalMeasurements: [

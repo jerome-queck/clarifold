@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 
 // @ts-expect-error The audit helper is an executable-side JavaScript module.
 import { auditPackagedApplication } from "../../scripts/audit-packaged-licenses.mjs";
+// @ts-expect-error The release identity helper is an executable-side JavaScript module.
+import { readClarifoldReleaseIdentity } from "../../scripts/clarifold-release-identity.mjs";
 
 const require = createRequire(import.meta.url);
 const { createPackage } = require("@electron/asar") as {
@@ -116,11 +118,17 @@ describe("macOS beta release contract", () => {
   });
 
   it("makes a versioned zip and validates an installed copy in the smoke lane", async () => {
-    const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
+    const release = await readClarifoldReleaseIdentity(process.cwd());
+    const packageJson = release.packageJson;
     const forgeConfig = require(join(process.cwd(), "forge.config.js"));
 
+    expect(packageJson).toMatchObject({
+      name: release.packageName,
+      productName: release.productName,
+      version: release.version
+    });
     expect(forgeConfig.packagerConfig).toMatchObject({
-      appBundleId: "org.jeromegroup.clarifold",
+      appBundleId: release.bundleIdentifier,
       appCategoryType: "public.app-category.education"
     });
     expect(forgeConfig.makers).toEqual([
@@ -129,7 +137,7 @@ describe("macOS beta release contract", () => {
     expect(forgeConfig.packagerConfig.ignore.some((pattern: RegExp) =>
     pattern.test("/node_modules/.cache/clarifold-lean/archive.zip"))).toBe(true);
     expect(forgeConfig.packagerConfig.ignore.some((pattern: RegExp) =>
-    pattern.test("/out/Clarifold-darwin-arm64/Clarifold.app"))).toBe(true);
+    pattern.test(`/out/${release.productName}-darwin-arm64/${release.applicationName}`))).toBe(true);
     expect(forgeConfig.packagerConfig.ignore.some((pattern: RegExp) =>
     pattern.test("/test-results/installed-beta/Clarifold.app"))).toBe(true);
     expect(packageJson.scripts["make:beta"]).toBe(
