@@ -8,7 +8,7 @@ import { classifyChangedPaths } from "./change-classifier.mjs";
 import { validateDocumentation } from "./check-documentation.mjs";
 
 test("classifies documentation-only changes without requiring packaging", () => {
-  const result = classifyChangedPaths(["README.md", "docs/development.md"]);
+  const result = classifyChangedPaths(["README.md", "docs/development.md", ".mailmap"]);
 
   assert.equal(result.classification, "documentation-only");
   assert.equal(result.artifactAffected, false);
@@ -68,6 +68,24 @@ test("documentation validation accepts valid links, anchors, and npm scripts", a
   );
 
   assert.deepEqual(await validateDocumentation({ rootDir }), []);
+});
+
+test("documentation validation rejects event-specific references in active files", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-docs-"));
+  await mkdir(path.join(rootDir, "docs"), { recursive: true });
+  await mkdir(path.join(rootDir, ".github"), { recursive: true });
+  await writeFile(path.join(rootDir, "package.json"), JSON.stringify({ scripts: {} }));
+  await writeFile(path.join(rootDir, "README.md"), "# Home\n\n[Development](docs/development.md)\n[Architecture](docs/architecture.md)\n");
+  await writeFile(path.join(rootDir, "AGENTS.md"), "This is an OpenAI Build Week submission.\n");
+  await writeFile(path.join(rootDir, "CONTRIBUTING.md"), "# Contributing\n");
+  await writeFile(path.join(rootDir, "CODING_STANDARDS.md"), "# Standards\n");
+  await writeFile(path.join(rootDir, "docs", "development.md"), "# Development\n");
+  await writeFile(path.join(rootDir, "docs", "architecture.md"), "# Architecture\n");
+  await writeFile(path.join(rootDir, ".github", "pull_request_template.md"), "## Documentation impact\n\n## Security impact\n");
+
+  const errors = await validateDocumentation({ rootDir });
+
+  assert.match(errors.join("\n"), /AGENTS\.md: prohibited event-specific reference/);
 });
 
 test("documentation validation accepts answered pull-request declarations", async () => {

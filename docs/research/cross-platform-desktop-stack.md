@@ -10,7 +10,7 @@ Use **Electron + React + TypeScript for version one**, with a sandboxed renderer
 
 This is a product judgment, not a claim made by the frameworks. Electron is the lower-risk choice for this app because its Node main process is a direct fit for the official Codex TypeScript SDK and `codex app-server`, both of which are subprocess-and-stream oriented. It also supplies one bundled Chromium version for the PDF/canvas/graph/math surface. Tauri 2 is credible and materially better at package size, declarative least privilege, first-party SQLite, and Linux-capable updates, but it adds a Rust/IPC boundary and system-WebView variance to the two riskiest parts of this build.
 
-For the hackathon, target a tested **macOS build**. The [Official Rules](https://openai.devpost.com/rules) require a project to install and run consistently on **the platform for which it is intended**; they do not require macOS, Windows, and Linux. A submission may therefore identify macOS as the current intended platform while retaining Windows and Linux as deferred future platforms. Do not claim three-platform support until all three are tested.
+For the current product, target a tested **macOS build**. The intended platform must install and run consistently, while Windows and Linux remain deferred future platforms until they have their own build, packaging, and QA evidence. Do not claim three-platform support until all three are tested.
 
 ## Evidence and trade-offs
 

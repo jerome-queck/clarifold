@@ -153,7 +153,7 @@ The only upstream additions since the previous project sync are two explicitly i
 
 This is a dated research record, not the repository's policy source. The adopted workflow is deliberately layered:
 
-- [`AGENTS.md`](../../AGENTS.md) stays a lean agent entrypoint: repository configuration, the hackathon reference, attribution, and pointers to canonical instructions.
+- [`AGENTS.md`](../../AGENTS.md) stays a lean agent entrypoint: repository configuration, attribution, and pointers to canonical instructions.
 - [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the concise team policy for tracking work, branches, commits, pull requests, and attribution.
 - [`docs/agents/engineering-workflow.md`](../agents/engineering-workflow.md) contains the detailed Matt-flow routing, implementation start gate, TDD loop, committed-diff review adapter, and parent-spec completion procedure.
 - [`docs/agents/issue-tracker.md`](../agents/issue-tracker.md) owns GitHub-specific tracker, dependency, frontier, and claim mechanics.
