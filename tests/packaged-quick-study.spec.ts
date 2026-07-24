@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import bundledEnvironment from "../src/shared/bundled-verifier-environment.json";
+import { LearningApplication } from "../src/shared/learning-application";
 import {
   attachPackagedDiagnostics,
   readBoundedPackagedBackendState,
@@ -23,6 +24,60 @@ const executablePath = join(
   "Clarifold"
 );
 const PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS = 660_000;
+
+test("packaged Clarifold migrates a Quick Study beta directory without changing its rollback source", async ({}, testInfo) => {
+  test.setTimeout(180_000);
+  const root = await mkdtemp(join(tmpdir(), "clarifold-packaged-migration-"));
+  const home = join(root, "home");
+  const runtimeControlDirectory = join(root, "runtime");
+  const supportDirectory = join(home, "Library", "Application Support");
+  const legacyDirectory = join(supportDirectory, "Quick Study");
+  const clarifoldDirectory = join(supportDirectory, "Clarifold");
+  await mkdir(supportDirectory, { recursive: true });
+  await mkdir(runtimeControlDirectory, { recursive: true });
+  const legacyApplication = await LearningApplication.launch(legacyDirectory);
+  await legacyApplication.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
+  const legacyState = await readFile(join(legacyDirectory, "learning-application.json"), "utf8");
+  const port = await availablePort();
+  const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
+    env: {
+      ...process.env,
+      HOME: home,
+      ELECTRON_ENABLE_LOGGING: "1",
+      CODEX_HOME: runtimeControlDirectory,
+      CLARIFOLD_TEST_USER_DATA_DIR: clarifoldDirectory,
+      CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL: "1",
+      CLARIFOLD_TEST_EXTERNAL_RESEARCH: "stub"
+    },
+    stdio: "pipe"
+  });
+  let output = "";
+  child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+  child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
+  let browser: Browser | undefined;
+  try {
+    const debuggerEndpoint = await waitForDebugger(port, child, () => output);
+    browser = await chromium.connectOverCDP(debuggerEndpoint);
+    const page = await waitForPage(browser, child, () => output);
+    await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
+    await expect(page.getByRole("status", { name: "Clarifold data migration status" }))
+      .toContainText("Migration complete");
+    expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
+    const migratedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
+    expect(JSON.parse(migratedState)).toEqual(JSON.parse(legacyState));
+    await page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter");
+    await expect(page.getByRole("heading", { name: "Mathematical Workbench" })).toBeVisible();
+    await page.close();
+    expect(await waitForExit(child, 5_000)).toBe(true);
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${output}`, { cause: error });
+  } finally {
+    await browser?.close().catch(() => undefined);
+    await terminateChild(child).catch(() => undefined);
+    await legacyApplication.shutdown();
+    await removeTestDirectory(root);
+  }
+});
 
 test("packaged critical source and access journey has an isolated release boundary", async ({}, testInfo) => {
   test.setTimeout(300_000);

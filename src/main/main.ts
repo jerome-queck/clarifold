@@ -31,7 +31,14 @@ import {
   resolveClarifoldRuntimeConfiguration,
   type ClarifoldRuntimeConfiguration
 } from "../shared/clarifold-identity";
-import { legacyQuickStudyDataDirectory, migrateQuickStudyData } from "./clarifold-data-migration";
+import type { MigrationStage, MigrationStatus } from "../shared/clarifold-migration";
+import {
+  legacyQuickStudyDataDirectory,
+  migrateQuickStudyData,
+  migrationStatusFor,
+  migrationStatusForStage
+} from "./clarifold-data-migration";
+import { requireApprovedClarifoldPublicUrl } from "./public-navigation";
 
 let learningApplication: LearningApplication;
 let modelRuntime: ModelRuntime | null = null;
@@ -40,6 +47,8 @@ let modelRuntimeWorkingDirectory: string | null = null;
 const verifierRuns = new Map<string, AbortController>();
 let verifierCompletion: Promise<void> | null = null;
 let runtimeConfiguration!: ClarifoldRuntimeConfiguration;
+let migrationStatus: MigrationStatus | null = null;
+let mainWindow: BrowserWindow | null = null;
 const runtimeLeanCoordinator = new ExclusiveOperationCoordinator();
 const execFileAsync = promisify(execFile);
 const sourceAccess = new MacOsSourceAccess({
@@ -620,9 +629,14 @@ function registerLearningApplicationHandlers(): void {
     if (fixtureLog) await appendFile(fixtureLog, `${approvedUrl}\n`, "utf8");
     else await shell.openExternal(approvedUrl);
   });
+  ipcMain.handle("public:openExternal", async (event, url: unknown) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    await shell.openExternal(requireApprovedClarifoldPublicUrl(url));
+  });
 }
 
 function createWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) return;
   const window = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -636,6 +650,10 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true
     }
+  });
+  mainWindow = window;
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
   });
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -658,27 +676,43 @@ function isFormalVerificationRequest(value: unknown): value is import("../shared
     && typeof request.targetId === "string" && typeof request.claimId === "string";
 }
 
+function registerMigrationStatusHandler(): void {
+  ipcMain.handle("migration:getStatus", (event) => {
+    if (!isTrustedSender(event.senderFrame?.url)) throw new Error("Untrusted renderer.");
+    return migrationStatus;
+  });
+}
+
 void app.whenReady().then(async () => {
+  registerMigrationStatusHandler();
+  const testUserDataDirectory = process.env.CLARIFOLD_TEST_USER_DATA_DIR?.trim();
   runtimeConfiguration = resolveClarifoldRuntimeConfiguration(
     process.env,
-    app.getPath("userData"),
+    testUserDataDirectory || app.getPath("userData"),
     (warning) => console.warn(`[Clarifold configuration] ${warning.message}`)
   );
   if (runtimeConfiguration.dataDirectorySource === "default") {
+    const migrationStages: MigrationStage[] = [];
+    const observeMigrationStage = (stage: MigrationStage): void => {
+      if (migrationStages.at(-1) !== stage) migrationStages.push(stage);
+      migrationStatus = migrationStatusForStage(migrationStages);
+      console.info(`[Clarifold migration] ${stage}`);
+    };
+    migrationStatus = migrationStatusForStage(migrationStages);
+    createWindow();
     const migration = await migrateQuickStudyData({
       sourceDirectory: legacyQuickStudyDataDirectory(runtimeConfiguration.dataDirectory),
       destinationDirectory: runtimeConfiguration.dataDirectory,
       applicationVersion: CLARIFOLD_IDENTITY.version,
-      onStage: (stage) => console.info(`[Clarifold migration] ${stage}`)
+      sourceAccess,
+      onStage: observeMigrationStage
     });
+    migrationStatus = migration.outcome === "not-needed" ? null : migrationStatusFor(migration);
     if (migration.outcome === "blocked" || migration.outcome === "failed") {
-      await dialog.showMessageBox({
-        type: "error",
-        title: "Clarifold data migration needs attention",
-        message: migration.message ?? "Clarifold could not safely prepare its application data.",
-        detail: "Your Quick Study data was left unchanged. Resolve the reported condition, then restart Clarifold to retry."
+      createWindow();
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow();
       });
-      app.quit();
       return;
     }
   }
@@ -699,10 +733,12 @@ void app.whenReady().then(async () => {
       observe: (event) => console.info(`[Lean integrity] ${JSON.stringify(event)}`)
     }
   );
-  const installDefaultVerifier = await verifierEnvironmentManager.defaultInstallationNeeded().catch((error) => {
-    console.error("The default Lean environment could not be inspected:", error);
-    return false;
-  });
+  const installDefaultVerifier = runtimeConfiguration.testSkipDefaultVerifierInstall
+    ? false
+    : await verifierEnvironmentManager.defaultInstallationNeeded().catch((error) => {
+      console.error("The default Lean environment could not be inspected:", error);
+      return false;
+    });
   if (modelRuntimeWorkingDirectory) {
     try {
     modelRuntime = await CodexAppServerRuntime.launch(modelRuntimeWorkingDirectory, runtimeConfiguration.codexPath ?? undefined);

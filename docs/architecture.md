@@ -28,7 +28,7 @@ Formal verification and Codex restoration are one coordinated lifecycle from the
 | `src/shared/model-runtime.ts` | Provider-neutral Model Runtime contract and capability/event vocabulary | Change transport implementations behind the contract; do not persist Codex protocol shapes |
 | `src/shared/external-research.ts` | Provider-neutral external-research request and receipt validation | Keep outbound context and returned evidence bounded and explicit |
 | `src/shared/verifier-runtime.ts` | Formal-verification adapter contract and exact result vocabulary | Record formal status only from an accepted Verifier Runtime receipt |
-| `src/main/main.ts` | Electron lifecycle, IPC registration, adapter composition, shutdown, and bounded process orchestration | Keep it a narrow adapter; validate IPC inputs and trusted senders at the boundary |
+| `src/main/main.ts` and `src/main/public-navigation.ts` | Electron lifecycle, IPC registration, adapter composition, shutdown, bounded process orchestration, and allowlisted public-link opening | Keep them narrow adapters; validate IPC inputs, trusted senders, and exact public destinations at the boundary |
 | `src/main/clarifold-data-migration.ts` and `src/shared/clarifold-identity.ts` | Central product/runtime identity, typed environment configuration, and guarded Quick Study-to-Clarifold default-data migration | Keep compatibility inputs in the adapter; stage, validate, receipt, and atomically activate without mutating the old source |
 | `src/main/preload.ts` | Typed, minimal renderer bridge | Expose explicit operations only; do not pass arbitrary IPC channels or Node capabilities |
 | `src/main/source-access.ts` and native helpers | macOS source selection, bookmark/access lifetime, and bounded extraction | Preserve external ownership of Linked Sources and contain filesystem/native work |
@@ -50,6 +50,7 @@ Agent Work Logs retain internal specialist messages and tool execution records. 
 ## Trust and capability boundaries
 
 - Renderer input, IPC payloads, model output, persisted data, URLs, and native-helper output are untrusted. Validate them at the boundary and fail closed on malformed or unadvertised values.
+- Public Clarifold links use a dedicated exact HTTPS allowlist; ChatGPT authentication URLs remain on their separate authentication-only channel.
 - The preload bridge uses context isolation and does not provide Node integration to the renderer. Main-process IPC checks the sender before handling privileged requests.
 - Model access, external research, filesystem source access, native helpers, and formal verification are separate capabilities. Loss of model access does not disable local work.
 - The Model Runtime lifecycle is explicit and operation-correlated: `paused` during verification, `restoring` while Codex capabilities are re-established, and `available` or `failed` only after the restoration handshake settles. A Verifier Manifest never acts as an implicit readiness signal.

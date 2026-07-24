@@ -10,11 +10,13 @@ import type {
   SessionSearchResult,
   SourceSearchResult
 } from "../../shared/learning-application";
+import type { MigrationStatus } from "../../shared/clarifold-migration";
 
 declare global {
   interface Window {
     clarifold: {
       getState(): Promise<LearningApplicationState>;
+      getMigrationStatus(): Promise<MigrationStatus | null>;
       submit(action: LearnerAction): Promise<LearningApplicationState>;
       getAgentWorkLogEvidence(sessionId: string, fromSequence: number, toSequence: number): Promise<AgentWorkLogEvidence[]>;
       searchSessions(query: string): Promise<SessionSearchResult[]>;
@@ -34,6 +36,7 @@ declare global {
       cancelClaimVerification(runId: string): Promise<void>;
       onStateChanged(listener: (state: LearningApplicationState) => void): () => void;
       openExternal(url: string): Promise<void>;
+      openPublicLink(url: string): Promise<void>;
     };
   }
 }

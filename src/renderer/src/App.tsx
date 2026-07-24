@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
   AgentWorkLogEvidence,
   AnnotationPurpose,
@@ -15,6 +15,8 @@ import type {
   StudyWorkspace,
   TargetDisposition
 } from "../../shared/learning-application";
+import { CLARIFOLD_IDENTITY } from "../../shared/clarifold-identity";
+import type { MigrationStatus } from "../../shared/clarifold-migration";
 import { annotationPurposeLabel } from "../../shared/annotations";
 import { sessionAccessPolicyLabel } from "../../shared/session-access";
 import { SourceLayer } from "./SourceLayer";
@@ -33,14 +35,41 @@ type StateHandler = (state: LearningApplicationState) => void;
 
 export function App() {
   const [state, setState] = useState<LearningApplicationState | null>(null);
+  const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
   const [returnFocusAnchorId, setReturnFocusAnchorId] = useState<string | null>(null);
 
   useEffect(() => {
-    void window.clarifold.getState().then(setState);
-    return window.clarifold.onStateChanged(setState);
+    let active = true;
+    let intervalId: number | undefined;
+    const refresh = async () => {
+      const [nextMigrationStatus, nextState] = await Promise.all([
+        window.clarifold.getMigrationStatus().catch(() => null),
+        window.clarifold.getState().catch(() => null)
+      ]);
+      if (!active) return;
+      setMigrationStatus(nextMigrationStatus);
+      if (nextState) {
+        setState(nextState);
+        if (intervalId !== undefined) window.clearInterval(intervalId);
+      }
+    };
+    void refresh();
+    intervalId = window.setInterval(() => void refresh(), 250);
+    const unsubscribe = window.clarifold.onStateChanged(setState);
+    return () => {
+      active = false;
+      if (intervalId !== undefined) window.clearInterval(intervalId);
+      unsubscribe();
+    };
   }, []);
 
-  if (!state) return <main className="loading">Opening Clarifold…</main>;
+  if (!state) {
+    if (migrationStatus?.outcome === "migrating") return <MigrationProgress status={migrationStatus} />;
+    if (migrationStatus && (migrationStatus.outcome === "blocked" || migrationStatus.outcome === "failed")) {
+      return <MigrationRecovery status={migrationStatus} />;
+    }
+    return <main className="loading">Opening Clarifold…</main>;
+  }
   if (state.persistenceRecovery.status === "blocked") return <StorageRecovery state={state} />;
   if (state.screen === "delayedTransfer" && state.activeDelayedTransferCheckId) {
     return <DelayedTransferCheckScreen state={state} onState={setState} />;
@@ -59,7 +88,41 @@ export function App() {
       }}
     />;
   }
-  return <Dashboard state={state} onState={setState} />;
+  return <Dashboard state={state} onState={setState} migrationStatus={migrationStatus} />;
+}
+
+function MigrationProgress({ status }: { status: MigrationStatus }) {
+  return (
+    <main className="shell">
+      <Brand />
+      <section className="history-card" role="status" aria-labelledby="migration-progress-title">
+        <p className="eyebrow">Data migration in progress</p>
+        <h1 id="migration-progress-title">Preparing Clarifold</h1>
+        <p>{status.message}</p>
+        <p>The old Quick Study directory remains unchanged until Clarifold validates the staged learner data.</p>
+        <p className="subtle">Completed stages: {status.stages.length ? status.stages.join(" → ") : "discovery"}.</p>
+      </section>
+    </main>
+  );
+}
+
+function MigrationRecovery({ status }: { status: MigrationStatus }) {
+  const retryGuidance = status.retryState === "manual-intervention-required"
+    ? "Manual intervention is required: resolve the reported conflict or staging condition before restarting Clarifold."
+    : "The preserved Quick Study data is safe to retry after you resolve the reported condition.";
+  return (
+    <main className="shell">
+      <Brand />
+    <section className="history-card" role="alert" aria-labelledby="migration-recovery-title">
+        <p className="eyebrow">Data migration recovery</p>
+        <h1 id="migration-recovery-title">Clarifold data migration needs attention</h1>
+        <p>{status.message ?? "Clarifold could not safely prepare its application data."}</p>
+        <p>The old Quick Study directory remains unchanged as a rollback source. Clarifold did not merge, overwrite, or delete learner data.</p>
+        <p><strong>Recovery:</strong> {retryGuidance}</p>
+        <p className="subtle">Completed stages: {status.stages.join(" → ")}.</p>
+      </section>
+    </main>
+  );
 }
 
 function StorageRecovery({ state }: { state: LearningApplicationState }) {
@@ -100,7 +163,11 @@ function LearnerOperationNotice({ state }: { state: LearningApplicationState }) 
   </section>;
 }
 
-function Dashboard({ state, onState }: { state: LearningApplicationState; onState: StateHandler }) {
+function Dashboard({
+  state,
+  onState,
+  migrationStatus
+}: { state: LearningApplicationState; onState: StateHandler; migrationStatus: MigrationStatus | null }) {
   const workspace = state.workspaces.find((candidate) => candidate.id === state.navigation.workspaceId)!;
   const mission = state.missions.find((candidate) => candidate.id === state.navigation.missionId) ?? null;
   const resumeSession = state.sessions.find((session) => session.id === state.resumeSessionId) ?? null;
@@ -109,6 +176,7 @@ function Dashboard({ state, onState }: { state: LearningApplicationState; onStat
   return (
     <main className="shell">
       <Brand />
+      <MigrationNotice status={migrationStatus} />
       <LearnerOperationNotice state={state} />
       <div className="dashboard-grid">
         <Hierarchy state={state} onState={onState} />
@@ -135,6 +203,18 @@ function Dashboard({ state, onState }: { state: LearningApplicationState; onStat
       </div>
     </main>
   );
+}
+
+function MigrationNotice({ status }: { status: MigrationStatus | null }) {
+  if (!status || (status.outcome !== "migrated" && status.outcome !== "already-migrated")) return null;
+  const alreadyMigrated = status.outcome === "already-migrated";
+  return <section className="operation-notice" role="status" aria-label="Clarifold data migration status">
+    <p><strong>{alreadyMigrated ? "Migration verified:" : "Migration complete:"}</strong>{" "}
+      {alreadyMigrated
+        ? "Clarifold verified the existing learner state and preserved the Quick Study rollback source."
+        : "Your Quick Study learner state is now available in Clarifold. The old directory remains unchanged as a rollback source. Do not run both directories concurrently; they can diverge and are not synchronized."}
+    </p>
+  </section>;
 }
 
 function DelayedTransferPrompt({ session, onState }: { session: LearningSession; onState: StateHandler }) {
@@ -488,6 +568,7 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
     <section className="settings-card" aria-labelledby="application-settings-title">
       <p className="eyebrow">Settings</p>
       <h2 id="application-settings-title">Application settings</h2>
+      <AboutClarifold />
       <label className="confirmation-preference">
         <input
           type="checkbox"
@@ -506,10 +587,10 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
         <p><strong>Privacy and access defaults:</strong> learner work is stored locally. Linked Sources stay in their original locations and are read-only. Model access, external research, and Source Excerpt Egress remain separate, visible controls.</p>
         <p><strong>Recovery:</strong> Local Working Mode keeps local study available when Codex cannot be reached. Missing sources retain their identity and offer Retry or Locate again. Unfinished Agent Tasks require explicit resume after relaunch.</p>
         <p><strong>Known beta limitation:</strong> this evaluation build is not a public distribution and makes no claim beyond its documented platform and verifier profile.</p>
-        <p><a href="https://github.com/jerome-queck/clarifold/issues/new"
+        <p><a href={CLARIFOLD_IDENTITY.feedbackUrl}
           onClick={(event) => {
             event.preventDefault();
-            void window.clarifold.openExternal(event.currentTarget.href);
+          void window.clarifold.openPublicLink(event.currentTarget.href);
           }}>Report beta feedback</a></p>
       </section>
       <div className="verifier-environment" aria-labelledby="lean-environment-title">
@@ -605,6 +686,36 @@ function ApplicationSettings({ state, onState }: { state: LearningApplicationSta
       </div>
     </section>
   );
+}
+
+function AboutClarifold() {
+  return (
+    <section className="beta-support" role="region" aria-labelledby="about-clarifold-title">
+      <p className="eyebrow">Identity and boundaries</p>
+      <h3 id="about-clarifold-title">About Clarifold</h3>
+      <p><strong>{CLARIFOLD_IDENTITY.descriptor}.</strong> {CLARIFOLD_IDENTITY.promise}.</p>
+      <p>Build {CLARIFOLD_IDENTITY.version} · bundle {CLARIFOLD_IDENTITY.bundleIdentifier} · {CLARIFOLD_IDENTITY.betaStatus}. Maintained by {CLARIFOLD_IDENTITY.ownerName}.</p>
+      <p>{CLARIFOLD_IDENTITY.copyrightNotice}</p>
+      <p>Clarifold is source available under the <strong>{CLARIFOLD_IDENTITY.licenseName}</strong>; this is not an open-source licence and does not grant commercial or Clarifold-brand permission.</p>
+      <p><strong>Licensing:</strong> case-by-case commercial permission requests go to {CLARIFOLD_IDENTITY.licensingContact}; software permission and Clarifold-brand permission are separate.</p>
+      <p><strong>Limits:</strong> {CLARIFOLD_IDENTITY.limitations}</p>
+      <p><strong>Learner data:</strong> stored locally in Electron's application data directory by default. Linked Sources remain in their original locations. Learners control what they save, send, export, and delete; use the visible artifact export controls and normal local-data controls for those actions.</p>
+      <p><strong>Recovery:</strong> the old Quick Study data directory remains an intact rollback source after migration. Clarifold never silently merges or deletes competing learner histories. Do not run Quick Study and Clarifold concurrently after migration: their retained directories can diverge and are not synchronized.</p>
+      <p><strong>Security:</strong> use GitHub <OpenExternalLink href={CLARIFOLD_IDENTITY.securityUrl}>Private Vulnerability Reporting</OpenExternalLink> or email security@{CLARIFOLD_IDENTITY.contactDomain}. Product feedback uses the <OpenExternalLink href={CLARIFOLD_IDENTITY.feedbackUrl}>public issue chooser</OpenExternalLink>; do not include private learner material.</p>
+      <p className="about-links">
+        <OpenExternalLink href={CLARIFOLD_IDENTITY.repositoryUrl}>Repository</OpenExternalLink>{" · "}
+        <OpenExternalLink href={CLARIFOLD_IDENTITY.privacyUrl}>Privacy notice</OpenExternalLink>{" · "}
+        <OpenExternalLink href={CLARIFOLD_IDENTITY.licenseUrl}>License</OpenExternalLink>
+      </p>
+    </section>
+  );
+}
+
+function OpenExternalLink({ href, children }: { href: string; children: ReactNode }) {
+  return <a href={href} onClick={(event) => {
+    event.preventDefault();
+    void window.clarifold.openPublicLink(href);
+  }}>{children}</a>;
 }
 
 function verifierEnvironmentLabel(status: LearningApplicationState["verifierEnvironment"]["status"]): string {

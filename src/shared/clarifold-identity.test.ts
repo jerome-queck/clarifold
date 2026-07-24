@@ -12,7 +12,14 @@ describe("Clarifold identity configuration", () => {
       packageName: "clarifold",
       version: "0.2.0",
       bundleIdentifier: "org.jeromegroup.clarifold",
-      legacyProductName: "Quick Study"
+      legacyProductName: "Quick Study",
+      ownerName: "Jerome Queck",
+      copyrightNotice: expect.stringContaining("Jerome Queck"),
+      licenseUrl: "https://github.com/jerome-queck/clarifold/blob/main/LICENSE.md",
+      limitations: expect.stringContaining("does not guarantee mastery"),
+      repositoryUrl: "https://github.com/jerome-queck/clarifold",
+      licenseName: "PolyForm Noncommercial 1.0.0",
+      betaStatus: "source-available beta"
     });
   });
 

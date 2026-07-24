@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentTask, LearningApplicationState, LearningSession } from "../../shared/learning-application";
+import type { MigrationStatus } from "../../shared/clarifold-migration";
 import { App } from "./App";
 import { toDateTimeLocal } from "./date-time";
 
@@ -27,9 +28,74 @@ describe("anchored teaching workbench", () => {
     expect(release.textContent).toContain("not a public distribution");
     const feedback = within(release).getByRole("link", { name: "Report beta feedback" });
     expect(feedback.getAttribute("href"))
-      .toBe("https://github.com/jerome-queck/clarifold/issues/new");
+      .toBe("https://github.com/jerome-queck/clarifold/issues/new/choose");
     await user.click(feedback);
-    expect(api.openExternal).toHaveBeenCalledWith("https://github.com/jerome-queck/clarifold/issues/new");
+    expect(api.openPublicLink).toHaveBeenCalledWith("https://github.com/jerome-queck/clarifold/issues/new/choose");
+  });
+
+  it("shows Clarifold identity, legal, privacy, and learner-data boundaries", async () => {
+    const state = workbenchState();
+    state.screen = "dashboard";
+    state.activeSessionId = null;
+    window.clarifold = quickStudyApi(state);
+
+    render(<App />);
+
+    const settings = await screen.findByRole("region", { name: "Application settings" });
+    const about = within(settings).getByRole("region", { name: "About Clarifold" });
+    expect(about.textContent).toContain("The advanced mathematics learning workbench");
+    expect(about.textContent).toContain("Build 0.2.0");
+    expect(about.textContent).toContain("source-available beta");
+    expect(about.textContent).toContain("Jerome Queck");
+    expect(about.textContent).toContain("© 2026 Jerome Queck");
+    expect(about.textContent).toContain("PolyForm Noncommercial 1.0.0");
+    expect(about.textContent).toContain("not an open-source licence");
+    expect(about.textContent).toContain("does not guarantee mastery");
+    expect(about.textContent).toContain("stored locally");
+    expect(about.textContent).toContain("export, and delete");
+    expect(about.textContent).toContain("Private Vulnerability Reporting");
+  });
+
+  it("shows recoverable migration guidance when the default data directory cannot be prepared", async () => {
+    const state = workbenchState();
+    const api = quickStudyApi(state);
+    const migration: MigrationStatus = {
+      outcome: "blocked",
+      stages: ["discovery", "preflight", "recovery", "complete"],
+      reason: "destination-conflict",
+      retryState: "manual-intervention-required",
+      message: "The Clarifold data directory already contains data; automatic migration will not merge or overwrite it."
+    };
+    vi.mocked(api.getState).mockRejectedValue(new Error("Migration blocked before application startup."));
+    vi.mocked(api.getMigrationStatus).mockResolvedValue(migration);
+    window.clarifold = api;
+
+    render(<App />);
+
+    const recovery = await screen.findByRole("alert", { name: "Clarifold data migration needs attention" });
+    expect(recovery.textContent).toContain("already contains data");
+    expect(recovery.textContent).toContain("old Quick Study directory remains unchanged");
+    expect(recovery.textContent).toContain("Manual intervention");
+    expect(screen.queryByRole("button", { name: "Leave session" })).toBeNull();
+  });
+
+  it("shows migration progress while the learner data is being prepared", async () => {
+    const state = workbenchState();
+    const api = quickStudyApi(state);
+    const migration: MigrationStatus = {
+      outcome: "migrating",
+      stages: ["discovery", "staging-copy"],
+      message: "Clarifold is safely staging the old Quick Study learner data."
+    };
+    vi.mocked(api.getState).mockRejectedValue(new Error("Application state is not ready yet."));
+    vi.mocked(api.getMigrationStatus).mockResolvedValue(migration);
+    window.clarifold = api;
+
+    render(<App />);
+
+    const progress = await screen.findByRole("status", { name: "Preparing Clarifold" });
+    expect(progress.textContent).toContain("safely staging");
+    expect(progress.textContent).toContain("old Quick Study directory remains unchanged");
   });
 
   it("shows a blocking recoverable error when stored learner state cannot be migrated", async () => {
@@ -399,6 +465,7 @@ describe("anchored teaching workbench", () => {
     const state = workbenchState();
     window.clarifold = {
       getState: vi.fn().mockResolvedValue(state),
+      getMigrationStatus: vi.fn().mockResolvedValue(null),
       submit: vi.fn().mockResolvedValue(state),
       getAgentWorkLogEvidence: vi.fn().mockResolvedValue([{
         sequence: 1,
@@ -421,7 +488,8 @@ describe("anchored teaching workbench", () => {
       verifyClaim: vi.fn().mockResolvedValue(state),
       cancelClaimVerification: vi.fn().mockResolvedValue(undefined),
       onStateChanged: vi.fn().mockReturnValue(() => undefined),
-      openExternal: vi.fn()
+      openExternal: vi.fn(),
+      openPublicLink: vi.fn()
     };
 
     render(<App />);
@@ -1661,7 +1729,8 @@ describe("Linked Source recovery", () => {
 
 function quickStudyApi(state: LearningApplicationState): typeof window.clarifold {
   return {
-    getState: vi.fn().mockResolvedValue(state), submit: vi.fn().mockResolvedValue(state),
+    getState: vi.fn().mockResolvedValue(state), getMigrationStatus: vi.fn().mockResolvedValue(null),
+    submit: vi.fn().mockResolvedValue(state),
     getAgentWorkLogEvidence: vi.fn().mockResolvedValue([]), searchSessions: vi.fn().mockResolvedValue([]),
     linkPrimaryFolder: vi.fn(), linkExternalAttachment: vi.fn(), openLinkedSource: vi.fn(),
     locateLinkedSource: vi.fn(), preserveSourceSnapshot: vi.fn(),
@@ -1671,7 +1740,7 @@ function quickStudyApi(state: LearningApplicationState): typeof window.clarifold
     shareLearningArtifact: vi.fn().mockResolvedValue({ status: "shared", path: "/tmp/artifact.md" }),
     verifyClaim: vi.fn().mockResolvedValue(state),
     cancelClaimVerification: vi.fn().mockResolvedValue(undefined),
-    onStateChanged: vi.fn().mockReturnValue(() => undefined), openExternal: vi.fn()
+    onStateChanged: vi.fn().mockReturnValue(() => undefined), openExternal: vi.fn(), openPublicLink: vi.fn()
   };
 }
 
