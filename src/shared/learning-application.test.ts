@@ -1367,11 +1367,16 @@ describe("Learning Application", () => {
     };
     const restoration = application.restoreModelRuntime(replacement, operationId);
     await vi.waitFor(() => expect(application.getState().modelRuntimeLifecycle.status).toBe("restoring"));
+    await expect(application.submit({
+      type: "synthesizeLearningArtifact", artifactId, confirmWholeArtifact: true
+    })).rejects.toThrow("Codex is restoring after the Bundled Lean Runtime completed its exact-claim check.");
+    await application.submit({ type: "editLearningGoal", value: "Concurrent local edit survives restoration" });
     releaseAuthentication();
     const restored = await restoration;
     unsubscribe();
 
     expect(restored.modelRuntimeLifecycle).toMatchObject({ status: "available", operationId });
+    expect(restored.sessions[0].learningGoal).toBe("Concurrent local edit survives restoration");
     expect(events.at(-1)).toMatchObject({
       modelRuntimeLifecycle: { status: "available", operationId },
       verifierManifests: expect.arrayContaining([expect.objectContaining({ id: request.runId })])

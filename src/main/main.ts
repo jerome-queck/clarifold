@@ -462,10 +462,11 @@ function registerLearningApplicationHandlers(): void {
             })}`);
           }
           if (controller.signal.aborted) throw new Error("Formal verification was canceled before Lean started.");
-          const checked = await learningApplication.runFormalVerification(sessionId, request, controller.signal, {
-            publish: !restartModelRuntime,
-            operationId: restartModelRuntime ? restorationOperationId : null
-          });
+          const checked = restartModelRuntime
+            ? await learningApplication.runFormalVerification(sessionId, request, controller.signal, {
+                publish: false, operationId: restorationOperationId
+              })
+            : await learningApplication.runFormalVerification(sessionId, request, controller.signal);
           const outcome = checked.verifierManifests
             .find((manifest) => manifest.id === request.runId)?.commandOutcome ?? "unknown";
           console.info(`[Lean verification] ${JSON.stringify({

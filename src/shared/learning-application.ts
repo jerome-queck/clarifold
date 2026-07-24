@@ -531,6 +531,24 @@ export interface FormalVerificationRequest {
   claimId: string;
 }
 
+interface DeferredFormalVerification {
+  operationId: string;
+  manifest: VerifierManifest;
+  sessionId: string;
+  target: FormalVerificationRequest["target"];
+  targetId: string;
+  claimId: string;
+  claimRevisionId: string;
+  verificationGaps: VerificationGap[];
+  verificationEscalation: VerificationEscalation;
+  verifierEnvironmentStatus: VerifierEnvironmentState["status"] | null;
+  verifierEnvironmentError: string | null;
+}
+
+type FormalVerificationRunOptions =
+  | { publish?: true }
+  | { publish: false; operationId: string };
+
 export interface VerifierManifest {
   id: string;
   sessionId: string;
@@ -1499,10 +1517,7 @@ export class LearningApplication {
   private readonly accessDecisionWaiters = new Map<string, (decision: RuntimeAccessDecision) => void>();
   private activeModelRuntimeOperations = 0;
   private readonly modelRuntimesPendingShutdown = new Set<ModelRuntime>();
-  private deferredFormalVerification: {
-    operationId: string | null;
-    state: LearningApplicationState;
-  } | null = null;
+  private deferredFormalVerification: DeferredFormalVerification | null = null;
   private readonly researchWorks = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly stateListeners = new Set<(state: LearningApplicationState) => void>();
   private readonly queuedLearnerActions: Array<{
@@ -1623,6 +1638,7 @@ export class LearningApplication {
           `Codex Runtime could not report supported model choices. ${usefulRuntimeError(error)}`
         ));
       }
+      application.synchronizeModelRuntimeLifecycleWithAuthentication();
     } else {
       application.state.runtimeAvailable = false;
       application.state.modelRuntimePausedForFormalVerification = false;
@@ -2059,9 +2075,11 @@ export class LearningApplication {
     sessionId: string,
     request: FormalVerificationRequest,
     signal?: AbortSignal,
-    options: { publish?: boolean; operationId?: string | null } = {}
+    options: FormalVerificationRunOptions = {}
   ): Promise<LearningApplicationState> {
-    const publishedState = options.publish === false ? this.getState() : null;
+    if (options.publish === false && !options.operationId) {
+      throw new Error("Deferred formal verification requires a correlated Model Runtime restoration operation.");
+    }
     if (options.publish === false && this.deferredFormalVerification) {
       throw new Error("A formal verification result is already awaiting Model Runtime restoration.");
     }
@@ -2116,33 +2134,47 @@ export class LearningApplication {
       evidenceLocation: result.evidenceLocation || null,
       createdAt: new Date().toISOString()
     };
-    this.state.verifierManifests.push(manifest);
-    this.refreshVerifierManifestReferences();
-    if (result.outcome === "versionMismatch") {
-      this.state.verifierEnvironment.status = "cleanupRequired";
-      this.state.verifierEnvironment.error = result.diagnostics;
-    }
+    let verificationGaps: VerificationGap[];
+    let verificationEscalation: VerificationEscalation;
     if (result.outcome === "accepted" && formalization) {
       const priorManifestIds = new Set(this.state.verifierManifests
         .filter((candidate) => candidate.id !== manifest.id && candidate.claimRevisionId === revision.id
           && candidate.claimId === claim.claimId && candidate.formalStatement === formalization.formalStatement)
         .map((candidate) => candidate.id));
-      claim.verificationGaps = claim.verificationGaps.filter((gap) => !gap.evidenceId || !priorManifestIds.has(gap.evidenceId));
-      claim.verificationEscalation = escalationForEvidence(claim.verificationEvidence, claim.verificationGaps);
+      verificationGaps = claim.verificationGaps.filter((gap) => !gap.evidenceId || !priorManifestIds.has(gap.evidenceId));
+      verificationEscalation = escalationForEvidence(claim.verificationEvidence, verificationGaps);
     } else {
-      claim.verificationGaps.push({
+      verificationGaps = [...claim.verificationGaps, {
         id: crypto.randomUUID(),
         reason: verifierOutcomeMessage(result.outcome, result.diagnostics),
         affectedConclusion: claim.claimStatement,
         evidenceId: manifest.id
-      });
-      claim.verificationEscalation = escalationForEvidence(claim.verificationEvidence, claim.verificationGaps);
+      }];
+      verificationEscalation = escalationForEvidence(claim.verificationEvidence, verificationGaps);
     }
-    if (options.publish !== false) return this.publishAndPersist();
-    const completedState = this.getState();
-    this.deferredFormalVerification = { operationId: options.operationId ?? null, state: completedState };
-    this.state = publishedState!;
-    return completedState;
+    const deferred: DeferredFormalVerification = {
+      operationId: options.publish === false ? options.operationId : "",
+      manifest,
+      sessionId,
+      target: request.target,
+      targetId: request.targetId,
+      claimId: request.claimId,
+      claimRevisionId: revision.id,
+      verificationGaps,
+      verificationEscalation,
+      verifierEnvironmentStatus: result.outcome === "versionMismatch" ? "cleanupRequired" : null,
+      verifierEnvironmentError: result.outcome === "versionMismatch" ? result.diagnostics : null
+    };
+    if (options.publish !== false) {
+      applyFormalVerificationDeltaToState(this.state, deferred);
+      return this.publishAndPersist();
+    }
+    this.deferredFormalVerification = {
+      ...deferred
+    };
+    const preview = this.getState();
+    applyFormalVerificationDeltaToState(preview, deferred);
+    return preview;
   }
 
   async assessVerificationEscalation(
@@ -2611,6 +2643,7 @@ export class LearningApplication {
       await this.stopModelRuntimeForShutdown(modelRuntime);
       throw new Error("Codex cannot restart while the application is closing.");
     }
+    if (operationId) this.assertModelRuntimeOperation(operationId, "restoring");
     if (this.modelRuntime !== modelRuntime) this.modelRuntimesPendingShutdown.add(modelRuntime);
     if (this.modelRuntime && this.modelRuntime !== modelRuntime) {
       const previousRuntime = this.modelRuntime;
@@ -2624,7 +2657,6 @@ export class LearningApplication {
     }
     this.modelRuntimesPendingShutdown.delete(modelRuntime);
     if (operationId) {
-      this.assertModelRuntimeOperation(operationId, "restoring");
       this.state.runtimeAvailable = false;
       this.state.modelRuntimePausedForFormalVerification = true;
       this.state.modelAccess = {
@@ -2664,9 +2696,6 @@ export class LearningApplication {
       await this.reportModelRuntimeFailure(restorationError, operationId);
       throw restorationError;
     }
-    this.state.runtimeAvailable = true;
-    this.state.modelRuntimePausedForFormalVerification = false;
-    this.state.modelRuntimeLifecycle = modelRuntimeLifecycleState("available", operationId);
     this.updateAuthentication(authentication!);
     this.state.runtimeCapabilities = capabilities!;
     clearUnsupportedRuntimeOverrides(this.state.sessions, this.state.runtimeCapabilities);
@@ -2768,16 +2797,7 @@ export class LearningApplication {
     if (deferred.operationId !== operationId) {
       throw new Error("The formal-verification result belongs to a different Codex restoration operation.");
     }
-    const runtimeState = {
-      runtimeAvailable: this.state.runtimeAvailable,
-      modelRuntimePausedForFormalVerification: this.state.modelRuntimePausedForFormalVerification,
-      modelRuntimeLifecycle: this.state.modelRuntimeLifecycle,
-      runtimeCapabilities: this.state.runtimeCapabilities,
-      authentication: this.state.authentication,
-      modelAccess: this.state.modelAccess
-    };
-    this.state = deferred.state;
-    Object.assign(this.state, runtimeState);
+    applyFormalVerificationDeltaToState(this.state, deferred);
     this.deferredFormalVerification = null;
   }
 
@@ -4735,6 +4755,7 @@ export class LearningApplication {
           await this.withModelRuntimeOperation(async () => {
             await runtime.loginWithApiKey(action.apiKey);
             this.updateAuthentication(await runtime.getAuthentication());
+            this.synchronizeModelRuntimeLifecycleWithAuthentication();
           });
         } catch (error) {
           this.state.authentication = failedAuthentication("apiKey", error);
@@ -4747,6 +4768,7 @@ export class LearningApplication {
         try {
           const runtime = this.modelRuntime;
           this.updateAuthentication(await this.withModelRuntimeOperation(() => runtime.getAuthentication()));
+          this.synchronizeModelRuntimeLifecycleWithAuthentication();
         } catch (error) {
           this.state.authentication = failedAuthentication(null, error);
           this.applyModelAccessFailure(error);
@@ -6325,17 +6347,25 @@ export class LearningApplication {
     this.state.modelAccess = message === null
       ? { status: "available" }
       : { status: "unavailable", cause: "authentication", message };
-    this.state.modelRuntimeLifecycle = authentication.status === "signedIn"
-      ? modelRuntimeLifecycleState("available", this.state.modelRuntimeLifecycle.operationId)
-      : modelRuntimeLifecycleState("failed", this.state.modelRuntimeLifecycle.operationId, message);
+  }
+
+  private synchronizeModelRuntimeLifecycleWithAuthentication(): void {
+    if (this.state.modelRuntimeLifecycle.status === "paused" || this.state.modelRuntimeLifecycle.status === "restoring") return;
+    const message = this.state.modelAccess.status === "available" ? null : this.state.modelAccess.message;
+    this.state.modelRuntimeLifecycle = modelRuntimeLifecycleState(
+      this.state.modelAccess.status === "available" ? "available" : "failed",
+      this.state.modelRuntimeLifecycle.operationId,
+      message
+    );
   }
 
   private requireModelAccess(): void {
     const modelAccess = this.state.modelAccess;
-    if (!this.modelRuntime || modelAccess.status === "unavailable") {
-      throw new Error(modelAccess.status === "unavailable"
-        ? modelAccess.message
-        : "Connect a Model Runtime before starting model-backed teaching.");
+    if (!this.modelRuntime || this.state.modelRuntimeLifecycle.status !== "available" || modelAccess.status === "unavailable") {
+      throw new Error(this.state.modelRuntimeLifecycle.message
+        ?? (modelAccess.status === "unavailable"
+          ? modelAccess.message
+          : "Codex Runtime is not ready for model-backed work."));
     }
   }
 
@@ -8030,6 +8060,41 @@ function modelRuntimeLifecycleState(
   message: string | null = null
 ): ModelRuntimeLifecycle {
   return { status, operationId, message };
+}
+
+function applyFormalVerificationDeltaToState(
+  state: LearningApplicationState,
+  delta: DeferredFormalVerification
+): void {
+  if (state.verifierManifests.some((manifest) => manifest.id === delta.manifest.id)) {
+    throw new Error("Verifier run identifier has already been used.");
+  }
+  state.verifierManifests.push(structuredClone(delta.manifest));
+  if (delta.verifierEnvironmentStatus) {
+    state.verifierEnvironment.status = delta.verifierEnvironmentStatus;
+    state.verifierEnvironment.error = delta.verifierEnvironmentError;
+  }
+  for (const environment of state.verifierEnvironment.environments) {
+    environment.manifestReferences = state.verifierManifests
+      .filter((manifest) => manifest.environment.id === environment.environment.id).length;
+  }
+  const session = state.sessions.find((candidate) => candidate.id === delta.sessionId);
+  if (!session) return;
+  let revision: TeachingCardRevision | LearningArtifactRevision;
+  try {
+    revision = claimCheckRevision(session, delta.target, delta.targetId);
+  } catch {
+    return;
+  }
+  if (revision.id !== delta.claimRevisionId) return;
+  let claim: ClaimVerificationState;
+  try {
+    claim = requireClaimVerification(revision, delta.claimId);
+  } catch {
+    return;
+  }
+  claim.verificationGaps = structuredClone(delta.verificationGaps);
+  claim.verificationEscalation = structuredClone(delta.verificationEscalation);
 }
 
 function migrateModelRuntimeLifecycle(value: unknown, runtimeAvailable: boolean): ModelRuntimeLifecycle {
