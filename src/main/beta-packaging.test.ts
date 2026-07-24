@@ -24,6 +24,8 @@ describe("macOS beta release contract", () => {
       "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8",
     );
     expect(notice).toContain("Required Notice: Copyright © 2026 Jerome Queck");
+    expect(notice).toContain("sole current copyright owner");
+    expect(notice).toContain("name, icon, logo, and product identity are reserved");
     expect(notice).toContain("Clarifold");
     expect(thirdPartyNotices).toContain("Electron 43.1.1");
     expect(thirdPartyNotices).toContain("Lean toolchain");

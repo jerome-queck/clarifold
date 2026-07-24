@@ -20,8 +20,11 @@ including personal study, research, experimentation, and use by qualifying
 noncommercial organizations. It does not grant commercial permission; request
 written permission at [licensing@jeromegroup.org](mailto:licensing@jeromegroup.org)
 before a commercial use. Jerome Queck reviews requests case by case, and
-sending a request grants no rights. Software permission and permission to use
-the Clarifold name, icon, or product identity are separate decisions.
+sending a request grants no rights. A request should identify the requester
+and organization, intended product or service, expected users, proposed use
+or modification, distribution, and revenue model. Software permission and
+permission to use the Clarifold name, icon, or product identity are separate
+decisions.
 
 The [brand and copyright notice](NOTICE) reserves Clarifold and its logo to
 Jerome Queck. Accurate references such as “forked from Clarifold” are allowed,
