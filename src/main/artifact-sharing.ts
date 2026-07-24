@@ -12,7 +12,7 @@ export class MacOsArtifactSharing implements ArtifactSharing {
   constructor(private readonly temporaryDirectory: string) {}
 
   async share(copy: ArtifactPortableCopy): Promise<ArtifactShareResult> {
-    const shareDirectory = join(this.temporaryDirectory, "quick-study-artifact-shares", randomUUID());
+    const shareDirectory = join(this.temporaryDirectory, "clarifold-artifact-shares", randomUUID());
     await mkdir(shareDirectory, { recursive: true });
     const sharePath = join(shareDirectory, copy.suggestedFilename);
     await writeFile(sharePath, copy.content, "utf8");

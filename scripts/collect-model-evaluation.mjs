@@ -15,7 +15,7 @@ const requestedModel = process.env.CLARIFOLD_EVALUATION_MODEL ?? "runtimeDefault
 const reasoningEffort = process.env.CLARIFOLD_EVALUATION_REASONING ?? "medium";
 const scenarioFilter = process.env.CLARIFOLD_EVALUATION_SCENARIO ?? null;
 const policyVersion = 3;
-const runtimeDirectory = await mkdtemp(join(tmpdir(), "quick-study-model-evaluation-"));
+const runtimeDirectory = await mkdtemp(join(tmpdir(), "clarifold-model-evaluation-"));
 const candidateCommit = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const worktreeStatus = execFileSync("/usr/bin/git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
 if (worktreeStatus) throw new Error("Release model evidence requires a clean, committed candidate worktree.");

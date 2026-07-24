@@ -35,7 +35,7 @@ Formal verification and Codex restoration are one coordinated lifecycle from the
 | `src/main/lean-environment-manager.ts` and `src/main/lean-verifier.ts` | Staged, validated, removable Verifier Environment lifecycle and bounded Lean execution | Never report readiness before integrity and reference-proof checks succeed |
 | `src/main/codex-app-server.ts` | Codex App Server Model Runtime transport | Translate transport lifecycle and failures into the provider-neutral contract |
 | `src/renderer/` | Mathematical Workbench views, transient view state, accessible controls, and learner-visible status | Use preload APIs and application state; do not duplicate persistence or orchestration rules |
-| `tests/packaged-quick-study.spec.ts` | Packaged behavior across renderer, preload, main, filesystem, packaging, and relaunch | Reserve coverage for critical journeys and use accessible public controls |
+| `tests/packaged-clarifold.spec.ts` | Packaged behavior across renderer, preload, main, filesystem, packaging, and relaunch | Reserve coverage for critical journeys and use accessible public controls |
 
 ## Durable state and persistence
 

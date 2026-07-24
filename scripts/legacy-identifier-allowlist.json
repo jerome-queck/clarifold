@@ -1,0 +1,120 @@
+{
+  "patterns": {
+    "event-reference": "openai-build-week|openai\\s+build\\s+week|devpost|codex-feedback-session|/feedback\\b",
+    "legacy-product-name": "\\bQuick Study\\b",
+    "legacy-slug": "quick-study(?:-[a-z0-9]+)*",
+    "legacy-environment-variable": "\\bQUICK_STUDY_[A-Z0-9_]+\\b"
+  },
+  "excludedDirectories": [
+    ".git",
+    ".agents",
+    ".claude",
+    ".private",
+    ".signing",
+    ".vite",
+    "coverage",
+    "dist",
+    "node_modules",
+    "out",
+    "test-results"
+  ],
+  "excludedPaths": [
+    "scripts/check-documentation.mjs",
+    "scripts/legacy-identifier-audit.mjs",
+    "scripts/legacy-identifier-allowlist.json",
+    "scripts/policy.test.mjs"
+  ],
+  "textExtensions": [
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".mjs",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yml",
+    ".yaml"
+  ],
+  "rules": [
+    {
+      "id": "historical-event-records",
+      "category": "historical",
+      "paths": [
+        "docs/adr/0036-remove-build-week-specific-governance.md",
+        "docs/adr/0038-set-repository-metadata-and-defer-a-website.md",
+        "docs/adr/0029-name-the-product-clarifold.md",
+        "docs/research/clarifold-identity-migration.md"
+      ],
+      "patterns": ["event-reference", "legacy-product-name", "legacy-slug"]
+    },
+    {
+      "id": "historical-product-records",
+      "category": "historical",
+      "paths": [
+        "docs/adr/0035-curate-public-releases.md",
+        "docs/research/cross-platform-desktop-stack.md",
+        "docs/research/clarifold-identity-migration.md",
+        "evaluation/benchmarks/v2/README.md",
+        "evaluation/studies/v1/moderated-learning-study.md"
+      ],
+      "patterns": ["legacy-product-name", "legacy-slug"]
+    },
+    {
+      "id": "durable-domain-language",
+      "category": "durable domain language",
+      "paths": [
+        "CONTEXT.md",
+        "PRIVACY.md",
+        "README.md",
+        "docs/adr/0026-give-loose-intakes-a-quick-study-home.md",
+        "docs/adr/0029-name-the-product-clarifold.md",
+        "docs/adr/0030-separate-product-development-and-architecture-docs.md",
+        "docs/architecture.md",
+        "docs/beta-release.md",
+        "docs/clarifold-brand-brief.md",
+        "docs/development.md",
+        "src/shared/bundled-verifier-environment.json",
+        "src/shared/clarifold-identity.json",
+        "src/main/clarifold-data-migration.ts",
+        "src/renderer/src/App.tsx",
+        "src/shared/learning-application.ts",
+        "tests/packaged-clarifold.spec.ts"
+      ],
+      "patterns": ["legacy-product-name", "legacy-slug"]
+    },
+    {
+      "id": "durable-persisted-identifiers",
+      "category": "durable domain language",
+      "paths": [
+        "src/main/source-access.ts",
+        "src/shared/bundled-verifier-environment.json",
+        "src/shared/learning-application.ts"
+      ],
+      "patterns": ["legacy-slug"]
+    },
+    {
+      "id": "approved-beta-compatibility",
+      "category": "approved compatibility",
+      "paths": [
+        "PRIVACY.md",
+        "README.md",
+        "docs/adr/0029-name-the-product-clarifold.md",
+        "docs/beta-release.md",
+        "docs/development.md",
+        "docs/research/clarifold-identity-migration.md",
+        "src/shared/clarifold-identity.json",
+        "src/shared/clarifold-identity.test.ts"
+      ],
+      "patterns": ["legacy-environment-variable"]
+    },
+    {
+      "id": "non-operative-test-fixtures",
+      "category": "historical",
+      "paths": ["**/*.test.ts", "**/*.test.tsx", "tests/**"],
+      "patterns": ["legacy-product-name", "legacy-slug"]
+    }
+  ]
+}
