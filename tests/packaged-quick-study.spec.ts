@@ -268,14 +268,14 @@ test("packaged verifier and artifact journey keeps lifecycle evidence across rei
     await scenario.action("Resume session after Lean reinstall", () => page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter"));
     await scenario.action("Check exact claim after Lean reinstall", () => claimTrust.getByRole("button", { name: "Check exact claim 1 with bundled Lean" }).press("Enter"));
     await expect(claimTrust.getByRole("article", { name: "Verifier Manifest" })).toHaveCount(2, { timeout: 60_000 });
-    const lifecycleAfterManifest = await page.evaluate(() => window.quickStudy.getState().modelRuntimeLifecycle);
+    const lifecycleAfterManifest = await page.evaluate(async () => (await window.quickStudy.getState()).modelRuntimeLifecycle);
     expect(lifecycleAfterManifest).toMatchObject({ status: "available", operationId: expect.any(String) });
     const restorationOperationId = lifecycleAfterManifest.operationId;
     await scenario.action("Wait for Codex runtime restoration after Lean verification", async () => {
       await expect(page.getByRole("status", { name: "Model access" })).toContainText("Model teaching available", {
         timeout: PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS
       });
-      await expect.poll(() => page.evaluate(() => window.quickStudy.getState().modelRuntimeLifecycle), {
+      await expect.poll(() => page.evaluate(async () => (await window.quickStudy.getState()).modelRuntimeLifecycle), {
         timeout: PACKAGED_VERIFIER_LIFECYCLE_BUDGET_MS
       }).toMatchObject({ status: "available", operationId: restorationOperationId });
     });
