@@ -30,11 +30,12 @@ test("legacy identifier audit rejects an unexplained stale identifier", async ()
 test("legacy identifier audit rejects a new occurrence in an allowlisted file", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-occurrence-"));
   await mkdir(path.join(rootDir, "src", "shared"), { recursive: true });
-  await writeFile(path.join(rootDir, "src", "shared", "learning-application.ts"), "const label = 'Quick Study product download';\n");
+  await writeFile(path.join(rootDir, "src", "shared", "learning-application.ts"), "const label = 'Quick Study product download QuickStudy.app';\n");
 
   const result = await auditLegacyIdentifiers({ rootDir });
 
   assert.match(result.errors.join("\n"), /durable-domain-language: expected 57 legacy-product-name occurrences, found 1/);
+  assert.match(result.errors.join("\n"), /durable-domain-language: expected 31 legacy-concatenated-identifier occurrences, found 1/);
 });
 
 test("legacy identifier audit rejects unapproved legacy environment variables", async () => {
@@ -53,6 +54,15 @@ test("legacy identifier audit rejects concatenated legacy identifiers", async ()
   const result = await auditLegacyIdentifiers({ rootDir });
 
   assert.match(result.errors.join("\n"), /QuickStudyRuntimeHealth/);
+});
+
+test("legacy identifier audit scans extensionless text files", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-extensionless-"));
+  await writeFile(path.join(rootDir, "Makefile"), "PRODUCT_NAME := QuickStudy.app\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /Makefile:.*QuickStudy/);
 });
 
 test("legacy identifier audit excludes generated and dependency directories", async () => {

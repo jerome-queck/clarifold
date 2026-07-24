@@ -14,6 +14,7 @@ async function collectFiles(rootDir, currentDir = rootDir) {
   const files = [];
   for (const entry of entries) {
     const relativePath = path.relative(rootDir, path.join(currentDir, entry.name)).split(path.sep).join("/");
+    if (inventory.excludedDirectories.includes(entry.name)) continue;
     if (entry.isDirectory()) {
       if (!inventory.excludedDirectories.includes(entry.name)) {
         files.push(...(await collectFiles(rootDir, path.join(currentDir, entry.name))));
@@ -21,7 +22,7 @@ async function collectFiles(rootDir, currentDir = rootDir) {
       continue;
     }
     if (!entry.isFile() || inventory.excludedPaths.includes(relativePath)) continue;
-    if (inventory.textExtensions.includes(path.extname(entry.name).toLowerCase())) files.push(relativePath);
+    files.push(relativePath);
   }
   return files.sort();
 }
@@ -90,7 +91,9 @@ export async function auditLegacyIdentifiers({ rootDir }) {
       if (rule.paths.some((candidate) => pathMatches(relativePath, candidate))) activeRuleIds.add(rule.id);
     }
     const pathHits = scanContents(relativePath, relativePath, "path");
-    const contents = await readFile(path.join(rootDir, relativePath), "utf8");
+    const rawContents = await readFile(path.join(rootDir, relativePath));
+    if (rawContents.includes(0)) continue;
+    const contents = rawContents.toString("utf8");
     for (const hit of [...pathHits, ...scanContents(relativePath, contents, "content")]) {
       if (hit.rule === null) {
         errors.push(`${hit.path}:${hit.line}: unexplained legacy identifier ${hit.value} (${hit.patternId})`);

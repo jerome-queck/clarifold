@@ -3,7 +3,7 @@
     "event-reference": "openai-build-week|openai\\s+build\\s+week|devpost|codex-feedback-session|/feedback\\b",
     "legacy-product-name": "\\bQuick Study\\b",
     "legacy-slug": "quick-study(?:-[a-z0-9]+)*",
-    "legacy-concatenated-identifier": "\\b(?:QuickStudy|quickStudy)[A-Z][A-Za-z0-9]*",
+    "legacy-concatenated-identifier": "(?:QuickStudy|quickStudy)[A-Za-z0-9_]*",
     "legacy-environment-variable": "\\bQUICK_STUDY_[A-Z0-9_]+\\b"
   },
   "excludedDirectories": [
@@ -24,20 +24,6 @@
     "scripts/legacy-identifier-audit.mjs",
     "scripts/legacy-identifier-allowlist.json",
     "scripts/policy.test.mjs"
-  ],
-  "textExtensions": [
-    ".css",
-    ".html",
-    ".js",
-    ".json",
-    ".md",
-    ".mjs",
-    ".swift",
-    ".toml",
-    ".ts",
-    ".tsx",
-    ".yml",
-    ".yaml"
   ],
   "rules": [
     {
@@ -88,6 +74,8 @@
         "docs/beta-release.md",
         "docs/clarifold-brand-brief.md",
         "docs/development.md",
+        "src/main/main.ts",
+        "src/shared/learner-operation.ts",
         "src/shared/bundled-verifier-environment.json",
         "src/shared/clarifold-identity.json",
         "src/main/clarifold-data-migration.ts",
@@ -99,7 +87,7 @@
       "expectedCounts": {
         "legacy-product-name": 57,
         "legacy-slug": 25,
-        "legacy-concatenated-identifier": 2
+        "legacy-concatenated-identifier": 31
       }
     },
     {
@@ -142,7 +130,7 @@
       "expectedCounts": {
         "legacy-product-name": 39,
         "legacy-slug": 77,
-        "legacy-concatenated-identifier": 46
+        "legacy-concatenated-identifier": 125
       }
     }
   ]
