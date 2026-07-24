@@ -1371,12 +1371,21 @@ describe("Learning Application", () => {
       type: "synthesizeLearningArtifact", artifactId, confirmWholeArtifact: true
     })).rejects.toThrow("Codex is restoring after the Bundled Lean Runtime completed its exact-claim check.");
     await application.submit({ type: "editLearningGoal", value: "Concurrent local edit survives restoration" });
+    await application.assessVerificationEscalation(current.originatingSessionId, {
+      target: "learningArtifact", targetId: artifactId,
+      claimId: current.currentRevision.claims[0].claimId,
+      riskFactors: ["weakSupport"], modelConfidence: 0.4
+    });
     releaseAuthentication();
     const restored = await restoration;
     unsubscribe();
 
     expect(restored.modelRuntimeLifecycle).toMatchObject({ status: "available", operationId });
     expect(restored.sessions[0].learningGoal).toBe("Concurrent local edit survives restoration");
+    expect(restored.sessions[0].learningArtifacts[0].currentRevision.claims[0].verificationEscalation).toMatchObject({
+      recommended: true,
+      reasons: ["The available support is weak or sparse."]
+    });
     expect(events.at(-1)).toMatchObject({
       modelRuntimeLifecycle: { status: "available", operationId },
       verifierManifests: expect.arrayContaining([expect.objectContaining({ id: request.runId })])

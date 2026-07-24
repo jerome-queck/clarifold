@@ -503,6 +503,7 @@ function registerLearningApplicationHandlers(): void {
       failure = error;
       console.error(`[Lean verification] ${JSON.stringify({
         runId: request.runId,
+        restorationOperationId,
         status: "failed",
         elapsedMs: Date.now() - startedAt,
         detail: error instanceof Error ? error.message : "Formal verification failed."

@@ -3295,7 +3295,7 @@ export class LearningApplication {
           };
           session.anchoredTeachingCards.push(card);
           session.activeTeachingCardId = card.id;
-    if (isExplanation && this.state.modelRuntimeLifecycle.status === "available") {
+          if (isExplanation && this.isModelRuntimeReady()) {
             await this.beginAnchoredTeaching(session, anchor, card.currentRevision);
           } else if (isExplanation) {
             card.currentRevision.status = "failed";
@@ -3336,7 +3336,7 @@ export class LearningApplication {
           };
           session.anchoredTeachingCards.push(card);
         }
-        if (annotation.purpose === "tutorFeedback" && card && this.state.modelRuntimeLifecycle.status === "available"
+        if (annotation.purpose === "tutorFeedback" && card && this.isModelRuntimeReady()
           && !this.modelWorks.has(session.id) && card.currentRevision.status !== "streaming") {
           const previous = structuredClone(card.currentRevision);
           if (previous.status !== "idle") {
@@ -3346,7 +3346,7 @@ export class LearningApplication {
           session.activeTeachingCardId = card.id;
           await this.beginAnchoredTeaching(session, requireSourceAnchor(session, action.sourceAnchorId), card.currentRevision,
             previous.status === "idle" ? null : previous.content);
-        } else if (annotation.purpose === "tutorFeedback" && card && this.state.modelRuntimeLifecycle.status !== "available") {
+        } else if (annotation.purpose === "tutorFeedback" && card && !this.isModelRuntimeReady()) {
           card.currentRevision.status = "failed";
           card.currentRevision.error = "Model teaching is unavailable. Tutor Feedback is saved for a later Teaching Move.";
           card.currentRevision.retryable = true;
@@ -6362,12 +6362,18 @@ export class LearningApplication {
 
   private requireModelAccess(): void {
     const modelAccess = this.state.modelAccess;
-    if (!this.modelRuntime || this.state.modelRuntimeLifecycle.status !== "available" || modelAccess.status === "unavailable") {
+    if (!this.isModelRuntimeReady()) {
       throw new Error(this.state.modelRuntimeLifecycle.message
         ?? (modelAccess.status === "unavailable"
           ? modelAccess.message
           : "Codex Runtime is not ready for model-backed work."));
     }
+  }
+
+  private isModelRuntimeReady(): boolean {
+    return this.modelRuntime !== null
+      && this.state.modelRuntimeLifecycle.status === "available"
+      && this.state.modelAccess.status === "available";
   }
 
   private async beginAutomaticCorroboration(
