@@ -22,19 +22,6 @@ Automatically use only model-invocable skills when their trigger descriptions ma
 
 ## Commit attribution
 
-When an AI agent materially contributes, disclose it with neutral `Assisted-by` provenance. The human maintainer or approved collaborator remains the commit author and accountable reviewer.
-
-For Codex, use the current model display name and an authentic `CODEX_THREAD_ID` when one is available:
-
-```text
-Assisted-by: Codex <model>
-Codex-Session: codex://threads/<CODEX_THREAD_ID>
-```
-
-Never invent or duplicate a session identifier. A session reference is an audit aid, not evidence that generated output is correct, secure, original, or legally safe.
-
-See [CONTRIBUTING.md — AI attribution](CONTRIBUTING.md#ai-attribution) for the canonical repository-wide commit-attribution rules.
-
-Equivalent authentic provenance may be retained for other agents, but AI systems do not receive `Co-authored-by` trailers. Human contributors remain responsible for source, dependency, security, mathematical, privacy, and documentation review.
+See [CONTRIBUTING.md — AI attribution](CONTRIBUTING.md#ai-attribution) for the canonical AI-assisted commit attribution policy.
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branches, commits, and pull requests.

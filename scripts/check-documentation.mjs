@@ -23,14 +23,46 @@ const ACTIVE_REFERENCE_FILES = [
   "CODING_STANDARDS.md",
   "CONTEXT.md",
   "README.md",
+  "package.json",
+  "package-lock.json",
+  "forge.config.js",
+  "vite.config.ts",
+  "vitest.config.ts",
+  "playwright.config.ts",
+  "tsconfig.json",
+  "tsconfig.main.json",
+  "tsconfig.quality-gate.json",
+  "skills-lock.json",
   "docs/development.md",
   "docs/architecture.md",
   "docs/beta-release.md",
   "evaluation/README.md",
   ".github/pull_request_template.md",
 ];
-const ACTIVE_REFERENCE_DIRECTORIES = ["src", ".github"];
+const ACTIVE_REFERENCE_DIRECTORIES = ["src", ".github", "scripts"];
+const ACTIVE_REFERENCE_EXCLUDED_FILES = new Set(["scripts/check-documentation.mjs", "scripts/policy.test.mjs"]);
 const PROHIBITED_EVENT_REFERENCE = /openai-build-week|openai\s+build\s+week|devpost|codex-feedback-session|\/feedback\b/i;
+const REQUIRED_IGNORE_RULES = [
+  ".DS_Store",
+  ".env",
+  ".env.*",
+  "!.env.example",
+  "node_modules/",
+  "dist/",
+  "out/",
+  "test-results/",
+  "playwright-report/",
+  "coverage/",
+  "*.log",
+  ".cache/",
+  ".private/",
+  ".signing/",
+];
+const FORBIDDEN_IGNORE_RULES = [
+  { pattern: /^(?:\/)?package-lock\.json\/?$/, label: "package-lock.json" },
+  { pattern: /^(?:\/)?(?:.*\/)?[^/]*\.lock\/?$/, label: "lockfiles" },
+  { pattern: /^(?:\/)?(?:\.vscode|evaluation\/fixtures|tests\/fixtures)(?:\/|$)/, label: "shareable collaboration or fixture paths" },
+];
 
 async function markdownFiles(rootDir, currentDir = rootDir) {
   const entries = await readdir(currentDir, { withFileTypes: true });
@@ -72,7 +104,7 @@ async function checkActiveRepositoryReferences(rootDir, errors) {
   const candidatePaths = new Set(ACTIVE_REFERENCE_FILES);
   for (const directory of ACTIVE_REFERENCE_DIRECTORIES) {
     for (const file of await filesUnderDirectory(rootDir, directory)) {
-      candidatePaths.add(file);
+      if (!ACTIVE_REFERENCE_EXCLUDED_FILES.has(file)) candidatePaths.add(file);
     }
   }
 
@@ -86,6 +118,29 @@ async function checkActiveRepositoryReferences(rootDir, errors) {
     const match = PROHIBITED_EVENT_REFERENCE.exec(contents);
     if (match) {
       errors.push(`${relativePath}: prohibited event-specific reference: ${match[0]}`);
+    }
+  }
+}
+
+async function checkIgnoreRules(rootDir, errors) {
+  let contents;
+  try {
+    contents = await readFile(path.join(rootDir, ".gitignore"), "utf8");
+  } catch {
+    return;
+  }
+
+  const rules = contents.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  for (const requiredRule of REQUIRED_IGNORE_RULES) {
+    if (!rules.includes(requiredRule)) {
+      errors.push(`.gitignore: missing required hygiene rule: ${requiredRule}`);
+    }
+  }
+  for (const rule of rules) {
+    for (const forbidden of FORBIDDEN_IGNORE_RULES) {
+      if (forbidden.pattern.test(rule.replace(/^!/, ""))) {
+        errors.push(`.gitignore: do not ignore ${forbidden.label}: ${rule}`);
+      }
     }
   }
 }
@@ -248,6 +303,7 @@ export async function validateDocumentation({ rootDir, pullRequestBody }) {
   }
 
   await checkActiveRepositoryReferences(rootDir, errors);
+  await checkIgnoreRules(rootDir, errors);
 
   for (const markdownPath of await markdownFiles(rootDir)) {
     const markdown = await readFile(path.join(rootDir, markdownPath), "utf8");
