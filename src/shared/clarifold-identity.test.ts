@@ -48,6 +48,15 @@ describe("Clarifold identity configuration", () => {
     expect(warnings[0]?.message).toContain("CLARIFOLD_DATA_DIR");
   });
 
+  it("records the single compatibility alias and its breaking-beta removal trigger", () => {
+    const legacyVariableEntries = Object.entries(CLARIFOLD_IDENTITY)
+      .filter(([key, value]) => key.endsWith("Variable") && String(value).startsWith("QUICK_STUDY_"));
+
+    expect(legacyVariableEntries).toEqual([["legacyDataDirectoryVariable", "QUICK_STUDY_DATA_DIR"]]);
+    expect(CLARIFOLD_IDENTITY.compatibility.legacyDataDirectory.removalCondition)
+      .toBe("Remove in the next breaking beta after the one-beta transition.");
+  });
+
   it("keeps an explicit packaged-test data path isolated from default migration", () => {
     const warnings: RuntimeEnvironmentWarning[] = [];
     const configuration = resolveClarifoldRuntimeConfiguration({

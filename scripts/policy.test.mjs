@@ -6,6 +6,92 @@ import test from "node:test";
 
 import { classifyChangedPaths } from "./change-classifier.mjs";
 import { validateDocumentation, validatePublicIssueIntake } from "./check-documentation.mjs";
+import { auditLegacyIdentifiers } from "./legacy-identifier-audit.mjs";
+
+test("legacy identifier audit classifies the repository allowlist", async () => {
+  const result = await auditLegacyIdentifiers({ rootDir: process.cwd() });
+
+  assert.deepEqual(result.errors, []);
+  assert.ok(result.summary.historical > 0);
+  assert.ok(result.summary["durable domain language"] > 0);
+  assert.ok(result.summary["approved compatibility"] > 0);
+  assert.equal(result.summary["third-party text"], 0);
+});
+
+test("legacy identifier audit rejects an unexplained stale identifier", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-identifiers-"));
+  await writeFile(path.join(rootDir, "package.json"), "{\"productName\": \"Quick Study\"}\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /package\.json:.*Quick Study/);
+});
+
+test("legacy identifier audit rejects a new occurrence in an allowlisted file", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-occurrence-"));
+  await mkdir(path.join(rootDir, "src", "shared"), { recursive: true });
+  await writeFile(path.join(rootDir, "src", "shared", "learning-application.ts"), "const label = 'Quick Study product download QuickStudy.app';\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /durable-domain-language: expected 57 legacy-product-name occurrences, found 1/);
+  assert.match(result.errors.join("\n"), /durable-domain-language: expected 31 legacy-concatenated-identifier occurrences, found 1/);
+});
+
+test("legacy identifier audit rejects a replacement that preserves aggregate counts", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-fingerprint-"));
+  const lines = [
+    ...Array.from({ length: 57 }, () => "Quick Study product download"),
+    ...Array.from({ length: 25 }, () => "quick-study-product"),
+    ...Array.from({ length: 31 }, () => "quickStudyProduct"),
+    ...Array.from({ length: 14 }, () => "QUICK_STUDY_DATA_DIR"),
+  ];
+  await writeFile(path.join(rootDir, "README.md"), `${lines.join("\n")}\n`);
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /durable-domain-language: expected legacy-product-name occurrence fingerprint/);
+});
+
+test("legacy identifier audit rejects unapproved legacy environment variables", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-environment-"));
+  await writeFile(path.join(rootDir, "config.ts"), "process.env.QUICK_STUDY_API_KEY;\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /QUICK_STUDY_API_KEY/);
+});
+
+test("legacy identifier audit rejects concatenated legacy identifiers", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-concatenated-"));
+  await writeFile(path.join(rootDir, "runtime.ts"), "const proof = 'QuickStudyRuntimeHealth';\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /QuickStudyRuntimeHealth/);
+});
+
+test("legacy identifier audit scans extensionless text files", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-extensionless-"));
+  await writeFile(path.join(rootDir, "Makefile"), "PRODUCT_NAME := QuickStudy.app\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.match(result.errors.join("\n"), /Makefile:.*QuickStudy/);
+});
+
+test("legacy identifier audit excludes generated and dependency directories", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-legacy-exclusions-"));
+  await mkdir(path.join(rootDir, "dist"), { recursive: true });
+  await mkdir(path.join(rootDir, "node_modules", "fixture"), { recursive: true });
+  await writeFile(path.join(rootDir, "dist", "bundle.js"), "const name = 'Quick Study';\n");
+  await writeFile(path.join(rootDir, "node_modules", "fixture", "package.json"), "{\"name\": \"quick-study\"}\n");
+
+  const result = await auditLegacyIdentifiers({ rootDir });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.classified.length, 0);
+});
 
 test("repository public issue intake matches the supported community boundary", async () => {
   assert.deepEqual(await validatePublicIssueIntake({ rootDir: process.cwd() }), []);

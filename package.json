@@ -27,6 +27,7 @@
     "license:audit": "node scripts/audit-packaged-licenses.mjs",
     "policy:documentation": "node scripts/check-documentation.mjs",
     "policy:identity": "node scripts/clarifold-release-identity.mjs",
+    "policy:legacy-identifiers": "node scripts/legacy-identifier-audit.mjs",
     "policy:classify": "node scripts/change-classifier.mjs",
     "test:policy": "node --test scripts/policy.test.mjs",
     "quality:gate": "npm run build:quality-gate && node dist/quality-gate/quality-gate-cli.js",
@@ -41,7 +42,7 @@
     "test:smoke": "node scripts/install-beta-for-smoke.mjs && npm run test:smoke:index-budget && npm run test:smoke:functional",
     "test:smoke:index-budget": "playwright test --config=playwright.config.ts --grep \"packaged Clarifold indexes the pinned large-source corpus within budget\"",
     "test:smoke:functional": "playwright test --config=playwright.config.ts --grep-invert \"packaged Clarifold indexes the pinned large-source corpus within budget\"",
-    "verify:prepackage": "npm run lint && npm run typecheck && npm test && npm run test:policy && npm run policy:documentation && npm run policy:identity",
+    "verify:prepackage": "npm run lint && npm run typecheck && npm test && npm run test:policy && npm run policy:documentation && npm run policy:identity && npm run policy:legacy-identifiers",
     "verify:package": "npm run quality:gate:fixture && npm run package && npm run make:beta && npm run license:audit && npm run test:smoke",
     "verify": "npm run verify:prepackage && npm run verify:package"
   },

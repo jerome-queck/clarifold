@@ -69,7 +69,12 @@ const ACTIVE_REFERENCE_FILES = [
   ".github/pull_request_template.md",
 ];
 const ACTIVE_REFERENCE_DIRECTORIES = ["src", ".github", "scripts"];
-const ACTIVE_REFERENCE_EXCLUDED_FILES = new Set(["scripts/check-documentation.mjs", "scripts/policy.test.mjs"]);
+const ACTIVE_REFERENCE_EXCLUDED_FILES = new Set([
+  "scripts/check-documentation.mjs",
+  "scripts/legacy-identifier-audit.mjs",
+  "scripts/legacy-identifier-allowlist.json",
+  "scripts/policy.test.mjs",
+]);
 const PROHIBITED_EVENT_REFERENCE = /openai-build-week|openai\s+build\s+week|devpost|codex-feedback-session|\/feedback\b/i;
 const REQUIRED_IGNORE_RULES = [
   ".DS_Store",

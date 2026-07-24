@@ -528,7 +528,7 @@ describe("anchored teaching workbench", () => {
     render(<App />);
 
     const formalization = await screen.findByRole("region", { name: "Formalization for mathematical claim 1" });
-    expect(formalization.textContent).toContain("theorem quickStudyNatAddZero (n : Nat) : n + 0 = n");
+    expect(formalization.textContent).toContain("theorem clarifoldNatAddZero (n : Nat) : n + 0 = n");
     expect(formalization.textContent).toContain("n : Nat");
     await user.click(within(formalization).getByRole("button", { name: "Check exact claim 1 with bundled Lean" }));
     expect(window.clarifold.verifyClaim).toHaveBeenCalledWith(artifact.originatingSessionId, {

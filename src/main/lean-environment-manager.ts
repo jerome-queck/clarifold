@@ -379,10 +379,10 @@ export class LeanEnvironmentManager implements VerifierEnvironmentManager {
 export async function validateReferenceProof(environmentPath: string, signal?: AbortSignal): Promise<void> {
   const executable = join(environmentPath, "bin", "lean");
   await executeValidation(executable, [
-    "--deps", join(environmentPath, "app-support", "QuickStudyMathlibDependency.lean")
+    "--deps", join(environmentPath, "app-support", "ClarifoldMathlibDependency.lean")
   ], "mathlib dependency resolution", signal);
   await executeValidation(executable, [
-    join(environmentPath, "app-support", "QuickStudyRuntimeHealth.lean")
+    join(environmentPath, "app-support", "ClarifoldRuntimeHealth.lean")
   ], "runtime health proof", signal);
 }
 
