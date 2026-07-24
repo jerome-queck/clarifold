@@ -77,6 +77,7 @@ test("documentation validation rejects event-specific references in active files
   await writeFile(path.join(rootDir, "package.json"), JSON.stringify({ scripts: {} }));
   await writeFile(path.join(rootDir, "README.md"), "# Home\n\n[Development](docs/development.md)\n[Architecture](docs/architecture.md)\n");
   await writeFile(path.join(rootDir, "AGENTS.md"), "This is an OpenAI Build Week submission.\n");
+  await writeFile(path.join(rootDir, "forge.config.js"), "const repository = 'https://github.com/jerome-queck/openai-build-week';\n");
   await writeFile(path.join(rootDir, "CONTRIBUTING.md"), "# Contributing\n");
   await writeFile(path.join(rootDir, "CODING_STANDARDS.md"), "# Standards\n");
   await writeFile(path.join(rootDir, "docs", "development.md"), "# Development\n");
@@ -86,6 +87,27 @@ test("documentation validation rejects event-specific references in active files
   const errors = await validateDocumentation({ rootDir });
 
   assert.match(errors.join("\n"), /AGENTS\.md: prohibited event-specific reference/);
+  assert.match(errors.join("\n"), /forge\.config\.js: prohibited event-specific reference/);
+});
+
+test("documentation validation rejects unsafe ignore rules", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "clarifold-docs-"));
+  await mkdir(path.join(rootDir, "docs"), { recursive: true });
+  await mkdir(path.join(rootDir, ".github"), { recursive: true });
+  await writeFile(path.join(rootDir, "package.json"), JSON.stringify({ scripts: {} }));
+  await writeFile(path.join(rootDir, "README.md"), "# Home\n\n[Development](docs/development.md)\n[Architecture](docs/architecture.md)\n");
+  await writeFile(path.join(rootDir, "CONTRIBUTING.md"), "# Contributing\n");
+  await writeFile(path.join(rootDir, "CODING_STANDARDS.md"), "# Standards\n");
+  await writeFile(path.join(rootDir, "docs", "development.md"), "# Development\n");
+  await writeFile(path.join(rootDir, "docs", "architecture.md"), "# Architecture\n");
+  await writeFile(path.join(rootDir, ".github", "pull_request_template.md"), "## Documentation impact\n\n## Security impact\n");
+  await writeFile(path.join(rootDir, ".gitignore"), "node_modules/\npackage-lock.json\nevaluation/fixtures/\n");
+
+  const errors = await validateDocumentation({ rootDir });
+
+  assert.match(errors.join("\n"), /\.gitignore: missing required hygiene rule: \.env/);
+  assert.match(errors.join("\n"), /\.gitignore: do not ignore package-lock\.json/);
+  assert.match(errors.join("\n"), /\.gitignore: do not ignore shareable collaboration or fixture paths/);
 });
 
 test("documentation validation accepts answered pull-request declarations", async () => {

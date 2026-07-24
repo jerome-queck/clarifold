@@ -45,7 +45,7 @@ Run focused checks while changing code, then run the complete lane before review
 | `npm run security:dependencies` | Production dependency audit |
 | `npm run security:secrets` | Full-history secret scan with the pinned Gitleaks release |
 | `npm run security:swift` | Warnings-as-errors Swift boundary analysis |
-| `npm run policy:documentation` | Required documents, local Markdown links and anchors, documented npm commands, and pull-request template declarations; PR-body answers are checked in pull-request CI |
+| `npm run policy:documentation` | Required documents, local Markdown links and anchors, documented npm commands, pull-request template declarations, active repository-reference checks, and conservative ignore-rule checks; PR-body answers are checked in pull-request CI |
 | `npm run policy:classify -- --base <sha> --head <sha>` | Fail-closed changed-path classification and selected verification surfaces |
 | `npm run test:policy` | Focused policy fixtures for documentation and changed-path classification |
 | `npm run verify:prepackage` | Run the required lint, typecheck, unit, policy-fixture, and documentation-policy checks |

@@ -55,6 +55,8 @@ Update this document in the same pull request when a change deliberately alters 
 
 Do not add a standard for a one-off implementation tactic, ticket-specific acceptance criterion, personal formatting preference, or rule already enforced clearly by tooling. If formatting or import policy becomes important, automate it first and make the tool configuration authoritative.
 
+Repository-owned policy checks are authoritative for mechanically detectable public-repository contracts, including required documents, local links, documented commands, pull-request impact declarations, changed-path classification, active-reference checks, and conservative ignore rules. Update this document when those repository-wide checks change their engineering contract.
+
 Every material pull request should include a quick standards-impact check. Perform a fuller audit before a major release and after substantial architecture, runtime, build, CI, or review-skill changes. There is no calendar requirement to rewrite this document when the engineering contract has not changed.
 
 ## Declare cross-cutting impact
