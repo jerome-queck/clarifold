@@ -415,8 +415,11 @@ async function acquireMigrationLockReclaimer(path: string, now: () => Date): Pro
   } catch (error) {
     if (!isAlreadyExists(error)) throw error;
     const owner = await readMigrationLockOwner(path);
-    if (owner && processIsAlive(owner.pid)) return false;
-    return false;
+    if (!await isStaleMigrationLock(path, owner, now())) return false;
+    const currentOwner = await readMigrationLockOwner(path);
+    if (!sameLockOwner(owner, currentOwner)) return false;
+    await rm(path, { force: true });
+    return acquireMigrationLockReclaimer(path, now);
   }
 }
 

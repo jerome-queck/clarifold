@@ -154,6 +154,19 @@ describe("Clarifold data migration", () => {
     expect(results.filter((result) => result.reason === "concurrent-launch")).toHaveLength(1);
   });
 
+  it("recovers an abandoned stale-lock reclaimer guard", async () => {
+    const root = await temporaryDirectory("clarifold-migration-stale-reclaimer-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await createLearnerState(sourceDirectory);
+    const staleOwner = JSON.stringify({ pid: 999_999_999, token: "stale-lock" });
+    await writeFile(`${destinationDirectory}.migration-lock`, staleOwner, "utf8");
+    await writeFile(`${destinationDirectory}.migration-lock.reclaim`, staleOwner, "utf8");
+
+    await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
+      .resolves.toMatchObject({ outcome: "migrated" });
+  });
+
   it("does not delete staging output without its Clarifold ownership marker", async () => {
     const root = await temporaryDirectory("clarifold-migration-staging-collision-");
     const sourceDirectory = join(root, "Quick Study");
