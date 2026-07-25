@@ -14,7 +14,8 @@
     "basis": "OpenAI Terms of Use ownership-of-content clause checked 2026-07-25",
     "source": "https://openai.com/policies/terms-of-use/",
     "referenceImages": "none",
-    "status": "exploratory-retained-subject-to-applicable-law-and-account-terms",
+    "status": "compatible-for-exploratory-review-only-subject-to-applicable-law-and-account-terms",
+    "boardTypography": "macOS Arial rasterized into review-only labels; no font files redistributed",
     "officialBrandClearance": false
   },
   "candidates": [
