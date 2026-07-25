@@ -686,8 +686,8 @@ function registerMigrationStatusHandler(): void {
 async function waitForTestMigrationRelease(controlPath: string): Promise<void> {
   const watcher = watch(dirname(controlPath), { persistent: false });
   const readyPath = `${controlPath}.ready`;
-  await writeFile(readyPath, "staging marker created\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
   try {
+    await writeFile(readyPath, "staging marker created\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
     for await (const event of watcher) {
       if (String(event.filename) !== basename(controlPath)) continue;
       try {

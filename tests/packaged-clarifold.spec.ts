@@ -134,15 +134,38 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
       .toBe("retain after interrupted migration\n");
     expect(await readFile(rollbackMarkerPath, "utf8")).toBe("retain after interrupted migration\n");
     await expect(readdir(`${clarifoldDirectory}.migration-staging`)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(JSON.parse(await readFile(join(clarifoldDirectory, "migration-receipt.json"), "utf8"))).toMatchObject({
+    const migrationReceipt = JSON.parse(await readFile(join(clarifoldDirectory, "migration-receipt.json"), "utf8")) as Record<string, unknown>;
+    expect(migrationReceipt).toMatchObject({
       source: legacyDirectory,
       destination: clarifoldDirectory,
       applicationVersion: "0.2.0",
       outcome: "migrated",
       retryState: "idempotent"
     });
+    const betaInstallReport = JSON.parse(await readFile(join(process.cwd(), "test-results", "beta-install.json"), "utf8")) as Record<string, unknown>;
+    const migrationEvidence = {
+      schemaVersion: 1,
+      scenario: "process-interruption-reopen",
+      candidateCommit: betaInstallReport.candidateCommit,
+      artifact: betaInstallReport.artifact,
+      archiveSha256: betaInstallReport.sha256,
+      receipt: migrationReceipt
+    };
+    await testInfo.attach("migration-recovery-receipt.json", {
+      body: Buffer.from(`${JSON.stringify(migrationEvidence, null, 2)}\n`, "utf8"),
+      contentType: "application/json"
+    });
+    await updateBetaInstallReport((report) => {
+      report.migrationRecovery = migrationEvidence;
+      const validations = Array.isArray(report.validations) ? report.validations as string[] : [];
+      if (!validations.includes("migration-interruption-reopen-recovery")) {
+        validations.push("migration-interruption-reopen-recovery");
+      }
+      report.validations = validations;
+    });
     await page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter");
     await expect(page.getByRole("heading", { name: "Mathematical Workbench" })).toBeVisible();
+    const resumedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
     await closeAttempt(attempt);
     attempt = undefined;
 
@@ -151,7 +174,7 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
     await expect(attempt.page.getByRole("status", { name: "Clarifold data migration status" }))
       .toContainText("Migration verified");
     const relaunchedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
-    expect(durableMigrationState(relaunchedState)).toEqual(durableMigrationState(migratedState));
+    expect(durableMigrationState(relaunchedState)).toEqual(durableMigrationState(resumedState));
     expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
     expect(await readFile(rollbackMarkerPath, "utf8")).toBe("retain after interrupted migration\n");
     await closeAttempt(attempt);
