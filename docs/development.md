@@ -87,6 +87,10 @@ The [evaluation guide](../evaluation/README.md) owns benchmark evidence collecti
 
 `npm run package`, `npm run make:beta`, and `npm run test:smoke` produce an internal evaluation candidate for the current Mac architecture. The archive is ad-hoc signed and is not a signed, notarized ordinary-user release. Do not publish it as a public download or instruct users to bypass Gatekeeper. Developer ID signing, notarization, stapling, assessment, and a clean-machine audit remain future release gates.
 
+For a temporary CI candidate, dispatch the [`Internal candidate`](../.github/workflows/internal-candidate.yml) workflow with an explicit 40-character commit SHA. It rejects revisions older than 30 days and requires the report, installed receipt, and archive to bind to the same clean revision before upload. The report artifact is retained for 14 days; the exact archive artifact is retained for 30 days and is named `internal-candidate-not-for-distribution`. It is unsigned, limited-support, and not a supported public production release. Routine [`macOS CI`](../.github/workflows/macos-ci.yml) may package locally for verification but uploads no application archive.
+
+The current workflow-artifact boundary is deliberately separate from future GitHub Releases, GitHub Packages, and source archives. No candidate workflow creates a permanent tag or publishes a Release or Package. Public prebuilt distribution remains blocked on the complete [deferred public-distribution gate](adr/0035-curate-public-releases.md#deferred-public-distribution-gate).
+
 Every packaged application also includes Clarifold's `LICENSE.md`, `NOTICE`, and
 `THIRD_PARTY_NOTICES.md` at the application resource root. Electron's own
 `LICENSE` and `LICENSES.chromium.html` files are copied into the application

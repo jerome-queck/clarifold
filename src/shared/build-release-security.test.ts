@@ -11,10 +11,15 @@ const root = process.cwd();
 describe("build and release security contract", () => {
   it("pins every third-party workflow action and limits the verification token", async () => {
     const workflow = await readFile(join(root, ".github/workflows/macos-ci.yml"), "utf8");
+    const candidateWorkflow = await readFile(join(root, ".github/workflows/internal-candidate.yml"), "utf8");
     const actionRefs = [...workflow.matchAll(/^\s+(?:-\s+)?uses: ([^\s]+)\s+# v\d+$/gm)].map((match) => match[1]);
+    const candidateActionRefs = [...candidateWorkflow.matchAll(/^\s+(?:-\s+)?uses: ([^\s]+)\s+# v\d+$/gm)]
+      .map((match) => match[1]);
 
-    expect(actionRefs).toHaveLength(7);
+    expect(actionRefs).toHaveLength(5);
     expect(actionRefs.every((ref) => /^[^@]+@[0-9a-f]{40}$/.test(ref))).toBe(true);
+    expect(candidateActionRefs).toHaveLength(6);
+    expect(candidateActionRefs.every((ref) => /^[^@]+@[0-9a-f]{40}$/.test(ref))).toBe(true);
     for (const pin of [
       "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",

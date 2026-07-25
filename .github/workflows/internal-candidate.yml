@@ -1,0 +1,74 @@
+name: Internal candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Exact 40-character commit SHA to package and verify"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  candidate:
+    permissions:
+      contents: read
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.revision }}
+      - name: Verify the explicit revision
+        env:
+          CANDIDATE_REVISION: ${{ inputs.revision }}
+        run: test "$CANDIDATE_REVISION" = "$(git rev-parse HEAD)"
+      - run: node scripts/run-gitleaks.mjs
+      - run: node scripts/clarifold-release-identity.mjs
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            node_modules/.cache/clarifold-lean
+            dist/verifiers
+          key: bundled-lean-4.29.1-mathlib-4.29.1-foundations-v4-${{ runner.arch }}
+      - run: npm run verify
+      - run: npm run security:dependencies
+      - name: Assemble the internal candidate report
+        env:
+          CANDIDATE_REVISION: ${{ inputs.revision }}
+          RUNNER_OS: ${{ runner.os }}
+        run: npm run quality:assemble:internal-candidate
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: success()
+        with:
+          name: internal-candidate-not-for-distribution-${{ runner.arch }}
+          retention-days: 30
+          if-no-files-found: error
+          path: out/make/zip/darwin/*/*.zip
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: success()
+        with:
+          name: internal-candidate-not-for-distribution-report-${{ runner.arch }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            test-results/internal-candidate.json
+            test-results/beta-install.json
+            test-results/quality-gate/*.json
+            test-results/quality-gate/*.md
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure()
+        with:
+          name: internal-candidate-not-for-distribution-diagnostics-${{ runner.arch }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            test-results/playwright-artifacts
+            test-results/beta-install.json
