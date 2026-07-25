@@ -52,6 +52,10 @@ export async function validateClarifoldIconAssets(rootDirectory = process.cwd())
   await stat(nativeIconPath);
   const rendererDimensions = await imageDimensions(rendererIconPath);
   if (rendererDimensions !== "1024x1024") throw new Error(`${relative(rootDirectory, rendererIconPath)} is ${rendererDimensions}; expected 1024x1024.`);
+  const rendererSignature = await imageSignature(rendererIconPath);
+  const iconsetSignature = await imageSignature(join(iconsetDirectory, "icon_512x512@2x.png"));
+  if (rendererSignature !== iconsetSignature) throw new Error("The renderer icon does not match the generated 1024 px macOS source.");
+  await validateTransparentCorner(rendererIconPath);
   await validateIcns(nativeIconPath, iconsetDirectory);
   return manifest;
 }
@@ -95,6 +99,16 @@ async function renderIcon(size, outputPath) {
 async function imageDimensions(path) {
   const { stdout } = await execFileAsync("magick", ["identify", "-format", "%wx%h", path]);
   return stdout.trim();
+}
+
+async function imageSignature(path) {
+  const { stdout } = await execFileAsync("magick", ["identify", "-format", "%[signature]", path]);
+  return stdout.trim();
+}
+
+async function validateTransparentCorner(path) {
+  const { stdout } = await execFileAsync("magick", ["identify", "-format", "%[pixel:p{0,0}]", path]);
+  if (!/,\s*0\)$/.test(stdout.trim())) throw new Error(`${relative(rootDirectory, path)} must retain a transparent outside corner.`);
 }
 
 async function validateIcns(path, expectedIconsetDirectory) {
