@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { inflateSync } from "node:zlib";
 
 const execFileAsync = promisify(execFile);
 const rootDirectory = process.cwd();
@@ -97,18 +98,86 @@ async function renderIcon(size, outputPath) {
 }
 
 async function imageDimensions(path) {
-  const { stdout } = await execFileAsync("magick", ["identify", "-format", "%wx%h", path]);
-  return stdout.trim();
+  const { width, height } = await readPngRgba(path);
+  return `${width}x${height}`;
 }
 
 async function imageSignature(path) {
-  const { stdout } = await execFileAsync("magick", ["identify", "-format", "%[signature]", path]);
-  return stdout.trim();
+  const { pixels } = await readPngRgba(path);
+  return createHash("sha256").update(pixels).digest("hex");
 }
 
 async function validateTransparentCorner(path) {
-  const { stdout } = await execFileAsync("magick", ["identify", "-format", "%[pixel:p{0,0}]", path]);
-  if (!/,\s*0\)$/.test(stdout.trim())) throw new Error(`${relative(rootDirectory, path)} must retain a transparent outside corner.`);
+  const { pixels } = await readPngRgba(path);
+  if (pixels[3] !== 0) throw new Error(`${relative(rootDirectory, path)} must retain a transparent outside corner.`);
+}
+
+async function readPngRgba(path) {
+  const input = await readFile(path);
+  if (input.subarray(0, 8).compare(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) !== 0) {
+    throw new Error(`${relative(rootDirectory, path)} is not a PNG.`);
+  }
+  let offset = 8;
+  let width;
+  let height;
+  let bitDepth;
+  let colorType;
+  const compressedRows = [];
+  while (offset < input.length) {
+    const length = input.readUInt32BE(offset);
+    const type = input.toString("ascii", offset + 4, offset + 8);
+    const data = input.subarray(offset + 8, offset + 8 + length);
+    offset += length + 12;
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      compressedRows.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+  }
+  if (width === undefined || height === undefined || bitDepth !== 8 || colorType !== 6) {
+    throw new Error(`${relative(rootDirectory, path)} must be an 8-bit RGBA PNG.`);
+  }
+  const rowLength = width * 4;
+  const compressed = inflateSync(Buffer.concat(compressedRows));
+  const pixels = Buffer.alloc(height * rowLength);
+  let sourceOffset = 0;
+  for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
+    const filter = compressed[sourceOffset++];
+    const row = Buffer.from(compressed.subarray(sourceOffset, sourceOffset + rowLength));
+    sourceOffset += rowLength;
+    const previous = rowIndex === 0 ? null : pixels.subarray((rowIndex - 1) * rowLength, rowIndex * rowLength);
+    unfilterRow(row, previous, filter);
+    row.copy(pixels, rowIndex * rowLength);
+  }
+  return { width, height, pixels };
+}
+
+function unfilterRow(row, previous, filter) {
+  for (let index = 0; index < row.length; index += 1) {
+    const left = index >= 4 ? row[index - 4] : 0;
+    const above = previous?.[index] ?? 0;
+    const upperLeft = index >= 4 ? previous?.[index - 4] ?? 0 : 0;
+    if (filter === 1) row[index] = (row[index] + left) & 0xff;
+    else if (filter === 2) row[index] = (row[index] + above) & 0xff;
+    else if (filter === 3) row[index] = (row[index] + Math.floor((left + above) / 2)) & 0xff;
+    else if (filter === 4) row[index] = (row[index] + paethPredictor(left, above, upperLeft)) & 0xff;
+    else if (filter !== 0) throw new Error(`Unsupported PNG row filter: ${filter}.`);
+  }
+}
+
+function paethPredictor(left, above, upperLeft) {
+  const estimate = left + above - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const aboveDistance = Math.abs(estimate - above);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance) return left;
+  if (aboveDistance <= upperLeftDistance) return above;
+  return upperLeft;
 }
 
 async function validateIcns(path, expectedIconsetDirectory) {
