@@ -15,7 +15,7 @@ After the Clarifold application rebrand is implemented, the product-first README
 
 ## App icon exploration
 
-Do not select or install a final icon from a verbal metaphor alone. The future branding spec and its implementation tickets must produce multiple visibly distinct icon candidates for Jerome Queck to review before one direction becomes the product icon.
+Do not select or install a final icon from a verbal metaphor alone. The review packet produced multiple visibly distinct candidates for Jerome Queck. He selected the Learning Trail direction for focused refinement; the direction is not yet the product icon, and its production gates remain explicit in the [selection decision record](brand/icon-candidates/selection.md).
 
 Explore at least these four interpretations:
 
@@ -36,8 +36,8 @@ The review package must include:
 - previews against both light and dark surroundings;
 - a silhouette or grayscale legibility check;
 - provenance and usage-rights notes for every generated or incorporated visual element; and
-- an explicit recommendation with trade-offs, without choosing on the owner's behalf.
+- an explicit recommendation with trade-offs and a human decision record.
 
 Candidates must remain recognizable at small sizes, use shape rather than color alone to communicate, and avoid text, lettermarks, pi symbols, graduation caps, brains, robots, checkmarks, and decorative equation clutter. They must not imply guaranteed correctness, effortless mastery, grading, or formal verification of the whole product.
 
-No candidate becomes the packaged app icon, repository social image, or permanent brand asset until Jerome Queck explicitly selects it. After selection, the implementation work must produce the required macOS icon assets, wire them into packaging, verify their appearance in the packaged app, and retain editable source artwork and provenance.
+The Learning Trail direction is the selected refinement input, but it is not yet the packaged app icon, repository social image, or permanent brand asset. The implementation work must produce the required macOS icon assets, complete the accessibility, recognition, rights, and brand reviews, wire them into packaging only after those gates, verify their appearance in the packaged app, and retain editable source artwork and provenance. Mirror, Proof structure, and Unfolding surface remain preserved as future alternatives.

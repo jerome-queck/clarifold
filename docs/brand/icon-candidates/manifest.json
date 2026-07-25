@@ -1,6 +1,6 @@
 {
   "issue": 98,
-  "status": "exploratory-human-selection-pending",
+  "status": "selected-for-focused-refinement",
   "generatedOn": "2026-07-25",
   "officialAsset": false,
   "generation": {
@@ -45,8 +45,14 @@
     }
   ],
   "selection": {
-    "selectedCandidate": null,
+    "selectedCandidate": "learning-trail",
+    "selectedSource": "learning-trail.png",
     "decisionIssue": 99,
-    "adoptionBlockedUntilHumanApproval": true
+    "decisionRecord": "selection.md",
+    "decidedOn": "2026-07-25",
+    "decidedBy": "Jerome Queck",
+    "adoptionBlockedUntilHumanApproval": false,
+    "adoptionBlockedUntilProductionGates": true,
+    "retainedForFutureReview": ["mirror", "proof-structure", "unfolding-surface"]
   }
 }

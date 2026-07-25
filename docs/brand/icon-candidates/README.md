@@ -1,6 +1,6 @@
 # Clarifold icon candidate review
 
-This is the exploratory review packet for [issue #98](https://github.com/jerome-queck/clarifold/issues/98). It contains four materially different directions for the Clarifold app icon. No candidate is an official asset, is wired into the application, or is adopted for the repository identity. Official selection remains the human gate in [issue #99](https://github.com/jerome-queck/clarifold/issues/99).
+This is the exploratory review packet for [issue #98](https://github.com/jerome-queck/clarifold/issues/98). It contains four materially different directions for the Clarifold app icon. Jerome selected Learning Trail for focused refinement in [issue #99](https://github.com/jerome-queck/clarifold/issues/99); it is not yet an official asset, is not wired into the application, and is not adopted for the repository identity. The [decision record](selection.md) retains the other three candidates for future review.
 
 ## Comparison board
 
@@ -59,7 +59,8 @@ Broad planes open around a small illuminated gap. The intended reading is clarit
 - Judge silhouette, recognition, contrast, and color-independent meaning separately. Do not treat glow or color as a substitute for shape.
 - Check that no direction implies guaranteed mastery, universal correctness, generic tutoring, or an AI assistant.
 - Confirm provenance and rights notes in [`provenance.md`](provenance.md) before selecting a direction.
-- Record the human decision in issue #99. Until that decision is recorded, do not copy any candidate into application, packaging, repository identity, or release assets.
+- Read the [decision record](selection.md) for the selected direction, retained alternatives, and gates before production use.
+- Do not copy Learning Trail into application, packaging, repository identity, or release assets until the production gates in the decision record are complete.
 
 ## Preview files
 
