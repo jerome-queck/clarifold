@@ -1,5 +1,7 @@
 import { chromium, expect, test, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -34,20 +36,39 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
   const supportDirectory = join(home, "Library", "Application Support");
   const legacyDirectory = join(supportDirectory, "Quick Study");
   const clarifoldDirectory = join(supportDirectory, "Clarifold");
-  await mkdir(supportDirectory, { recursive: true });
-  await mkdir(runtimeControlDirectory, { recursive: true });
-  const legacyApplication = await LearningApplication.launch(legacyDirectory);
-  await legacyApplication.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
-  const legacyState = await readFile(join(legacyDirectory, "learning-application.json"), "utf8");
+  const betaInstallReportPath = join(process.cwd(), "test-results", "beta-install.json");
+  const betaInstallReport = JSON.parse(await readFile(betaInstallReportPath, "utf8")) as Record<string, unknown>;
+  const candidateCommit = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const artifact = String(betaInstallReport.artifact);
+  const archiveSha256 = String(betaInstallReport.sha256);
+  const architecture = process.arch === "arm64" ? "arm64" : "x64";
+  const archivePath = join(process.cwd(), "out", "make", "zip", "darwin", architecture, artifact);
+  expect(betaInstallReport.candidateCommit).toBe(candidateCommit);
+  expect(await fileDigest(archivePath)).toBe(archiveSha256);
   const rollbackMarkerPath = join(legacyDirectory, "rollback-marker.txt");
-  await writeFile(rollbackMarkerPath, "retain after interrupted migration\n", "utf8");
-  await legacyApplication.shutdown();
   const migrationInterruptPath = join(runtimeControlDirectory, "migration-interrupt");
-  await writeFile(migrationInterruptPath, "hold migration\n", "utf8");
-  const durableMigrationState = (raw: string): Record<string, unknown> => {
-    const state = JSON.parse(raw) as Record<string, unknown>;
+  let legacyState: string;
+  let legacyApplication: LearningApplication | undefined;
+  try {
+    await mkdir(supportDirectory, { recursive: true });
+    await mkdir(runtimeControlDirectory, { recursive: true });
+    legacyApplication = await LearningApplication.launch(legacyDirectory);
+    await legacyApplication.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
+    legacyState = await readFile(join(legacyDirectory, "learning-application.json"), "utf8");
+    await writeFile(rollbackMarkerPath, "retain after interrupted migration\n", "utf8");
+    await writeFile(migrationInterruptPath, "hold migration\n", "utf8");
+    await legacyApplication.shutdown();
+    legacyApplication = undefined;
+  } catch (error) {
+    await legacyApplication?.shutdown().catch(() => undefined);
+    await removeTestDirectory(root).catch(() => undefined);
+    throw error;
+  }
+  const durableMigrationState = (raw: string | Record<string, unknown>): Record<string, unknown> => {
+    const state = typeof raw === "string" ? JSON.parse(raw) as Record<string, unknown> : raw;
     const volatileRootFields = new Set([
-      "activityOrder", "authentication", "runtimeAvailable", "modelRuntimeLifecycle", "runtimeCapabilities", "modelAccess"
+      "activityOrder", "activeSessionId", "authentication", "modelAccess", "modelRuntimeLifecycle",
+      "resumeSessionId", "runtimeAvailable", "runtimeCapabilities", "screen"
     ]);
     const withoutVolatileRootFields = Object.fromEntries(
       Object.entries(state).filter(([key]) => !volatileRootFields.has(key))
@@ -142,13 +163,12 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
       outcome: "migrated",
       retryState: "idempotent"
     });
-    const betaInstallReport = JSON.parse(await readFile(join(process.cwd(), "test-results", "beta-install.json"), "utf8")) as Record<string, unknown>;
     const migrationEvidence = {
       schemaVersion: 1,
       scenario: "process-interruption-reopen",
-      candidateCommit: betaInstallReport.candidateCommit,
-      artifact: betaInstallReport.artifact,
-      archiveSha256: betaInstallReport.sha256,
+      candidateCommit,
+      artifact,
+      archiveSha256,
       receipt: migrationReceipt
     };
     await testInfo.attach("migration-recovery-receipt.json", {
@@ -165,16 +185,17 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
     });
     await page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter");
     await expect(page.getByRole("heading", { name: "Mathematical Workbench" })).toBeVisible();
-    const resumedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
     await closeAttempt(attempt);
+    const resumedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
     attempt = undefined;
 
     attempt = await launchAttempt();
     await expect(attempt.page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
     await expect(attempt.page.getByRole("status", { name: "Clarifold data migration status" }))
       .toContainText("Migration verified");
-    const relaunchedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
-    expect(durableMigrationState(relaunchedState)).toEqual(durableMigrationState(resumedState));
+    const relaunchedBackendState = await readBoundedPackagedBackendState(attempt.page);
+    expect(relaunchedBackendState).not.toMatchObject({ unavailable: expect.any(String) });
+    expect(durableMigrationState(relaunchedBackendState as Record<string, unknown>)).toEqual(durableMigrationState(resumedState));
     expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
     expect(await readFile(rollbackMarkerPath, "utf8")).toBe("retain after interrupted migration\n");
     await closeAttempt(attempt);
@@ -1246,6 +1267,12 @@ async function removeTestDirectory(path: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await rm(path, { recursive: true, force: true });
+}
+
+async function fileDigest(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 async function recordInstalledMeasurements(
