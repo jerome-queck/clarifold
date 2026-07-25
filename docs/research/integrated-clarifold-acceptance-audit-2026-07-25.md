@@ -100,3 +100,11 @@ Issue #104 is the focused follow-up for the deferred local workspace-directory
 rename. Hosted PR verification and the resulting squash-merge `main` check are
 delivery gates for this issue, not a reason to rename the workspace early; the
 parent remains open until those exact-SHA checks and #104 are complete.
+
+The first hosted `verify` run for candidate `72c212d7` passed in
+[PR #143](https://github.com/jerome-queck/clarifold/actions/runs/30148849681).
+When `main` advanced to the same audit tree during delivery, the classifier
+correctly failed a subsequent empty-diff update with `No changed paths were
+found`; this was a delivery-state result, not an application verification
+failure. This receipt keeps the final PR diff non-empty so its hosted and
+post-merge checks remain reviewable.
