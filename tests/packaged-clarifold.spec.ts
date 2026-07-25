@@ -67,7 +67,7 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
   const durableMigrationState = (raw: string | Record<string, unknown>): Record<string, unknown> => {
     const state = typeof raw === "string" ? JSON.parse(raw) as Record<string, unknown> : raw;
     const volatileRootFields = new Set([
-      "activityOrder", "activeSessionId", "authentication", "modelAccess", "modelRuntimeLifecycle",
+      "activityOrder", "activeSessionId", "agentWorkLogs", "authentication", "learnerOperation", "modelAccess", "modelRuntimeLifecycle",
       "resumeSessionId", "runtimeAvailable", "runtimeCapabilities", "screen"
     ]);
     const withoutVolatileRootFields = Object.fromEntries(
@@ -76,7 +76,9 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
     if (Array.isArray(state.sessions)) {
       withoutVolatileRootFields.sessions = state.sessions.map((session) => {
         const entry = session as Record<string, unknown>;
-        return Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "activityOrder"));
+        const durableSession = Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "activityOrder"));
+        if (durableSession.status === "active") durableSession.status = "paused";
+        return durableSession;
       });
     }
     return withoutVolatileRootFields;
