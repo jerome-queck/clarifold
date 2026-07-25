@@ -36,6 +36,7 @@
     "quality:collect:model": "npm run build:main && node scripts/collect-model-evaluation.mjs",
     "quality:collect:recovery": "node scripts/collect-recovery-evaluation.mjs",
     "quality:assemble:beta": "node scripts/assemble-beta-release-evidence.mjs",
+    "quality:assemble:internal-candidate": "node scripts/assemble-internal-candidate-manifest.mjs",
     "quality:gate:beta": "npm run quality:assemble:beta && npm run quality:gate -- --benchmark evaluation/benchmarks/v2/benchmark.json --evidence test-results/release-quality-gate/evidence.json --out test-results/release-quality-gate",
     "quality:bundle:beta": "node scripts/publish-beta-release-report.mjs",
     "quality:gate:fixture": "npm run quality:gate -- --evidence evaluation/fixtures/passing-evidence-v2.json --out test-results/quality-gate",
