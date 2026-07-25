@@ -30,6 +30,7 @@ import { AdaptiveTeaching } from "./AdaptiveTeaching";
 import { LearnerModelLedger } from "./LearnerModelLedger";
 import { toDateTimeLocal } from "./date-time";
 import { learnerActionAvailability } from "../../shared/learner-operation";
+import clarifoldIcon from "./assets/clarifold-icon.png";
 
 type StateHandler = (state: LearningApplicationState) => void;
 
@@ -143,7 +144,7 @@ function StorageRecovery({ state }: { state: LearningApplicationState }) {
 function Brand() {
   return (
     <header className="brand">
-        <span className="brand-mark" aria-hidden="true">C</span>
+        <img className="brand-mark" src={clarifoldIcon} alt="" aria-hidden="true" />
       <span>Clarifold</span>
       <span className="local-pill">Stored locally</span>
     </header>

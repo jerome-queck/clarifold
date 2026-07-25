@@ -1,10 +1,10 @@
 # Clarifold icon candidate review
 
-This is the exploratory review packet for [issue #98](https://github.com/jerome-queck/clarifold/issues/98). It contains four materially different directions for the Clarifold app icon. Jerome selected Learning Trail for focused refinement in [issue #99](https://github.com/jerome-queck/clarifold/issues/99); it is not yet an official asset, is not wired into the application, and is not adopted for the repository identity. The [decision record](selection.md) retains the other three candidates for future review.
+This is the exploratory review packet for [issue #98](https://github.com/jerome-queck/clarifold/issues/98). It contains four materially different directions for the Clarifold app icon. Jerome selected Learning Trail for focused refinement in [issue #99](https://github.com/jerome-queck/clarifold/issues/99); the [decision record](selection.md) records its completed production wiring review and retains the other three candidates for future review.
 
 ## Comparison board
 
-The board shows each candidate against dark and light surrounding surfaces, with explicit large 360 px, 128 px, and 32 px checks on each surface. The candidates intentionally retain an opaque dark rounded-square tile; the light panel therefore tests tile-edge recognition and surrounding contrast, not a transparent or vector mark. The rounded-corner mask is presentation-only: it removes generated outer fill so the surrounding surface can be evaluated cleanly without changing the candidate mark. Any selected direction needs a separate native asset refinement review.
+The board shows each candidate against dark and light surrounding surfaces, with explicit large 360 px, 128 px, and 32 px checks on each surface. The candidates intentionally retain an opaque dark rounded-square tile; the light panel therefore tests tile-edge recognition and surrounding contrast, not a transparent or vector mark. The rounded-corner mask is presentation-only: it removes generated outer fill so the surrounding surface can be evaluated cleanly without changing the candidate mark. The selected Learning Trail direction has a separate native asset refinement review recorded in the decision record.
 
 ![Clarifold icon candidate context board](clarifold-icon-candidates-context-board.png)
 
@@ -60,7 +60,7 @@ Broad planes open around a small illuminated gap. The intended reading is clarit
 - Check that no direction implies guaranteed mastery, universal correctness, generic tutoring, or an AI assistant.
 - Confirm provenance and rights notes in [`provenance.md`](provenance.md) before selecting a direction.
 - Read the [decision record](selection.md) for the selected direction, retained alternatives, and gates before production use.
-- Do not copy Learning Trail into application, packaging, repository identity, or release assets until the production gates in the decision record are complete.
+- Do not copy a retained alternative into application, packaging, repository identity, or release assets. The selected Learning Trail asset is wired only through the production contract in the decision record.
 
 ## Preview files
 

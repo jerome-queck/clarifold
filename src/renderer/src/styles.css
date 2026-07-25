@@ -20,7 +20,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   background: radial-gradient(circle at 86% 12%, #d9eadc 0, transparent 28%), #f4efe5;
 }
 .brand { display: flex; align-items: center; gap: 12px; min-height: 38px; font-weight: 750; letter-spacing: -.02em; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; color: #f9f5ec; background: #1d5548; font-family: Georgia, serif; }
+.brand-mark { display: block; width: 38px; height: 38px; border-radius: 12px; object-fit: cover; }
 .local-pill { margin-left: auto; padding: 7px 11px; border: 1px solid #bfd1c4; border-radius: 999px; color: #47645b; font-size: 12px; font-weight: 600; background: rgba(255,255,255,.48); }
 .eyebrow { margin: 0 0 9px; color: #b65d38; font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 h1, h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; letter-spacing: -.035em; }

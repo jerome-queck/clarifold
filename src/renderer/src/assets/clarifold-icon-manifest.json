@@ -1,0 +1,18 @@
+{
+  "source": "docs/brand/icon-candidates/learning-trail.png",
+  "sourceSha256": "fa1eeb3b4d77add260f77728395c79191bbbff82179a20eb795a1d813c27f0dc",
+  "generatedBy": "scripts/generate-clarifold-icon.mjs",
+  "rendererAsset": "clarifold-icon.png",
+  "nativeAsset": "Clarifold.icns",
+  "iconsetDirectory": "Clarifold.iconset",
+  "sizes": [
+    16,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "mask": "The selected source is retained while its opaque rounded tile is converted to a transparent outside edge for macOS mask handling."
+}

@@ -12,6 +12,11 @@ import type {
 } from "../../shared/learning-application";
 import type { MigrationStatus } from "../../shared/clarifold-migration";
 
+declare module "*.png" {
+  const source: string;
+  export default source;
+}
+
 declare global {
   interface Window {
     clarifold: {

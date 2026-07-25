@@ -44,6 +44,8 @@ Run focused checks while changing code, then run the complete lane before review
 | `npm run typecheck` | Renderer, Learning Application, preload, main, and quality-gate TypeScript checks |
 | `npm test` | Deterministic unit and integration tests |
 | `npm run build` | Production renderer, main-process, native-helper, and verifier build |
+| `npm run branding:icon` | Regenerate the selected Learning Trail renderer and macOS icon resources from the canonical source |
+| `npm run branding:icon:check` | Verify the selected icon source digest, all macOS sizes, transparent edge, and `.icns` round trip |
 | `npm run security:dependencies` | Production dependency audit |
 | `npm run security:secrets` | Full-history secret scan with the pinned Gitleaks release |
 | `npm run security:swift` | Warnings-as-errors Swift boundary analysis |

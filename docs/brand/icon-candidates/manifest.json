@@ -1,8 +1,8 @@
 {
   "issue": 98,
-  "status": "selected-for-focused-refinement",
+  "status": "production-wired-selected-asset",
   "generatedOn": "2026-07-25",
-  "officialAsset": false,
+  "officialAsset": true,
   "generation": {
     "tool": "Codex built-in image_gen",
     "mode": "default generation",
@@ -14,7 +14,7 @@
     "basis": "OpenAI Terms of Use ownership-of-content clause checked 2026-07-25",
     "source": "https://openai.com/policies/terms-of-use/",
     "referenceImages": "none",
-    "status": "compatible-for-exploratory-review-only-subject-to-applicable-law-and-account-terms",
+    "status": "compatible-for-current-internal-candidate-use-subject-to-applicable-law-and-account-terms; no-uniqueness-or-trademark-clearance-claim",
     "boardTypography": "macOS Arial rasterized into review-only labels; no font files redistributed",
     "officialBrandClearance": false
   },
@@ -52,7 +52,7 @@
     "decidedOn": "2026-07-25",
     "decidedBy": "Jerome Queck",
     "adoptionBlockedUntilHumanApproval": false,
-    "adoptionBlockedUntilProductionGates": true,
+    "adoptionBlockedUntilProductionGates": false,
     "retainedForFutureReview": ["mirror", "proof-structure", "unfolding-surface"]
   }
 }

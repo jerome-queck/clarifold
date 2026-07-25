@@ -2,7 +2,7 @@
 
 ## Common generation record
 
-- Purpose: exploratory Clarifold icon directions for issue #98; not official brand adoption.
+- Purpose: exploratory Clarifold icon directions for issue #98; the selected Learning Trail direction is now the current internal Clarifold application identity after the production wiring review in issue #100.
 - Generated: 2026-07-25.
 - Generation method: built-in Codex `image_gen` tool in default generation mode.
 - Reference images: none. Each candidate was generated from a separate text prompt.
@@ -10,7 +10,7 @@
 - Post-processing: ImageMagick `magick` was used only to create size previews and the context board. It did not alter the source candidate PNGs or add candidate semantics.
 - Review-board typography: Arial Regular and Arial Bold from the macOS Supplemental fonts directory were rasterized into labels on the review board only. No font files are redistributed, the labels are not part of any candidate mark, and the board is not a proposed product asset. The review packet therefore does not rely on a font licence for an adopted icon; any future public board or release asset would need its own font-use review.
 - Third-party elements: no external image, logo, icon, person, or supplied artwork was used as an input.
-- Rights status: these are AI-assisted exploratory outputs. The current [OpenAI Terms of Use](https://openai.com/policies/terms-of-use/) state, as between the user and OpenAI and to the extent permitted by applicable law, that the user owns the Output; they also make the user responsible for supplied content, note that output may not be unique, and require human evaluation before use or sharing. Because this session used no reference images or third-party output, the recorded provenance basis is compatible with retaining these candidates as Jerome-owned exploratory material for this review, subject to applicable law and any account-specific or service-specific terms. That is not a uniqueness, copyright, trademark-clearance, or official-brand determination. Before any human-selected direction is adopted, Jerome must complete the brand/trademark and accessibility reviews and record any needed refinement or rights-chain decision. This packet makes no claim that any candidate is already the official Clarifold logo.
+- Rights status: these are AI-assisted outputs. The current [OpenAI Terms of Use](https://openai.com/policies/terms-of-use/) state, as between the user and OpenAI and to the extent permitted by applicable law, that the user owns the Output; they also make the user responsible for supplied content, note that output may not be unique, and require human evaluation before use or sharing. Because this session used no reference images or third-party output, the recorded provenance basis supports the selected Learning Trail asset's current internal-candidate use, subject to applicable law and any account-specific or service-specific terms. That is not a uniqueness, copyright, trademark-clearance, or general brand-licence determination. The retained alternatives remain exploratory and are not official Clarifold assets. Any future public distribution or serious commercial promotion must revisit the brand/trademark and rights-chain review.
 
 ## Candidate prompts and construction notes
 
