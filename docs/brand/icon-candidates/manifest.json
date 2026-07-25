@@ -10,6 +10,13 @@
     "sourceDimensions": "1254x1254",
     "postProcessing": "ImageMagick size reductions and review-board compositing only"
   },
+  "rights": {
+    "basis": "OpenAI Terms of Use ownership-of-content clause checked 2026-07-25",
+    "source": "https://openai.com/policies/terms-of-use/",
+    "referenceImages": "none",
+    "status": "exploratory-retained-subject-to-applicable-law-and-account-terms",
+    "officialBrandClearance": false
+  },
   "candidates": [
     {
       "id": "mirror",

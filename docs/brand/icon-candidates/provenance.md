@@ -10,7 +10,7 @@
 - Post-processing: ImageMagick `magick` was used only to create size previews and the context board. It did not alter the source candidate PNGs or add candidate semantics.
 - Review-board typography: Arial Regular and Arial Bold from the macOS Supplemental fonts directory were used for labels on the review board only. Those fonts are not included in any candidate image or proposed product asset.
 - Third-party elements: no external image, logo, icon, person, or supplied artwork was used as an input.
-- Rights status: these are AI-assisted exploratory outputs. Before any human-selected direction is adopted, Jerome must confirm the applicable generation-service terms, brand/trademark review, accessibility review, and any needed refinement or rights chain. This packet makes no claim that any candidate is already the official Clarifold logo.
+- Rights status: these are AI-assisted exploratory outputs. The current [OpenAI Terms of Use](https://openai.com/policies/terms-of-use/) state, as between the user and OpenAI and to the extent permitted by applicable law, that the user owns the Output; they also make the user responsible for supplied content, note that output may not be unique, and require human evaluation before use or sharing. Because this session used no reference images or third-party output, the recorded provenance basis is compatible with retaining these candidates as Jerome-owned exploratory material, subject to applicable law and any account-specific or service-specific terms. That is not a uniqueness, copyright, trademark-clearance, or official-brand determination. Before any human-selected direction is adopted, Jerome must complete the brand/trademark and accessibility reviews and record any needed refinement or rights-chain decision. This packet makes no claim that any candidate is already the official Clarifold logo.
 
 ## Candidate prompts and construction notes
 
@@ -52,4 +52,4 @@ The per-candidate previews are deterministic size reductions of the correspondin
 | 32 px | small toolbar-style review |
 | 16 px | minimum legibility check |
 
-The context board places each source candidate on dark and light surrounding surfaces and includes 128 px and 32 px previews. It is a review aid only; it is not a signed product screenshot, application resource, or release artifact.
+The context board places each source candidate on dark and light surrounding surfaces and includes explicit 360 px, 128 px, and 32 px previews on both surfaces. Its rounded-corner mask removes only generated corner fill for presentation; it is a review aid, not a signed product screenshot, application resource, or release artifact.

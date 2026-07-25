@@ -4,7 +4,7 @@ This is the exploratory review packet for [issue #98](https://github.com/jerome-
 
 ## Comparison board
 
-The board shows each candidate against dark and light surrounding surfaces, with a large preview and 128 px / 32 px checks:
+The board shows each candidate against dark and light surrounding surfaces, with explicit large 360 px, 128 px, and 32 px checks on each surface. The rounded-corner mask is presentation-only: it removes generated corner fill so the surrounding surface can be evaluated cleanly without changing the candidate mark.
 
 ![Clarifold icon candidate context board](clarifold-icon-candidates-context-board.png)
 
