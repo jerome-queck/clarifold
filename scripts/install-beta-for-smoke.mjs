@@ -45,6 +45,16 @@ for (const [field, actual, expected] of [
 ]) {
   if (actual !== expected) throw new Error(`Packaged ${field} is ${String(actual)}; expected ${expected}.`);
 }
+if (typeof bundleMetadata.CFBundleIconFile !== "string"
+  || !/^[A-Za-z0-9._-]+\.icns$/.test(bundleMetadata.CFBundleIconFile)) {
+  throw new Error(`Packaged CFBundleIconFile is invalid: ${String(bundleMetadata.CFBundleIconFile)}.`);
+}
+const packagedIconPath = join(applicationPath, "Contents", "Resources", bundleMetadata.CFBundleIconFile);
+const sourceIconPath = join(root, "src", "renderer", "src", "assets", "Clarifold.icns");
+await assertRealFile(packagedIconPath, "packaged Clarifold icon");
+if (await fileDigest(packagedIconPath) !== await fileDigest(sourceIconPath)) {
+  throw new Error("The installed Clarifold icon does not match the generated selected asset.");
+}
 for (const resource of ["LICENSE.md", "NOTICE", "THIRD_PARTY_NOTICES.md", "ELECTRON_LICENSE", "CHROMIUM_LICENSES.html"]) {
   await assertRealFile(join(applicationPath, "Contents", "Resources", resource), `packaged ${resource}`);
 }
@@ -66,7 +76,7 @@ const report = {
   installedApplication: `test-results/installed-beta/${release.applicationName}`,
   validations: [
     "archive-extracted", "application-identity", "application-executable-present", "bundled-verifier-present",
-    "legal-resources-present", "code-signature-valid"
+    "application-icon-present", "application-icon-matches-generated-asset", "legal-resources-present", "code-signature-valid"
   ]
 };
 await writeFile(join(root, "test-results", "beta-install.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");

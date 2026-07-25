@@ -4,7 +4,7 @@
 
 On 2026-07-25, Jerome Queck selected the **Learning Trail** direction from the review packet for focused refinement. The selected exploratory source asset is [`learning-trail.png`](learning-trail.png), with derived previews in [`previews/`](previews/) and dark/light context comparisons in [`context/learning-trail.png`](context/learning-trail.png).
 
-This is a direction selection, not production adoption. The source remains an AI-assisted exploratory asset, and `officialAsset` remains `false` in [`manifest.json`](manifest.json). The other candidates remain unchanged in this packet for future review:
+This is the only candidate promoted for the current Clarifold application identity. The source remains an AI-assisted asset with a retained provenance record; no uniqueness, registration, or trademark-clearance claim is made. The other candidates remain unchanged in this packet for future review:
 
 - **Mirror** — retained as a calm reflective alternative.
 - **Proof structure** — retained as the explicit claims-and-dependencies alternative.
@@ -28,4 +28,15 @@ Before the selected direction becomes an official app, repository, or release as
 4. Complete the Clarifold brand/trademark and rights-chain review. The current provenance supports exploratory retention but does not establish uniqueness, copyright registration, trademark clearance, or official-brand clearance.
 5. Wire the approved native assets into the application and packaging only after gates 1–4, then verify the packaged app and release provenance on the exact candidate bytes.
 
-Until these gates are complete, the selected direction is **selected for refinement**, not an official logo. The future candidates remain available in this review packet and must not be silently replaced or discarded.
+Before the production wiring review below, the selected direction was **selected for refinement**, not an official logo. The future candidates remain available in this review packet and must not be silently replaced or discarded.
+
+## Production wiring review
+
+Issue #100 completed the engineering gates for the current internal evaluation candidate on 2026-07-25:
+
+1. `scripts/generate-clarifold-icon.mjs` derives a transparent-edge renderer PNG and a native `Clarifold.icns` from this selected source. The committed iconset contains the 16, 32, 64, 128, 256, 512, and 1024 px review sizes, including the required macOS `@2x` representations. The source digest and generation contract are recorded in [`clarifold-icon-manifest.json`](../../../src/renderer/src/assets/clarifold-icon-manifest.json).
+2. Review of the generated mark at 16, 32, 64, 128, 256, 512, and 1024 px found the loop and central opening remain recognizable on light and dark surfaces. The grayscale review retains the silhouette and central gap without relying on the teal, violet, or amber accents. The transparent outside edge leaves the macOS mask to the platform rather than retaining black corner fill.
+3. The selected source has no reference images or third-party artwork. The rights-chain review records the source and generation method, but does not claim uniqueness, copyright registration, trademark clearance, or a general brand licence. Serious commercial promotion and any future clearance decision remain governed by [`ADR-0040`](../../adr/0040-reserve-the-clarifold-brand-and-plan-singapore-first-clearance.md).
+4. Electron Forge packaging now points at `Clarifold.icns`, and the renderer Brand surface uses the same generated PNG. `npm run branding:icon:check` validates the source digest, dimensions, iconset contents, and `.icns` round trip before packaging.
+
+The selected Learning Trail asset is therefore the official current Clarifold application identity for this source-available internal candidate. This does not make the candidate a signed or notarized public distribution asset, and it does not authorize modified distributions to retain the Clarifold name or icon.

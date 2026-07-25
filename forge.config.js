@@ -7,7 +7,7 @@ module.exports = {
     appBundleId: identity.bundleIdentifier,
     appCategoryType: "public.app-category.education",
     asar: { unpackDir: "dist/helpers" },
-    icon: undefined,
+    icon: join(__dirname, "src", "renderer", "src", "assets", "Clarifold.icns"),
     osxSign: {
       identity: "-",
       identityValidation: false,

@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 import { auditPackagedApplication } from "../../scripts/audit-packaged-licenses.mjs";
 // @ts-expect-error The release identity helper is an executable-side JavaScript module.
 import { readClarifoldReleaseIdentity } from "../../scripts/clarifold-release-identity.mjs";
+// @ts-expect-error The icon asset validator is an executable-side JavaScript module.
+import { validateClarifoldIconAssets } from "../../scripts/generate-clarifold-icon.mjs";
 
 const require = createRequire(import.meta.url);
 const { createPackage } = require("@electron/asar") as {
@@ -148,6 +150,28 @@ describe("macOS beta release contract", () => {
     expect(packageJson.scripts["verify:prepackage"]).toContain("npm run policy:documentation");
     expect(packageJson.scripts["verify:package"]).toContain("npm run make:beta && npm run license:audit && npm run test:smoke");
     expect(packageJson.scripts.verify).toBe("npm run verify:prepackage && npm run verify:package");
+  });
+
+  it("uses the human-selected Learning Trail asset for the packaged identity", async () => {
+    const forgeConfig = require(join(process.cwd(), "forge.config.js"));
+    const selectedSource = join(process.cwd(), "docs", "brand", "icon-candidates", "learning-trail.png");
+    const selectionManifest = JSON.parse(await readFile(join(process.cwd(), "docs", "brand", "icon-candidates", "manifest.json"), "utf8"));
+    const rendererIcon = join(process.cwd(), "src", "renderer", "src", "assets", "clarifold-icon.png");
+    const nativeIcon = join(process.cwd(), "src", "renderer", "src", "assets", "Clarifold.icns");
+
+    expect(forgeConfig.packagerConfig.icon).toBe(nativeIcon);
+    expect(selectionManifest).toMatchObject({
+      officialAsset: true,
+      selection: { selectedCandidate: "learning-trail", decisionIssue: 99, adoptionBlockedUntilProductionGates: false },
+      rights: { officialBrandClearance: false }
+    });
+    expect((await stat(selectedSource)).isFile()).toBe(true);
+    expect((await stat(rendererIcon)).isFile()).toBe(true);
+    expect((await stat(nativeIcon)).isFile()).toBe(true);
+    await expect(validateClarifoldIconAssets(process.cwd())).resolves.toMatchObject({
+      source: "docs/brand/icon-candidates/learning-trail.png",
+      sizes: [16, 32, 64, 128, 256, 512, 1024]
+    });
   });
 });
 

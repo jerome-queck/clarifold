@@ -28,6 +28,10 @@ npm run dev
 
 The development command builds the native Source Index and security-scoped bookmark helpers before starting Electron. Restart it after changing either helper under `native/` so the helper is rebuilt.
 
+Regenerating the selected icon with `npm run branding:icon` requires ImageMagick's
+`magick` command and Apple's `iconutil`; the committed-asset check is self-contained
+apart from macOS `iconutil`, so hosted verification does not need ImageMagick.
+
 The first development or production build downloads the pinned Lean 4.29.1 archive for the current Mac architecture, verifies its SHA-256 digest, checks out mathlib 4.29.1 at its pinned commit, and prepares the immutable `lean-4.29.1-mathlib-4.29.1-quick-study-v1` environment. The staged environment must accept the app's reference proof before activation. Downloads are reused from `node_modules/.cache/clarifold-lean`; a separate Lean or `elan` installation is not required.
 
 Use Electron's standard Clarifold `userData` directory by default. Set `CLARIFOLD_DATA_DIR` when an isolated directory is needed for development or diagnosis. The one-beta `QUICK_STUDY_DATA_DIR` compatibility alias is accepted with a deprecation warning and lower precedence. `CLARIFOLD_TEST_USER_DATA_DIR` is an isolated packaged-test path and disables default-directory migration; the other `CLARIFOLD_TEST_*` variables belong to the packaged test harness and are not product configuration. `CLARIFOLD_LEAN_PATH` is reserved for deterministic adapter tests and diagnosis; normal installations use the packaged verifier.
@@ -44,6 +48,8 @@ Run focused checks while changing code, then run the complete lane before review
 | `npm run typecheck` | Renderer, Learning Application, preload, main, and quality-gate TypeScript checks |
 | `npm test` | Deterministic unit and integration tests |
 | `npm run build` | Production renderer, main-process, native-helper, and verifier build |
+| `npm run branding:icon` | Regenerate the selected Learning Trail renderer and macOS icon resources from the canonical source |
+| `npm run branding:icon:check` | Verify the selected icon source digest, all macOS sizes, transparent edge, and `.icns` round trip |
 | `npm run security:dependencies` | Production dependency audit |
 | `npm run security:secrets` | Full-history secret scan with the pinned Gitleaks release |
 | `npm run security:swift` | Warnings-as-errors Swift boundary analysis |
