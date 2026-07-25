@@ -163,6 +163,35 @@ describe("Clarifold data migration", () => {
     expect(await readFile(join(destinationDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
   });
 
+  it("reopens after process interruption and removes only its owned staging output", async () => {
+    const root = await temporaryDirectory("clarifold-migration-reopen-staging-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    const stagingDirectory = `${destinationDirectory}.migration-staging`;
+    await createLearnerState(sourceDirectory);
+    const sourceState = await readFile(join(sourceDirectory, "learning-application.json"), "utf8");
+    await mkdir(stagingDirectory, { recursive: true });
+    await writeFile(join(stagingDirectory, ".clarifold-migration-staging.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      source: sourceDirectory,
+      destination: destinationDirectory
+    })}\n`, "utf8");
+    await writeFile(join(stagingDirectory, "partial-copy.txt"), "process interrupted during staging\n", "utf8");
+
+    const reopened = await migrateQuickStudyData({
+      sourceDirectory,
+      destinationDirectory,
+      applicationVersion: "0.2.0",
+      now: () => new Date("2026-07-25T02:03:04.000Z")
+    });
+
+    expect(reopened).toMatchObject({ outcome: "migrated" });
+    await expect(readdir(stagingDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(destinationDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+    expect(await readFile(join(sourceDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+    await expect(readFile(`${destinationDirectory}.migration-recovery.json`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("blocks a meaningful destination instead of overwriting or merging it", async () => {
     const root = await temporaryDirectory("clarifold-migration-conflict-");
     const sourceDirectory = join(root, "Quick Study");

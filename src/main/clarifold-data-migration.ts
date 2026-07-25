@@ -42,6 +42,7 @@ export interface ClarifoldDataMigrationOptions {
   readonly onStage?: (stage: MigrationStage) => void;
   readonly getFreeSpaceBytes?: (path: string) => Promise<number>;
   readonly validateStagedDirectory?: (path: string) => Promise<void>;
+  readonly beforeStagingCopy?: (stagingDirectory: string) => Promise<void>;
 }
 
 export function migrationStatusFor(result: MigrationResult): MigrationStatus {
@@ -223,6 +224,7 @@ async function migrateQuickStudyDataInternal(options: ClarifoldDataMigrationOpti
       await writeFile(join(stagingDirectory, MIGRATION_STAGING_MARKER_NAME), `${JSON.stringify({
         schemaVersion: 1, source: sourceDirectory, destination: destinationDirectory
       })}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await options.beforeStagingCopy?.(stagingDirectory);
       await copyDirectoryContents(sourceDirectory, stagingDirectory);
     } catch (error) {
       await removeOwnedStaging(stagingDirectory);

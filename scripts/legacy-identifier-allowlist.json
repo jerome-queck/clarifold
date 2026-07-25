@@ -99,12 +99,12 @@
       "expectedCounts": {
         "legacy-product-name": 57,
         "legacy-slug": 25,
-        "legacy-concatenated-identifier": 33
+        "legacy-concatenated-identifier": 31
       },
       "expectedFingerprints": {
         "legacy-product-name": "1ba0874efd3a2e505d233216dd129184829360745ced851b1050826b840f7b81",
         "legacy-slug": "f34abd160186bf6c92a6fed4c76aab4e920e677b0f08d0f2742aff6846bffb59",
-        "legacy-concatenated-identifier": "8f0bf918092525ad542bf8ae2973c301e05ec70416a6555ac43d181f571ced73"
+        "legacy-concatenated-identifier": "1c6d39315bcb87b11d4ec03749772762586be01419ab6bbdc3d3a58d6d08f78a"
       }
     },
     {
@@ -143,7 +143,7 @@
         "legacy-environment-variable": 14
       },
       "expectedFingerprints": {
-        "legacy-environment-variable": "925d3c245980af2e7d4821ec742893bd44b1c9363cca00facb51922480fe1370"
+        "legacy-environment-variable": "4162abde15f0bed5b975ad5f66cc0d752eed592416880cc827cdb957f8082014"
       }
     },
     {
@@ -152,14 +152,14 @@
       "paths": ["**/*.test.ts", "**/*.test.tsx", "tests/**"],
       "patterns": ["legacy-product-name", "legacy-slug", "legacy-concatenated-identifier"],
       "expectedCounts": {
-        "legacy-product-name": 40,
+        "legacy-product-name": 41,
         "legacy-slug": 77,
-        "legacy-concatenated-identifier": 128
+        "legacy-concatenated-identifier": 129
       },
       "expectedFingerprints": {
-        "legacy-product-name": "f592c35bb8c7391d195bbe671147d4e7bbb1492610431eac510f8c434b16dbaf",
+        "legacy-product-name": "b22fc403dbe4bd9f2d39c849f3f527b7c1910ea0a95dc8081fde342b4ebc3df7",
         "legacy-slug": "5ef0430ebaea8fe4aa75044cd698b3b665890db216e7315132f43d4b6e181ec4",
-        "legacy-concatenated-identifier": "c7e4f0f88edb750b29398c05bf13dfa9de44b3bcd95a9e237205f2669ad1797d"
+        "legacy-concatenated-identifier": "db04c6c3663649110bce19b2855a64f3fb712f3add88aa29177609a60bc96a7a"
       }
     }
   ]

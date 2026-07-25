@@ -1,9 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, open, readdir, realpath, rm, stat, watch, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
@@ -683,6 +683,25 @@ function registerMigrationStatusHandler(): void {
   });
 }
 
+async function waitForTestMigrationRelease(controlPath: string): Promise<void> {
+  const watcher = watch(dirname(controlPath), { persistent: false });
+  const readyPath = `${controlPath}.ready`;
+  await writeFile(readyPath, "staging marker created\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  try {
+    for await (const event of watcher) {
+      if (String(event.filename) !== basename(controlPath)) continue;
+      try {
+        await stat(controlPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+    }
+  } finally {
+    await watcher.return?.();
+  }
+}
+
 void app.whenReady().then(async () => {
   registerMigrationStatusHandler();
   runtimeConfiguration = resolveClarifoldRuntimeConfiguration(
@@ -705,7 +724,10 @@ void app.whenReady().then(async () => {
       destinationDirectory: runtimeConfiguration.dataDirectory,
       applicationVersion: CLARIFOLD_IDENTITY.version,
       sourceAccess,
-      onStage: observeMigrationStage
+      onStage: observeMigrationStage,
+      ...(runtimeConfiguration.testMigrationInterruptFile
+        ? { beforeStagingCopy: () => waitForTestMigrationRelease(runtimeConfiguration.testMigrationInterruptFile!) }
+        : {})
     });
     migrationStatus = migration.outcome === "not-needed" ? null : migrationStatusFor(migration);
     if (migration.outcome === "blocked" || migration.outcome === "failed") {
