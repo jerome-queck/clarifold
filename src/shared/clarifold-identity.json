@@ -40,6 +40,7 @@
   "testVerifierRemovalFailureVariable": "CLARIFOLD_TEST_VERIFIER_REMOVAL_FAILURE",
   "testSkipDefaultVerifierInstallVariable": "CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL",
   "testExternalResearchVariable": "CLARIFOLD_TEST_EXTERNAL_RESEARCH",
+  "testMigrationInterruptFileVariable": "CLARIFOLD_TEST_MIGRATION_INTERRUPT_FILE",
   "compatibility": {
     "legacyDataDirectory": {
       "owner": "Jerome Queck",

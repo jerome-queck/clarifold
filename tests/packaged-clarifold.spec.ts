@@ -1,10 +1,13 @@
 import { chromium, expect, test, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import bundledEnvironment from "../src/shared/bundled-verifier-environment.json";
+import { CLARIFOLD_IDENTITY } from "../src/shared/clarifold-identity";
 import { LearningApplication } from "../src/shared/learning-application";
 import {
   attachPackagedDiagnostics,
@@ -33,48 +36,182 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
   const supportDirectory = join(home, "Library", "Application Support");
   const legacyDirectory = join(supportDirectory, "Quick Study");
   const clarifoldDirectory = join(supportDirectory, "Clarifold");
-  await mkdir(supportDirectory, { recursive: true });
-  await mkdir(runtimeControlDirectory, { recursive: true });
-  const legacyApplication = await LearningApplication.launch(legacyDirectory);
-  await legacyApplication.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
-  const legacyState = await readFile(join(legacyDirectory, "learning-application.json"), "utf8");
-  const port = await availablePort();
-  const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
-    env: {
-      ...process.env,
-      HOME: home,
-      ELECTRON_ENABLE_LOGGING: "1",
-      CODEX_HOME: runtimeControlDirectory,
-      CLARIFOLD_TEST_USER_DATA_DIR: clarifoldDirectory,
-      CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL: "1",
-      CLARIFOLD_TEST_EXTERNAL_RESEARCH: "stub"
-    },
-    stdio: "pipe"
-  });
-  let output = "";
-  child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
-  child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
-  let browser: Browser | undefined;
+  const betaInstallReportPath = join(process.cwd(), "test-results", "beta-install.json");
+  const betaInstallReport = JSON.parse(await readFile(betaInstallReportPath, "utf8")) as Record<string, unknown>;
+  const candidateCommit = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const artifact = String(betaInstallReport.artifact);
+  const archiveSha256 = String(betaInstallReport.sha256);
+  const architecture = process.arch === "arm64" ? "arm64" : "x64";
+  const archivePath = join(process.cwd(), "out", "make", "zip", "darwin", architecture, artifact);
+  expect(betaInstallReport.candidateCommit).toBe(candidateCommit);
+  expect(await fileDigest(archivePath)).toBe(archiveSha256);
+  const rollbackMarkerPath = join(legacyDirectory, "rollback-marker.txt");
+  const migrationInterruptPath = join(runtimeControlDirectory, "migration-interrupt");
+  let legacyState: string;
+  let legacyApplication: LearningApplication | undefined;
   try {
+    await mkdir(supportDirectory, { recursive: true });
+    await mkdir(runtimeControlDirectory, { recursive: true });
+    legacyApplication = await LearningApplication.launch(legacyDirectory);
+    await legacyApplication.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
+    legacyState = await readFile(join(legacyDirectory, "learning-application.json"), "utf8");
+    await writeFile(rollbackMarkerPath, "retain after interrupted migration\n", "utf8");
+    await writeFile(migrationInterruptPath, "hold migration\n", "utf8");
+    await legacyApplication.shutdown();
+    legacyApplication = undefined;
+  } catch (error) {
+    await legacyApplication?.shutdown().catch(() => undefined);
+    await removeTestDirectory(root).catch(() => undefined);
+    throw error;
+  }
+  const durableMigrationState = (raw: string | Record<string, unknown>): Record<string, unknown> => {
+    const state = typeof raw === "string" ? JSON.parse(raw) as Record<string, unknown> : raw;
+    const volatileRootFields = new Set([
+      "activityOrder", "activeSessionId", "agentWorkLogs", "authentication", "learnerOperation", "modelAccess", "modelRuntimeLifecycle",
+      "resumeSessionId", "runtimeAvailable", "runtimeCapabilities", "screen"
+    ]);
+    const withoutVolatileRootFields = Object.fromEntries(
+      Object.entries(state).filter(([key]) => !volatileRootFields.has(key))
+    );
+    if (Array.isArray(state.sessions)) {
+      withoutVolatileRootFields.sessions = state.sessions.map((session) => {
+        const entry = session as Record<string, unknown>;
+        const durableSession = Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "activityOrder"));
+        if (durableSession.status === "active") durableSession.status = "paused";
+        return durableSession;
+      });
+    }
+    return withoutVolatileRootFields;
+  };
+  let inFlightChild: ChildProcess | undefined;
+  let inFlightBrowser: Browser | undefined;
+  let inFlightOutput: (() => string) | undefined;
+  const launchAttempt = async (interruptMigration = false): Promise<{ child: ChildProcess; browser: Browser; page: Page; output: () => string }> => {
+    const port = await availablePort();
+    const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
+      env: {
+        ...process.env,
+        HOME: home,
+        ELECTRON_ENABLE_LOGGING: "1",
+        CODEX_HOME: runtimeControlDirectory,
+        CLARIFOLD_TEST_USER_DATA_DIR: clarifoldDirectory,
+        CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL: "1",
+        CLARIFOLD_TEST_EXTERNAL_RESEARCH: "stub",
+        ...(interruptMigration ? {
+          [CLARIFOLD_IDENTITY.testMigrationInterruptFileVariable]: migrationInterruptPath
+        } : {})
+      },
+      stdio: "pipe"
+    });
+    inFlightChild = child;
+    let output = "";
+    inFlightOutput = () => output;
+    child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+    child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
     const debuggerEndpoint = await waitForDebugger(port, child, () => output);
-    browser = await chromium.connectOverCDP(debuggerEndpoint);
+    const browser = await chromium.connectOverCDP(debuggerEndpoint);
+    inFlightBrowser = browser;
     const page = await waitForPage(browser, child, () => output);
+    const attempt = { child, browser, page, output: () => output };
+    inFlightChild = undefined;
+    inFlightBrowser = undefined;
+    inFlightOutput = undefined;
+    return attempt;
+  };
+  const closeAttempt = async (attempt: { child: ChildProcess; browser: Browser }): Promise<void> => {
+    await Promise.all(attempt.browser.contexts().flatMap((context) => context.pages()).map((page) => page.close()));
+    expect(await waitForExit(attempt.child, 5_000)).toBe(true);
+    await attempt.browser.close().catch(() => undefined);
+  };
+  let attempt: Awaited<ReturnType<typeof launchAttempt>> | undefined;
+  try {
+    attempt = await launchAttempt(true);
+    await expect(attempt.page.getByRole("heading", { name: "Preparing Clarifold" })).toBeVisible();
+    await expect.poll(async () => {
+      try {
+        await stat(`${migrationInterruptPath}.ready`);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    }).toBe(true);
+    expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
+    expect(await readdir(`${clarifoldDirectory}.migration-staging`)).toContain(".clarifold-migration-staging.json");
+    attempt.child.kill("SIGKILL");
+    expect(await waitForExit(attempt.child, 5_000)).toBe(true);
+    await attempt.browser.close().catch(() => undefined);
+    attempt = undefined;
+
+    await rm(migrationInterruptPath, { force: true });
+    await rm(`${migrationInterruptPath}.ready`, { force: true });
+    attempt = await launchAttempt();
+    const page = attempt.page;
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
     await expect(page.getByRole("status", { name: "Clarifold data migration status" }))
       .toContainText("Migration complete");
     expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
     const migratedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
     expect(JSON.parse(migratedState)).toEqual(JSON.parse(legacyState));
+    expect(await readFile(join(clarifoldDirectory, "rollback-marker.txt"), "utf8"))
+      .toBe("retain after interrupted migration\n");
+    expect(await readFile(rollbackMarkerPath, "utf8")).toBe("retain after interrupted migration\n");
+    await expect(readdir(`${clarifoldDirectory}.migration-staging`)).rejects.toMatchObject({ code: "ENOENT" });
+    const migrationReceipt = JSON.parse(await readFile(join(clarifoldDirectory, "migration-receipt.json"), "utf8")) as Record<string, unknown>;
+    expect(migrationReceipt).toMatchObject({
+      source: legacyDirectory,
+      destination: clarifoldDirectory,
+      applicationVersion: "0.2.0",
+      outcome: "migrated",
+      retryState: "idempotent"
+    });
+    const migrationEvidence = {
+      schemaVersion: 1,
+      scenario: "process-interruption-reopen",
+      candidateCommit,
+      artifact,
+      archiveSha256,
+      receipt: migrationReceipt
+    };
+    await testInfo.attach("migration-recovery-receipt.json", {
+      body: Buffer.from(`${JSON.stringify(migrationEvidence, null, 2)}\n`, "utf8"),
+      contentType: "application/json"
+    });
+    await updateBetaInstallReport((report) => {
+      report.migrationRecovery = migrationEvidence;
+      const validations = Array.isArray(report.validations) ? report.validations as string[] : [];
+      if (!validations.includes("migration-interruption-reopen-recovery")) {
+        validations.push("migration-interruption-reopen-recovery");
+      }
+      report.validations = validations;
+    });
     await page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter");
     await expect(page.getByRole("heading", { name: "Mathematical Workbench" })).toBeVisible();
-    await page.close();
-    expect(await waitForExit(child, 5_000)).toBe(true);
+    await closeAttempt(attempt);
+    const resumedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
+    attempt = undefined;
+
+    attempt = await launchAttempt();
+    await expect(attempt.page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
+    await expect(attempt.page.getByRole("status", { name: "Clarifold data migration status" }))
+      .toContainText("Migration verified");
+    const relaunchedBackendState = await readBoundedPackagedBackendState(attempt.page);
+    expect(relaunchedBackendState).not.toMatchObject({ unavailable: expect.any(String) });
+    expect(durableMigrationState(relaunchedBackendState as Record<string, unknown>)).toEqual(durableMigrationState(resumedState));
+    expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
+    expect(await readFile(rollbackMarkerPath, "utf8")).toBe("retain after interrupted migration\n");
+    await closeAttempt(attempt);
+    attempt = undefined;
   } catch (error) {
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${output}`, { cause: error });
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${attempt?.output() ?? inFlightOutput?.() ?? ""}`, { cause: error });
   } finally {
-    await browser?.close().catch(() => undefined);
-    await terminateChild(child).catch(() => undefined);
-    await legacyApplication.shutdown();
+    if (attempt) {
+      await attempt.browser.close().catch(() => undefined);
+      await terminateChild(attempt.child).catch(() => undefined);
+    } else {
+      await inFlightBrowser?.close().catch(() => undefined);
+      if (inFlightChild) await terminateChild(inFlightChild).catch(() => undefined);
+    }
     await removeTestDirectory(root);
   }
 });
@@ -1132,6 +1269,12 @@ async function removeTestDirectory(path: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await rm(path, { recursive: true, force: true });
+}
+
+async function fileDigest(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 async function recordInstalledMeasurements(

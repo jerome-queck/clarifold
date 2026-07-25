@@ -19,6 +19,7 @@ export interface ClarifoldRuntimeConfiguration {
   readonly testVerifierRemovalFailure: string | null;
   readonly testSkipDefaultVerifierInstall: boolean;
   readonly testExternalResearch: string | null;
+  readonly testMigrationInterruptFile: string | null;
 }
 
 export interface RuntimeEnvironmentWarning {
@@ -75,7 +76,8 @@ export function resolveClarifoldRuntimeConfiguration(
     testAuthenticationOpenLog: nonEmptyEnvironmentValue(environment, identity.testAuthenticationOpenLogVariable),
     testVerifierRemovalFailure: nonEmptyEnvironmentValue(environment, identity.testVerifierRemovalFailureVariable),
     testSkipDefaultVerifierInstall: nonEmptyEnvironmentValue(environment, identity.testSkipDefaultVerifierInstallVariable) === "1",
-    testExternalResearch: nonEmptyEnvironmentValue(environment, identity.testExternalResearchVariable)
+    testExternalResearch: nonEmptyEnvironmentValue(environment, identity.testExternalResearchVariable),
+    testMigrationInterruptFile: nonEmptyEnvironmentValue(environment, identity.testMigrationInterruptFileVariable)
   };
 }
 
