@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -108,6 +108,59 @@ describe("Clarifold data migration", () => {
     await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
       .resolves.toMatchObject({ outcome: "already-migrated" });
     expect(await readFile(join(destinationDirectory, "migration-receipt.json"), "utf8")).toBe(receipt);
+  });
+
+  it("recovers from an interrupted staging copy on relaunch without changing either history", async () => {
+    const root = await temporaryDirectory("clarifold-migration-interrupted-copy-");
+    const sourceDirectory = join(root, "Quick Study");
+    const destinationDirectory = join(root, "Clarifold");
+    await createLearnerState(sourceDirectory);
+    const sourceState = await readFile(join(sourceDirectory, "learning-application.json"), "utf8");
+    const interruptionPath = join(sourceDirectory, "z-interrupted-staging-entry");
+    await symlink(join(root, "interruption-target"), interruptionPath);
+
+    const interrupted = await migrateQuickStudyData({
+      sourceDirectory,
+      destinationDirectory,
+      applicationVersion: "0.2.0",
+      now: () => new Date("2026-07-25T01:02:03.000Z")
+    });
+
+    expect(interrupted).toMatchObject({
+      outcome: "failed",
+      reason: "copy-failed",
+      stages: ["discovery", "preflight", "staging-copy", "recovery", "complete"]
+    });
+    expect(JSON.parse(await readFile(`${destinationDirectory}.migration-recovery.json`, "utf8"))).toMatchObject({
+      outcome: "failed",
+      reason: "copy-failed",
+      retryState: "safe-to-retry"
+    });
+    await expect(readdir(`${destinationDirectory}.migration-staging`)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(sourceDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+
+    await unlink(interruptionPath);
+    const retried = await migrateQuickStudyData({
+      sourceDirectory,
+      destinationDirectory,
+      applicationVersion: "0.2.0",
+      now: () => new Date("2026-07-25T01:02:03.000Z")
+    });
+
+    expect(retried).toMatchObject({ outcome: "migrated" });
+    expect(JSON.parse(await readFile(join(destinationDirectory, "migration-receipt.json"), "utf8"))).toMatchObject({
+      source: sourceDirectory,
+      destination: destinationDirectory,
+      applicationVersion: "0.2.0",
+      outcome: "migrated",
+      retryState: "idempotent"
+    });
+    expect(await readFile(join(destinationDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+    expect(await readFile(join(sourceDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
+
+    await expect(migrateQuickStudyData({ sourceDirectory, destinationDirectory, applicationVersion: "0.2.0" }))
+      .resolves.toMatchObject({ outcome: "already-migrated" });
+    expect(await readFile(join(destinationDirectory, "learning-application.json"), "utf8")).toBe(sourceState);
   });
 
   it("blocks a meaningful destination instead of overwriting or merging it", async () => {

@@ -1,6 +1,6 @@
 import { chromium, expect, test, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,43 +38,119 @@ test("packaged Clarifold migrates a Quick Study beta directory without changing 
   const legacyApplication = await LearningApplication.launch(legacyDirectory);
   await legacyApplication.submit({ type: "startQuickStudy", mathematics: "Every compact subset is closed." });
   const legacyState = await readFile(join(legacyDirectory, "learning-application.json"), "utf8");
-  const port = await availablePort();
-  const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
-    env: {
-      ...process.env,
-      HOME: home,
-      ELECTRON_ENABLE_LOGGING: "1",
-      CODEX_HOME: runtimeControlDirectory,
-      CLARIFOLD_TEST_USER_DATA_DIR: clarifoldDirectory,
-      CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL: "1",
-      CLARIFOLD_TEST_EXTERNAL_RESEARCH: "stub"
-    },
-    stdio: "pipe"
-  });
-  let output = "";
-  child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
-  child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
-  let browser: Browser | undefined;
-  try {
+  await legacyApplication.shutdown();
+  const interruptionPath = join(legacyDirectory, "z-interrupted-staging-entry");
+  await symlink(join(root, "interruption-target"), interruptionPath);
+  const durableMigrationState = (raw: string): Record<string, unknown> => {
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    const sessions = Array.isArray(state.sessions)
+      ? state.sessions.map((session) => {
+        const entry = session as Record<string, unknown>;
+        return {
+          id: entry.id,
+          learningGoal: entry.learningGoal,
+          sessionTarget: entry.sessionTarget,
+          status: entry.status,
+          sourceIds: entry.sourceIds,
+          sourceAnchors: entry.sourceAnchors,
+          annotations: entry.annotations,
+          learningArtifacts: entry.learningArtifacts,
+          trailDraft: entry.trailDraft,
+          understandingEvidence: entry.understandingEvidence
+        };
+      })
+      : [];
+    return {
+      quickStudy: state.quickStudy,
+      workspaces: state.workspaces,
+      sessions,
+      sources: state.sources,
+      sourceIndexes: state.sourceIndexes,
+      learnerModel: state.learnerModel,
+      verifierManifests: state.verifierManifests,
+      verifierEnvironment: state.verifierEnvironment
+    };
+  };
+  const launchAttempt = async (): Promise<{ child: ChildProcess; browser: Browser; page: Page; output: () => string }> => {
+    const port = await availablePort();
+    const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
+      env: {
+        ...process.env,
+        HOME: home,
+        ELECTRON_ENABLE_LOGGING: "1",
+        CODEX_HOME: runtimeControlDirectory,
+        CLARIFOLD_TEST_USER_DATA_DIR: clarifoldDirectory,
+        CLARIFOLD_TEST_SKIP_DEFAULT_VERIFIER_INSTALL: "1",
+        CLARIFOLD_TEST_EXTERNAL_RESEARCH: "stub"
+      },
+      stdio: "pipe"
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+    child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
     const debuggerEndpoint = await waitForDebugger(port, child, () => output);
-    browser = await chromium.connectOverCDP(debuggerEndpoint);
+    const browser = await chromium.connectOverCDP(debuggerEndpoint);
     const page = await waitForPage(browser, child, () => output);
+    return { child, browser, page, output: () => output };
+  };
+  const closeAttempt = async (attempt: { child: ChildProcess; browser: Browser }): Promise<void> => {
+    await Promise.all(attempt.browser.contexts().flatMap((context) => context.pages()).map((page) => page.close()));
+    expect(await waitForExit(attempt.child, 5_000)).toBe(true);
+    await attempt.browser.close().catch(() => undefined);
+  };
+  let attempt: Awaited<ReturnType<typeof launchAttempt>> | undefined;
+  try {
+    attempt = await launchAttempt();
+    const recoveryPage = attempt.browser.contexts().flatMap((context) => context.pages()).at(-1)!;
+    await expect(recoveryPage.getByRole("heading", { name: "Clarifold data migration needs attention" })).toBeVisible();
+    await expect(recoveryPage.getByRole("alert")).toContainText("source was left unchanged");
+    expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
+    await expect(readdir(`${clarifoldDirectory}.migration-staging`)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(`${clarifoldDirectory}.migration-recovery.json`, "utf8"))).toMatchObject({
+      outcome: "failed",
+      reason: "copy-failed",
+      retryState: "safe-to-retry"
+    });
+    await closeAttempt(attempt);
+    attempt = undefined;
+
+    await unlink(interruptionPath);
+    attempt = await launchAttempt();
+    const page = attempt.page;
     await expect(page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
     await expect(page.getByRole("status", { name: "Clarifold data migration status" }))
       .toContainText("Migration complete");
     expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
     const migratedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
     expect(JSON.parse(migratedState)).toEqual(JSON.parse(legacyState));
+    expect(JSON.parse(await readFile(join(clarifoldDirectory, "migration-receipt.json"), "utf8"))).toMatchObject({
+      source: legacyDirectory,
+      destination: clarifoldDirectory,
+      applicationVersion: "0.2.0",
+      outcome: "migrated",
+      retryState: "idempotent"
+    });
     await page.getByRole("button", { name: "Resume Learning Session", exact: true }).press("Enter");
     await expect(page.getByRole("heading", { name: "Mathematical Workbench" })).toBeVisible();
-    await page.close();
-    expect(await waitForExit(child, 5_000)).toBe(true);
+    await closeAttempt(attempt);
+    attempt = undefined;
+
+    attempt = await launchAttempt();
+    await expect(attempt.page.getByRole("heading", { name: "Continue your mathematics" })).toBeVisible();
+    await expect(attempt.page.getByRole("status", { name: "Clarifold data migration status" }))
+      .toContainText("Migration verified");
+    const relaunchedState = await readFile(join(clarifoldDirectory, "learning-application.json"), "utf8");
+    expect(durableMigrationState(relaunchedState)).toEqual(durableMigrationState(migratedState));
+    expect(await readFile(join(legacyDirectory, "learning-application.json"), "utf8")).toBe(legacyState);
+    await closeAttempt(attempt);
+    attempt = undefined;
   } catch (error) {
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${output}`, { cause: error });
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${attempt?.output() ?? ""}`, { cause: error });
   } finally {
-    await browser?.close().catch(() => undefined);
-    await terminateChild(child).catch(() => undefined);
-    await legacyApplication.shutdown();
+    if (attempt) {
+      await attempt.browser.close().catch(() => undefined);
+      await terminateChild(attempt.child).catch(() => undefined);
+    }
     await removeTestDirectory(root);
   }
 });

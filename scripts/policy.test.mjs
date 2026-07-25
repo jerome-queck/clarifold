@@ -35,7 +35,7 @@ test("legacy identifier audit rejects a new occurrence in an allowlisted file", 
   const result = await auditLegacyIdentifiers({ rootDir });
 
   assert.match(result.errors.join("\n"), /durable-domain-language: expected 57 legacy-product-name occurrences, found 1/);
-  assert.match(result.errors.join("\n"), /durable-domain-language: expected 31 legacy-concatenated-identifier occurrences, found 1/);
+  assert.match(result.errors.join("\n"), /durable-domain-language: expected 33 legacy-concatenated-identifier occurrences, found 1/);
 });
 
 test("legacy identifier audit rejects a replacement that preserves aggregate counts", async () => {
