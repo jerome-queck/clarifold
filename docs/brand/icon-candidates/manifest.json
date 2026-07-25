@@ -1,0 +1,52 @@
+{
+  "issue": 98,
+  "status": "exploratory-human-selection-pending",
+  "generatedOn": "2026-07-25",
+  "officialAsset": false,
+  "generation": {
+    "tool": "Codex built-in image_gen",
+    "mode": "default generation",
+    "referenceImages": [],
+    "sourceDimensions": "1254x1254",
+    "postProcessing": "ImageMagick size reductions and review-board compositing only"
+  },
+  "rights": {
+    "basis": "OpenAI Terms of Use ownership-of-content clause checked 2026-07-25",
+    "source": "https://openai.com/policies/terms-of-use/",
+    "referenceImages": "none",
+    "status": "compatible-for-exploratory-review-only-subject-to-applicable-law-and-account-terms",
+    "boardTypography": "macOS Arial rasterized into review-only labels; no font files redistributed",
+    "officialBrandClearance": false
+  },
+  "candidates": [
+    {
+      "id": "mirror",
+      "metaphor": "mirror",
+      "source": "mirror.png",
+      "previews": [1024, 512, 256, 128, 64, 32, 16]
+    },
+    {
+      "id": "proof-structure",
+      "metaphor": "proof structure",
+      "source": "proof-structure.png",
+      "previews": [1024, 512, 256, 128, 64, 32, 16]
+    },
+    {
+      "id": "learning-trail",
+      "metaphor": "Learning Trail",
+      "source": "learning-trail.png",
+      "previews": [1024, 512, 256, 128, 64, 32, 16]
+    },
+    {
+      "id": "unfolding-surface",
+      "metaphor": "unfolding surface",
+      "source": "unfolding-surface.png",
+      "previews": [1024, 512, 256, 128, 64, 32, 16]
+    }
+  ],
+  "selection": {
+    "selectedCandidate": null,
+    "decisionIssue": 99,
+    "adoptionBlockedUntilHumanApproval": true
+  }
+}
