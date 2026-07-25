@@ -33,17 +33,18 @@
         "docs/adr/0036-remove-build-week-specific-governance.md",
         "docs/adr/0038-set-repository-metadata-and-defer-a-website.md",
         "docs/adr/0029-name-the-product-clarifold.md",
-        "docs/research/clarifold-identity-migration.md"
+        "docs/research/clarifold-identity-migration.md",
+        "docs/research/integrated-clarifold-acceptance-audit-2026-07-25.md"
       ],
       "patterns": ["event-reference", "legacy-product-name", "legacy-slug", "legacy-concatenated-identifier"],
       "expectedCounts": {
-        "event-reference": 10,
+        "event-reference": 11,
         "legacy-product-name": 19,
         "legacy-slug": 1,
         "legacy-concatenated-identifier": 0
       },
       "expectedFingerprints": {
-        "event-reference": "94157cf7be78ec3cf22109aa2d5144ab5e5c85bbd9248fba74892d8d8e94f7d0",
+        "event-reference": "2707bd3faa7c09d93d29abed2e0f630743c3ba451c5424beb6e843441533101f",
         "legacy-product-name": "cbbe8c85c3caabbed4d9651bdacf159e84e87a4410e7e6b569f55a3b0a73adde",
         "legacy-slug": "0ba6f9b33d3656ea75fab3c1674d3d880640dd458878d914214d70e0c372067e",
         "legacy-concatenated-identifier": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
