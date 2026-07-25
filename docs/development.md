@@ -59,6 +59,7 @@ Run focused checks while changing code, then run the complete lane before review
 | `npm run policy:legacy-identifiers` | Repository-wide semantic search that classifies historical, durable-domain, approved-compatibility, and third-party legacy references while failing on unexplained stale identifiers |
 | `npm run policy:classify -- --base <sha> --head <sha>` | Fail-closed changed-path classification and selected verification surfaces |
 | `npm run test:policy` | Focused policy fixtures for documentation and changed-path classification |
+| `npm run workspace:verify -- --retired-directory <path>` | Verify the reopened Clarifold workspace root, clean `main` checkout, canonical remote, Node/npm toolchain, required commands, and absence of the retired workspace directory |
 | `npm run verify:prepackage` | Run the required lint, typecheck, unit, policy-fixture, and documentation-policy checks |
 | `npm run verify:package` | Run the quality fixture, package, maker, and packaged smoke lane |
 | `npm run quality:gate:fixture` | Deterministic quality-gate harness fixture only |
@@ -82,6 +83,27 @@ transition; adding another compatibility alias requires Jerome's documented appr
 The smoke command expects `npm run package` and `npm run make:beta` to have completed first. It extracts the archive into an isolated installation directory, verifies the code signature and bundled verifier, and launches the installed application. The packaged scenarios cover source/index and access transitions, verifier removal/reinstall and artifact export, delayed-transfer persistence, cold-start/resource budgets, Agent Task recovery, Local Working Mode, authentication navigation, and action-level lifecycle diagnostics. A scenario timeout is not a product-operation timeout.
 
 The [evaluation guide](../evaluation/README.md) owns benchmark evidence collection, moderated learning-study instruments, live model samples, and candidate quality reports. It is the source for release-evidence procedures, not a replacement for this development command matrix.
+
+## Final local workspace handoff
+
+After the Clarifold migration and its delivery task have merged, move the local
+repository directory to the approved Clarifold location, reopen the workspace
+there, and start a fresh shell. From the renamed checkout, run:
+
+```sh
+retired_workspace="/absolute/path/to/the-retired-workspace-directory"
+npm ci
+npm run workspace:verify -- --retired-directory "$retired_workspace"
+npm run verify
+```
+
+The workspace verifier requires the active checkout to be named `Clarifold`, on
+clean `main`, connected to `https://github.com/jerome-queck/clarifold.git`, and
+using Node 22 or 24 with npm 11. It also fails if the retired directory exists
+at all, including as a compatibility symlink. Reopen Codex and any other
+machine-level development tools manually at the new path; if a tool or shortcut
+still points at the retired absolute path, update that local reference rather
+than adding a repository symlink or committing the machine-specific path.
 
 ## Packaging and distribution boundary
 
